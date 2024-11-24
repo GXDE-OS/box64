@@ -7,7 +7,7 @@ Standards-Version: 4.1.4
 Homepage: https://github.com/ptitSeb/box64
 
 Package: box64
-Architecture: any
+Architecture: arm64 loong64 riscv64 ppc64el
 Multi-Arch: foreign
 Depends: ${misc:Depends}, ${shlibs:Depends}
 Description: Linux Userspace x86_64 Emulator with a twist, targeted at ARM Linux devices 
