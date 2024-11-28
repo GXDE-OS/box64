@@ -250,6 +250,28 @@
         wb1 = 1;                                                                                \
         ed = i;                                                                                 \
     }
+// GETEB32 will use i for ed, and can use r3 for wback.
+#define GETEB32(i, D)                                                                             \
+    if (MODREG) {                                                                                 \
+        if (rex.rex) {                                                                            \
+            wback = TO_LA64((nextop & 7) + (rex.b << 3));                                         \
+            wb2 = 0;                                                                              \
+        } else {                                                                                  \
+            wback = (nextop & 7);                                                                 \
+            wb2 = (wback >> 2) * 8;                                                               \
+            wback = TO_LA64(wback & 3);                                                           \
+        }                                                                                         \
+        BSTRPICK_D(i, wback, wb2 + 7, wb2);                                                       \
+        wb1 = 0;                                                                                  \
+        ed = i;                                                                                   \
+    } else {                                                                                      \
+        SMREAD();                                                                                 \
+        addr = geted32(dyn, addr, ninst, nextop, &wback, x3, x2, &fixedaddress, rex, NULL, 1, D); \
+        LD_BU(i, wback, fixedaddress);                                                            \
+        wb1 = 1;                                                                                  \
+        ed = i;                                                                                   \
+    }
+
 // GETGB will use i for gd
 #define GETGB(i)                                              \
     if (rex.rex) {                                            \
@@ -801,6 +823,9 @@ void* la64_next(x64emu_t* emu, uintptr_t addr);
 #define emit_add8c          STEPNAME(emit_add8c)
 #define emit_add16          STEPNAME(emit_add16)
 #define emit_adc32          STEPNAME(emit_adc32)
+#define emit_adc8           STEPNAME(emit_adc8)
+#define emit_adc8c          STEPNAME(emit_adc8c)
+#define emit_adc16          STEPNAME(emit_adc16)
 #define emit_sub16          STEPNAME(emit_sub16)
 #define emit_sub32          STEPNAME(emit_sub32)
 #define emit_sub32c         STEPNAME(emit_sub32c)
@@ -903,6 +928,9 @@ void emit_add8(dynarec_la64_t* dyn, int ninst, int s1, int s2, int s3, int s4);
 void emit_add8c(dynarec_la64_t* dyn, int ninst, int s1, int32_t c, int s2, int s3, int s4);
 void emit_add16(dynarec_la64_t* dyn, int ninst, int s1, int s2, int s3, int s4, int s5);
 void emit_adc32(dynarec_la64_t* dyn, int ninst, rex_t rex, int s1, int s2, int s3, int s4, int s5, int s6);
+void emit_adc8(dynarec_la64_t* dyn, int ninst, int s1, int s2, int s3, int s4, int s5);
+void emit_adc8c(dynarec_la64_t* dyn, int ninst, int s1, int32_t c, int s3, int s4, int s5, int s6);
+void emit_adc16(dynarec_la64_t* dyn, int ninst, int s1, int s2, int s3, int s4, int s5);
 void emit_sub16(dynarec_la64_t* dyn, int ninst, int s1, int s2, int s3, int s4, int s5);
 void emit_sub32(dynarec_la64_t* dyn, int ninst, rex_t rex, int s1, int s2, int s3, int s4, int s5);
 void emit_sub32c(dynarec_la64_t* dyn, int ninst, rex_t rex, int s1, int64_t c, int s2, int s3, int s4, int s5);

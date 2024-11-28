@@ -80,6 +80,7 @@ int box64_dynarec_bigblock = 1;
 int box64_dynarec_forward = 128;
 int box64_dynarec_strongmem = 0;
 int box64_dynarec_weakbarrier = 0;
+int box64_dynarec_pause = 0;
 int box64_dynarec_x87double = 0;
 int box64_dynarec_div0 = 0;
 int box64_dynarec_fastnan = 1;
@@ -521,7 +522,7 @@ HWCAP2_AFP
             return;
         }
 
-        if ((la64_lbt = (cpucfg2 >> 18) & 0b1))
+        if (la64_lbt = (((cpucfg2 >> 18) & 0b1) && box64_dynarec_nativeflags))
             printf_log(LOG_INFO, " LBT_X86");
         if ((la64_lam_bh = (cpucfg2 >> 27) & 0b1))
             printf_log(LOG_INFO, " LAM_BH");
@@ -534,39 +535,31 @@ HWCAP2_AFP
     void RV64_Detect_Function();
     // private env. variable for the developer ;)
     char *p = getenv("BOX64_DYNAREC_RV64NOEXT");
-    if(p == NULL || p[0] == '0')
+    if(p == NULL || strcasecmp(p, "1")) {
         RV64_Detect_Function();
-    if (p != NULL && !strcasecmp(p, "vector")) {
-        RV64_Detect_Function();
-        rv64_vector = 0;
-        rv64_xtheadvector = 0;
-    } else if (p != NULL && !strcasecmp(p, "zba")) {
-        RV64_Detect_Function();
-        rv64_zba = 0;
-    } else if (p != NULL && !strcasecmp(p, "zbb")) {
-        RV64_Detect_Function();
-        rv64_zbb = 0;
-    } else if (p != NULL && !strcasecmp(p, "zbc")) {
-        RV64_Detect_Function();
-        rv64_zbc = 0;
-    } else if (p != NULL && !strcasecmp(p, "zbs")) {
-        RV64_Detect_Function();
-        rv64_zbs = 0;
-    } else if (p != NULL && !strcasecmp(p, "xtheadba")) {
-        RV64_Detect_Function();
-        rv64_xtheadba = 0;
-    } else if (p != NULL && !strcasecmp(p, "xtheadbb")) {
-        RV64_Detect_Function();
-        rv64_xtheadbb = 0;
-    } else if (p != NULL && !strcasecmp(p, "xtheadbs")) {
-        RV64_Detect_Function();
-        rv64_xtheadbs = 0;
-    } else if (p != NULL && !strcasecmp(p, "xtheadmempair")) {
-        RV64_Detect_Function();
-        rv64_xtheadmempair = 0;
-    } else if (p != NULL && !strcasecmp(p, "xtheadcondmov")) {
-        RV64_Detect_Function();
-        rv64_xtheadcondmov = 0;
+        if (p) {
+            p = strtok(p, ",");
+            while (p) {
+                if (!strcasecmp(p, "zba")) rv64_zba = 0;
+                if (!strcasecmp(p, "zbb")) rv64_zbb = 0;
+                if (!strcasecmp(p, "zbc")) rv64_zbc = 0;
+                if (!strcasecmp(p, "zbs")) rv64_zbs = 0;
+                if (!strcasecmp(p, "vector")) {
+                    rv64_vector = 0;
+                    rv64_xtheadvector = 0;
+                }
+                if (!strcasecmp(p, "xtheadba")) rv64_xtheadba = 0;
+                if (!strcasecmp(p, "xtheadbb")) rv64_xtheadbb = 0;
+                if (!strcasecmp(p, "xtheadbs")) rv64_xtheadbs = 0;
+                // if (!strcasecmp(p, "xtheadmemidx")) rv64_xtheadmemidx = 0;
+                // if (!strcasecmp(p, "xtheadfmemidx")) rv64_xtheadfmemidx = 0;
+                // if (!strcasecmp(p, "xtheadmac")) rv64_xtheadmac = 0;
+                // if (!strcasecmp(p, "xtheadfmv")) rv64_xtheadfmv = 0;
+                if (!strcasecmp(p, "xtheadmempair")) rv64_xtheadmempair = 0;
+                if (!strcasecmp(p, "xtheadcondmov")) rv64_xtheadcondmov = 0;
+                p = strtok(NULL, ",");
+            }
+        }
     }
 
     printf_log(LOG_INFO, "Dynarec for RISC-V ");
@@ -795,6 +788,18 @@ void LoadLogEnv()
         if (box64_dynarec_weakbarrier)
             printf_log(LOG_INFO, "Dynarec will try to use weaker memory barriers to reduce the performance loss introduce by strong memory emulation\n");
     }
+#ifdef ARM64
+    p = getenv("BOX64_DYNAREC_PAUSE");
+    if (p) {
+        if (strlen(p) == 1) {
+            if (p[0] >= '0' && p[0] <= '3')
+                box64_dynarec_pause = p[0] - '0';
+        }
+        if (box64_dynarec_pause)
+            printf_log(LOG_INFO, "Dynarec will use %s to emulate pause instruction\n",
+                box64_dynarec_pause == 1 ? "yield" : (box64_dynarec_pause == 2 ? "wfi" : "wfe"));
+    }
+#endif
     p = getenv("BOX64_DYNAREC_X87DOUBLE");
     if(p) {
         if(strlen(p)==1) {
