@@ -60,7 +60,7 @@ typedef struct  va_list {
   sysv_varargs.__stack=(A);
 
 
-#elif defined(__loongarch64) || defined(__powerpc64__) || defined(__riscv)
+#elif defined(__loongarch64) || defined(__powerpc64__) || defined(__riscv) || defined(__mips__)
 #define CREATE_SYSV_VALIST_32(A) \
   va_list sysv_varargs = (va_list)A
 
