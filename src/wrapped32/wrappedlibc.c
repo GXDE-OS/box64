@@ -125,8 +125,6 @@ static const char* libcName =
 #endif
     ;
 
-static library_t* my_lib = NULL;
-
 extern int fix_64bit_inodes;
 typedef int32_t (*iFiiV_t)(int32_t, int32_t, ...);
 #if 0
@@ -159,7 +157,11 @@ typedef void* (*pFu_t)(uint32_t);
 
 #endif
 
-//#include "wrappercallback.h"
+#define ADDED_FUNCTIONS() \
+
+#include "generated/wrappedlibctypes32.h"
+
+#include "wrappercallback32.h"
 
 // utility functions
 #define SUPER() \
@@ -455,7 +457,7 @@ EXPORT int my32_statvfs64(x64emu_t* emu, void* f, void* r)
 {
     struct statvfs s = {0};
     int ret = statvfs(f, &s);
-    if(r)
+    if(r>=0)
         UnalignStatVFS64_32(&s, r);
     return ret;
 }
@@ -464,7 +466,25 @@ EXPORT int my32_statvfs(x64emu_t* emu, void* f, void* r)
 {
     struct statvfs s = {0};
     int ret = statvfs(f, &s);
-    if(r)
+    if(r>=0)
+        UnalignStatVFS_32(&s, r);
+    return ret;
+}
+
+EXPORT int my32_fstatvfs64(x64emu_t* emu, int fd, void* r)
+{
+    struct statvfs s = {0};
+    int ret = fstatvfs(fd, &s);
+    if(r>=0)
+        UnalignStatVFS64_32(&s, r);
+    return ret;
+}
+
+EXPORT int my32_fstatvfs(x64emu_t* emu, int fd, void* r)
+{
+    struct statvfs s = {0};
+    int ret = fstatvfs(fd, &s);
+    if(r>=0)
         UnalignStatVFS_32(&s, r);
     return ret;
 }
@@ -673,13 +693,15 @@ int of_unconvert32(int a)
 }
 #undef SUPER
 
-EXPORT void* my32__ZGTtnaX (size_t a) { printf("warning _ZGTtnaX called\n"); return NULL; }
-EXPORT void my32__ZGTtdlPv (void* a) { printf("warning _ZGTtdlPv called\n"); }
-EXPORT uint8_t my32__ITM_RU1(const uint8_t * a) { printf("warning _ITM_RU1 called\n"); return 0; }
-EXPORT uint32_t my32__ITM_RU4(const uint32_t * a) { printf("warning _ITM_RU4 called\n"); return 0; }
-EXPORT uint64_t my32__ITM_RU8(const uint64_t * a) { printf("warning _ITM_RU8 called\n"); return 0; }
-EXPORT void my32__ITM_memcpyRtWn(void * a, const void * b, size_t c) {printf("warning _ITM_memcpyRtWn called\n");  }
-EXPORT void my32__ITM_memcpyRnWt(void * a, const void * b, size_t c) {printf("warning _ITM_memcpyRtWn called\n"); }
+EXPORT void* my32__ZGTtnaX (size_t a) { printf("warning 32bits _ZGTtnaX called\n"); return NULL; }
+EXPORT void* my32__ZGTtnam (size_t a) { (void)a; printf("warning 32bits _ZGTtnam called\n"); return NULL; }
+EXPORT void* my32__ZGTtnaj (uint32_t a) { printf("warning 32bits _ZGTtnaj called\n"); return NULL; }
+EXPORT void my32__ZGTtdlPv (void* a) { printf("warning 32bits _ZGTtdlPv called\n"); }
+EXPORT uint8_t my32__ITM_RU1(const uint8_t * a) { printf("warning 32bits _ITM_RU1 called\n"); return 0; }
+EXPORT uint32_t my32__ITM_RU4(const uint32_t * a) { printf("warning 32bits _ITM_RU4 called\n"); return 0; }
+EXPORT uint64_t my32__ITM_RU8(const uint64_t * a) { printf("warning 32bits _ITM_RU8 called\n"); return 0; }
+EXPORT void my32__ITM_memcpyRtWn(void * a, const void * b, size_t c) {printf("warning 32bits _ITM_memcpyRtWn called\n");  }
+EXPORT void my32__ITM_memcpyRnWt(void * a, const void * b, size_t c) {printf("warning 32bits _ITM_memcpyRtWn called\n"); }
 
 EXPORT void my32_longjmp(x64emu_t* emu, /*struct __jmp_buf_tag __env[1]*/void *p, int32_t __val);
 EXPORT void my32__longjmp(x64emu_t* emu, /*struct __jmp_buf_tag __env[1]*/void *p, int32_t __val) __attribute__((alias("my32_longjmp")));
@@ -719,14 +741,22 @@ EXPORT int my32_printf(x64emu_t *emu, void* fmt, void* b) {
     PREPARE_VALIST_32;
     return vprintf((const char*)fmt, VARARGS_32);
 }
-EXPORT int my32___printf_chk(x64emu_t *emu, void* fmt, void* b) __attribute__((alias("my32_printf")));
+EXPORT int my32___printf_chk(x64emu_t *emu, int a, void* fmt, void* b) {
+    myStackAlign32((const char*)fmt, b, emu->scratch);
+    PREPARE_VALIST_32;
+    return vprintf((const char*)fmt, VARARGS_32);
+}
 
 EXPORT int my32_vprintf(x64emu_t *emu, void* fmt, void* b) {
     myStackAlign32((const char*)fmt, b, emu->scratch);
     PREPARE_VALIST_32;
     return vprintf(fmt, VARARGS_32);
 }
-EXPORT int my32___vprintf_chk(x64emu_t *emu, void* fmt, void* b) __attribute__((alias("my32_vprintf")));
+EXPORT int my32___vprintf_chk(x64emu_t *emu, int a, void* fmt, void* b) {
+    myStackAlign32((const char*)fmt, b, emu->scratch);
+    PREPARE_VALIST_32;
+    return vprintf(fmt, VARARGS_32);
+}
 
 EXPORT int my32_vfprintf(x64emu_t *emu, void* F, void* fmt, void* b) {
     // need to align on arm
@@ -734,8 +764,13 @@ EXPORT int my32_vfprintf(x64emu_t *emu, void* F, void* fmt, void* b) {
     PREPARE_VALIST_32;
     return vfprintf(F, fmt, VARARGS_32);
 }
-EXPORT int my32___vfprintf_chk(x64emu_t *emu, void* F, void* fmt, void* b) __attribute__((alias("my32_vfprintf")));
 EXPORT int my32__IO_vfprintf(x64emu_t *emu, void* F, void* fmt, void* b) __attribute__((alias("my32_vfprintf")));
+EXPORT int my32___vfprintf_chk(x64emu_t *emu, void* F, int a1, void* fmt, void* b) {
+    // need to align on arm
+    myStackAlign32((const char*)fmt, b, emu->scratch);
+    PREPARE_VALIST_32;
+    return vfprintf(F, fmt, VARARGS_32);
+}
 
 EXPORT int my32_dprintf(x64emu_t *emu, int fd, void* fmt, void* V)  {
     // need to align on arm
@@ -743,15 +778,25 @@ EXPORT int my32_dprintf(x64emu_t *emu, int fd, void* fmt, void* V)  {
     PREPARE_VALIST_32;
     return vdprintf(fd, fmt, VARARGS_32);
 }
-EXPORT int my32___dprintf_chk(x64emu_t *emu, int fd, void* fmt, void* V) __attribute__((alias("my32_dprintf")));
+EXPORT int my32___dprintf_chk(x64emu_t *emu, int fd, int a, void* fmt, void* V)  {
+    // need to align on arm
+    myStackAlign32((const char*)fmt, V, emu->scratch);
+    PREPARE_VALIST_32;
+    return vdprintf(fd, fmt, VARARGS_32);
+}
 
-EXPORT int my32_fprintf(x64emu_t *emu, void* F, void* fmt, void* V)  {
+EXPORT int my32_fprintf(x64emu_t *emu, void* F, void* fmt, void* V) {
     // need to align on arm
     myStackAlign32((const char*)fmt, V, emu->scratch);
     PREPARE_VALIST_32;
     return vfprintf(F, fmt, VARARGS_32);
 }
-EXPORT int my32___fprintf_chk(x64emu_t *emu, void* F, void* fmt, void* V) __attribute__((alias("my32_fprintf")));
+EXPORT int my32___fprintf_chk(x64emu_t *emu, void* F, int a, void* fmt, void* V) {
+    // need to align on arm
+    myStackAlign32((const char*)fmt, V, emu->scratch);
+    PREPARE_VALIST_32;
+    return vfprintf(F, fmt, VARARGS_32);
+}
 extern int box64_stdout_no_w;
 EXPORT int my32_wprintf(x64emu_t *emu, void* fmt, void* V) {
     // need to align on arm
@@ -842,7 +887,12 @@ EXPORT int my32_sprintf(x64emu_t* emu, void* buff, void * fmt, void * b) {
     PREPARE_VALIST_32;
     return vsprintf(buff, fmt, VARARGS_32);
 }
-EXPORT int my32___sprintf_chk(x64emu_t* emu, void* buff, void * fmt, void * b) __attribute__((alias("my32_sprintf")));
+EXPORT int my32___sprintf_chk(x64emu_t* emu, void* buff, int a1, int a2, void * fmt, void * b)  {
+    // need to align on arm
+    myStackAlign32((const char*)fmt, b, emu->scratch);
+    PREPARE_VALIST_32;
+    return vsprintf(buff, fmt, VARARGS_32);
+}
 
 EXPORT int my32_asprintf(x64emu_t* emu, ptr_t* buff, void * fmt, void * b) {
     // need to align on arm
@@ -904,7 +954,13 @@ EXPORT int my32_vsnprintf(x64emu_t* emu, void* buff, size_t s, void * fmt, void 
     return r;
 }
 EXPORT int my32___vsnprintf(x64emu_t* emu, void* buff, size_t s, void * fmt, void * b) __attribute__((alias("my32_vsnprintf")));
-EXPORT int my32___vsnprintf_chk(x64emu_t* emu, void* buff, size_t s, void * fmt, void * b) __attribute__((alias("my32_vsnprintf")));
+EXPORT int my32___vsnprintf_chk(x64emu_t* emu, void* buff, size_t s, int a1, int a2, void * fmt, void * b) {
+    // need to align on arm
+    myStackAlign32((const char*)fmt, (uint32_t*)b, emu->scratch);
+    PREPARE_VALIST_32;
+    int r = vsnprintf(buff, s, fmt, VARARGS_32);
+    return r;
+}
 EXPORT int my32_vasprintf(x64emu_t* emu, ptr_t* strp, void* fmt, void* b)
 {
     // need to align on arm
@@ -1136,6 +1192,28 @@ EXPORT int my32___fxstat64(x64emu_t *emu, int vers, int fd, void* buf)
     UnalignStat64_32(&st, buf);
     return r;
 }
+
+EXPORT int my32_statx(x64emu_t* emu, int dirfd, void* path, int flags, uint32_t mask, void* buf)
+{
+    // no need to convert the structure?
+    int ret = -1;
+    if(my->statx)
+        ret = my->statx(dirfd, path, flags, mask, buf);
+    else
+    #ifdef __NR_statx
+    {
+        ret = syscall(__NR_statx, dirfd, path, flags, mask, buf);
+        if(ret<0) {
+            errno = -ret;
+            ret = -1;
+        }
+    }
+    #else
+    errno = ENOSYS;
+    #endif
+    return ret;
+}
+
 EXPORT int my32_stat64(x64emu_t* emu, void* path, void* buf)
 {
     struct stat64 st;
@@ -1503,13 +1581,14 @@ EXPORT int32_t my32_nftw(x64emu_t* emu, void* pathname, void* B, int32_t nopenfd
 
     return f(pathname, findnftwFct(B), nopenfd, flags);
 }
+#endif
 
 EXPORT void* my32_ldiv(x64emu_t* emu, void* p, int32_t num, int32_t den)
 {
-    *((ldiv_t*)p) = ldiv(num, den);
+    *((div_t*)p) = div(num, den);
     return p;
 }
-#endif
+
 EXPORT int my32_epoll_create(x64emu_t* emu, int size)
 {
     return epoll_create(size);
@@ -2237,7 +2316,7 @@ EXPORT int64_t my32___divdi3(int64_t a, int64_t b)
     return a/b;
 }
 
-EXPORT int32_t my32___poll_chk(void* a, uint32_t b, int c, int l)
+EXPORT int32_t my32___poll_chk(void* a, uint32_t b, int c, size_t l)
 {
     return poll(a, b, c);   // no check...
 }
@@ -3160,6 +3239,8 @@ EXPORT void* my32___errno_location(x64emu_t* emu)
     //emu->libc_err = errno;
     return &emu->libc_err;
 }
+
+#undef HAS_MY
 
 #define PRE_INIT\
     if(1)                                                           \
