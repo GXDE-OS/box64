@@ -131,7 +131,7 @@ typdef struct {
     sysv_varargs.__base = (char*)p;                                     \
   }
 
-#elif defined(__loongarch64) || defined(__powerpc64__) || defined(__riscv)
+#elif defined(__loongarch64) || defined(__powerpc64__) || defined(__riscv) || defined(__mips__)
 #define CREATE_SYSV_VALIST(A) \
   va_list sysv_varargs = (va_list)A
 // not creating CONVERT_VALIST(A) on purpose

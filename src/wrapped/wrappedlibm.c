@@ -100,14 +100,14 @@ F2D(fmod)
 // #define FE_UPWARD     0x400000
 // #define FE_TOWARDZERO 0xc00000
 #define TO_NATIVE(round) ((round == 0x400 ? 0x800 : (round == 0x800 ? 0x400 : round)) << 12)
-#elif defined(__riscv)
+#elif defined(__riscv) || defined(__mips__)
 // RISC-V
 // #define FE_TONEAREST     0x0
 // #define FE_DOWNWARD      0x2
 // #define FE_UPWARD        0x3
 // #define FE_TOWARDZERO    0x1
 #define TO_NATIVE(round) ((round == 0xc00 ? 0x400 : (round == 0x0 ? round : round + 0x400)) >> 10)
-#elif defined(__loongarch64)
+#elif defined(__loongarch64) //|| defined(__mips__)
 // LOONGARCH
 // FE_TONEAREST     0x000
 // FE_DOWNWARD      0x300

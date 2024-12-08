@@ -746,7 +746,7 @@ uintptr_t RunF0(x64emu_t *emu, rex_t rex, uintptr_t addr)
 #if defined(DYNAREC) && !defined(TEST_INTERPRETER)
                             if (rex.w) {
 #if defined(__riscv) || defined(__loongarch64)
-#if defined(__loongarch64)
+#if defined(__loongarch64) || defined(__mips__)
                                 if (la64_scq) {
                                     do {
                                         native_lock_read_dq(&tmp64u, &tmp64u2, ED);

@@ -508,7 +508,7 @@ HWCAP2_AFP
         printf_log(LOG_INFO, " AFP");
     if(arm64_rndr)
         printf_log(LOG_INFO, " RNDR");
-#elif defined(LA64)
+#elif defined(LA64) || defined(__mips__)
     printf_log(LOG_INFO, "Dynarec for LoongArch ");
     char* p = getenv("BOX64_DYNAREC_LA64NOEXT");
     if(p == NULL || p[0] == '0') {
