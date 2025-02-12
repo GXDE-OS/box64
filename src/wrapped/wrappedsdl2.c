@@ -42,8 +42,17 @@ int EXPORT my2_SDL_HasRDTSC(void) __attribute__((alias("sdl_Yes")));
 int EXPORT my2_SDL_HasSSE(void) __attribute__((alias("sdl_Yes")));
 int EXPORT my2_SDL_HasSSE2(void) __attribute__((alias("sdl_Yes")));
 int EXPORT my2_SDL_HasSSE3(void) __attribute__((alias("sdl_Yes")));
-int EXPORT my2_SDL_HasSSE41(void) __attribute__((alias("sdl_No")));
-int EXPORT my2_SDL_HasSSE42(void) __attribute__((alias("sdl_No")));
+int EXPORT my2_SDL_HasSSE41(void) __attribute__((alias("sdl_Yes")));
+int EXPORT my2_SDL_HasSSE42(void) {
+    return BOX64ENV(sse42)?1:0;
+}
+int EXPORT my2_SDL_HasAVX(void) {
+    return BOX64ENV(avx)?1:0;
+}
+int EXPORT my2_SDL_HasAVX2(void) {
+    return BOX64ENV(avx2)?1:0;
+}
+int EXPORT my2_SDL_HasAVX512F(void) __attribute__((alias("sdl_No")));
 
 typedef struct {
   int32_t freq;
@@ -648,9 +657,9 @@ EXPORT void* my2_SDL_GL_GetProcAddress(x64emu_t* emu, void* name)
     if(!lib_checked) {
         lib_checked = 1;
             // check if libGL is loaded, load it if not (helps some Haxe games, like DeadCells or Nuclear Blaze)
-        if(!my_glhandle && !GetLibInternal(box64_libGL?box64_libGL:"libGL.so.1"))
+        if(!my_glhandle && !GetLibInternal(BOX64ENV(libgl)?BOX64ENV(libgl):"libGL.so.1"))
             // use a my_dlopen to actually open that lib, like SDL2 is doing...
-            my_glhandle = my_dlopen(emu, box64_libGL?box64_libGL:"libGL.so.1", RTLD_LAZY|RTLD_GLOBAL);
+            my_glhandle = my_dlopen(emu, BOX64ENV(libgl)?BOX64ENV(libgl):"libGL.so.1", RTLD_LAZY|RTLD_GLOBAL);
     }
     return getGLProcAddress(emu, (glprocaddress_t)my->SDL_GL_GetProcAddress, rname);
 }
@@ -797,7 +806,7 @@ EXPORT void my2_SDL_GetJoystickGUIDInfo(SDL_JoystickGUID guid, uint16_t *vend, u
 {
     uint16_t dummy = 0;
     if(my->SDL_GetJoystickGUIDInfo)
-        my->SDL_GetJoystickGUIDInfo(guid, vend, prod, ver, box64_sdl2_jguid?(&dummy):crc16);
+        my->SDL_GetJoystickGUIDInfo(guid, vend, prod, ver, BOX64ENV(sdl2_jguid)?(&dummy):crc16);
     // fallback
     else {
         uint16_t *guid16 = (uint16_t *)guid.data;
@@ -822,6 +831,14 @@ EXPORT unsigned long my2_SDL_GetThreadID(x64emu_t* emu, void* thread)
         sched_yield();
         ret = my->SDL_GetThreadID(thread);
     }
+    return ret;
+}
+
+EXPORT int my2_SDL_GetCPUCount(x64emu_t* emu)
+{
+    int ret = my->SDL_GetCPUCount();
+    if(BOX64ENV(maxcpu) && ret>BOX64ENV(maxcpu))
+        ret = BOX64ENV(maxcpu);
     return ret;
 }
 

@@ -580,7 +580,7 @@ void jump_to_next(dynarec_arm_t* dyn, uintptr_t ip, int reg, int ninst, int is32
         NOTEST(x2);
         uintptr_t tbl = is32bits?getJumpTable32():getJumpTable64();
         MAYUSE(tbl);
-        TABLE64(x3, tbl);
+        MOV64x(x3, tbl);
         if(!is32bits) {
             #ifdef JMPTABL_SHIFT4
             UBFXx(x2, xRIP, JMPTABL_START4, JMPTABL_SHIFT4);
@@ -599,7 +599,7 @@ void jump_to_next(dynarec_arm_t* dyn, uintptr_t ip, int reg, int ninst, int is32
         NOTEST(x2);
         uintptr_t p = getJumpTableAddress64(ip);
         MAYUSE(p);
-        TABLE64(x3, p);
+        MOV64x(x3, p);
         GETIP_(ip);
         LDRx_U12(x2, x3, 0);
     }
@@ -626,7 +626,7 @@ void ret_to_epilog(dynarec_arm_t* dyn, int ninst, rex_t rex)
     POP1z(xRIP);
     MOVz_REG(x1, xRIP);
     SMEND();
-    if(box64_dynarec_callret) {
+    if(BOX64DRENV(dynarec_callret)) {
         // pop the actual return address for ARM stack
         LDPx_S7_postindex(xLR, x6, xSP, 16);
         SUBx_REG(x6, x6, xRIP); // is it the right address?
@@ -673,7 +673,7 @@ void retn_to_epilog(dynarec_arm_t* dyn, int ninst, rex_t rex, int n)
     }
     MOVz_REG(x1, xRIP);
     SMEND();
-    if(box64_dynarec_callret) {
+    if(BOX64DRENV(dynarec_callret)) {
         // pop the actual return address for ARM stack
         LDPx_S7_postindex(xLR, x6, xSP, 16);
         SUBx_REG(x6, x6, xRIP); // is it the right address?
@@ -715,7 +715,7 @@ void iret_to_epilog(dynarec_arm_t* dyn, int ninst, int is32bits, int is64bits)
     MAYUSE(j64);
     MESSAGE(LOG_DUMP, "IRet to epilog\n");
     SMEND();
-    SET_DFNONE(x2);
+    SET_DFNONE();
     // POP IP
     NOTEST(x2);
     if(is64bits) {
@@ -734,7 +734,7 @@ void iret_to_epilog(dynarec_arm_t* dyn, int ninst, int is32bits, int is64bits)
     MOV32w(x1, 0x3F7FD7);
     ANDx_REG(xFlags, xFlags, x1);
     ORRx_mask(xFlags, xFlags, 1, 0b111111, 0); // xFlags | 0b10
-    SET_DFNONE(x1);
+    SET_DFNONE();
     if(is32bits) {
         ANDw_mask(x2, x2, 0, 7);   // mask 0xff
         // check if return segment is 64bits, then restore rsp too
@@ -858,19 +858,20 @@ void call_n(dynarec_arm_t* dyn, int ninst, void* fnc, int w)
     //SET_NODF();
 }
 
-void grab_segdata(dynarec_arm_t* dyn, uintptr_t addr, int ninst, int reg, int segment)
+void grab_segdata(dynarec_arm_t* dyn, uintptr_t addr, int ninst, int reg, int segment, int modreg)
 {
     (void)addr;
     int64_t j64;
     MAYUSE(j64);
+    if (modreg) return;
     MESSAGE(LOG_DUMP, "Get %s Offset\n", (segment==_FS)?"FS":"GS");
     int t2 = x4;
     if(reg==t2) ++t2;
     LDRw_U12(t2, xEmu, offsetof(x64emu_t, segs_serial[segment]));
-    if(segment==_GS) {
+    /*if(segment==_GS) {
         LDRx_U12(reg, xEmu, offsetof(x64emu_t, segs_offs[segment]));
         CBNZw_MARKSEG(t2);   // fast check
-    } else {
+    } else*/ {
         LDRx_U12(reg, xEmu, offsetof(x64emu_t, context));
         LDRw_U12(reg, reg, offsetof(box64context_t, sel_serial));
         SUBw_REG(t2, reg, t2);
@@ -1188,7 +1189,41 @@ void x87_purgecache(dynarec_arm_t* dyn, int ninst, int next, int s1, int s2, int
     }
     MESSAGE(LOG_DUMP, "\t---Purge x87 Cache and Synch Stackcount\n");
 }
-
+void x87_reflectcount(dynarec_arm_t* dyn, int ninst, int s1, int s2)
+{
+    // Synch top & stack counter
+    int a = dyn->n.x87stack;
+    if(a) {
+        MESSAGE(LOG_DUMP, "\tSync x87 Count of %d-----\n", a);
+        // Add x87stack to emu fpu_stack
+        LDRw_U12(s2, xEmu, offsetof(x64emu_t, fpu_stack));
+        if(a>0) {
+            ADDw_U12(s2, s2, a);
+        } else {
+            SUBw_U12(s2, s2, -a);
+        }
+        STRw_U12(s2, xEmu, offsetof(x64emu_t, fpu_stack));
+        // Sub x87stack to top, with and 7
+        LDRw_U12(s2, xEmu, offsetof(x64emu_t, top));
+        if(a>0) {
+            SUBw_U12(s2, s2, a);
+        } else {
+            ADDw_U12(s2, s2, -a);
+        }
+        ANDw_mask(s2, s2, 0, 2);  //mask=7
+        STRw_U12(s2, xEmu, offsetof(x64emu_t, top));
+        // update tags
+        LDRH_U12(s1, xEmu, offsetof(x64emu_t, fpu_tags));
+        if(a>0) {
+            LSLw_IMM(s1, s1, a*2);
+        } else {
+            ORRw_mask(s1, s1, 0b010000, 0b001111);  // 0xffff0000
+            LSRw_IMM(s1, s1, -a*2);
+        }
+        STRH_U12(s1, xEmu, offsetof(x64emu_t, fpu_tags));
+        MESSAGE(LOG_DUMP, "\t-----Sync x87 Count\n");
+    }
+}
 static void x87_reflectcache(dynarec_arm_t* dyn, int ninst, int s1, int s2, int s3)
 {
     // Synch top & stack counter
@@ -1248,7 +1283,7 @@ static void x87_reflectcache(dynarec_arm_t* dyn, int ninst, int s1, int s2, int 
         }
 }
 
-static void x87_unreflectcache(dynarec_arm_t* dyn, int ninst, int s1, int s2, int s3)
+void x87_unreflectcount(dynarec_arm_t* dyn, int ninst, int s1, int s2)
 {
     // go back with the top & stack counter
     int a = dyn->n.x87stack;
@@ -2217,7 +2252,7 @@ static void fpuCacheTransform(dynarec_arm_t* dyn, int ninst, int s1, int s2, int
     neoncache_t cache = dyn->n;
     int s1_val = 0;
     int s2_val = 0;
-    // unload every uneeded cache
+    // unload every unneeded cache
     // ymm0 first
     int s3_top = 1;
     uint16_t to_purge = dyn->ymm_zero&~dyn->insts[i2].ymm0_in;
@@ -2233,7 +2268,7 @@ static void fpuCacheTransform(dynarec_arm_t* dyn, int ninst, int s1, int s2, int
             }
     }
     s3_top = 0xffff;
-    // check SSE first, than MMX, in order, to optimise successive memory write
+    // check SSE first, than MMX, in order, to optimize successive memory write
     for(int i=0; i<16; ++i) {
         int j=findCacheSlot(dyn, ninst, NEON_CACHE_XMMW, i, &cache);
         if(j>=0 && findCacheSlot(dyn, ninst, NEON_CACHE_XMMW, i, &cache_i2)==-1)
@@ -2504,7 +2539,7 @@ void fpu_reflectcache(dynarec_arm_t* dyn, int ninst, int s1, int s2, int s3)
 void fpu_unreflectcache(dynarec_arm_t* dyn, int ninst, int s1, int s2, int s3)
 {
     // need to undo some things on the x87 tracking
-    x87_unreflectcache(dyn, ninst, s1, s2, s3);
+    x87_unreflectcount(dyn, ninst, s1, s2);
 }
 
 void emit_pf(dynarec_arm_t* dyn, int ninst, int s1, int s4)
@@ -2609,10 +2644,10 @@ void fpu_reset_cache(dynarec_arm_t* dyn, int ninst, int reset_n)
     dyn->ymm_zero = dyn->insts[reset_n].ymm0_out;
     #endif
     #if STEP == 0
-    if(box64_dynarec_dump && dyn->n.x87stack) dynarec_log(LOG_NONE, "New x87stack=%d at ResetCache in inst %d with %d\n", dyn->n.x87stack, ninst, reset_n);
+    if(BOX64ENV(dynarec_dump) && dyn->n.x87stack) dynarec_log(LOG_NONE, "New x87stack=%d at ResetCache in inst %d with %d\n", dyn->n.x87stack, ninst, reset_n);
         #endif
     #if defined(HAVE_TRACE) && (STEP>2)
-    if(box64_dynarec_dump && 0) //disable for now, need more work
+    if(BOX64ENV(dynarec_dump) && 0) //disable for now, need more work
         if(memcmp(&dyn->n, &dyn->insts[reset_n].n, sizeof(neoncache_t))) {
             MESSAGE(LOG_DEBUG, "Warning, difference in neoncache: reset=");
             for(int i=0; i<32; ++i)

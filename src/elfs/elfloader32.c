@@ -118,9 +118,9 @@ static void GrabX32CopyMainElfReloc(elfheader_t* head)
 void checkHookedSymbols(elfheader_t* h);
 void AddSymbols32(lib_t *maplib, elfheader_t* h)
 {
-    //if(box64_dump && h->hash)   old_elf_hash_dump(h);
-    //if(box64_dump && h->gnu_hash)   new_elf_hash_dump(h);
-    if(box64_dump && h->DynSym._32) DumpDynSym32(h);
+    // if(BOX64ENV(dump) && h->hash)   old_elf_hash_dump(h);
+    // if(BOX64ENV(dump) && h->gnu_hash)   new_elf_hash_dump(h);
+    if (BOX64ENV(dump) && h->DynSym._32) DumpDynSym32(h);
     if(h==my_context->elfs[0]) 
         GrabX32CopyMainElfReloc(h);
     #ifndef STATICBUILD
@@ -132,7 +132,7 @@ int AllocLoadElfMemory32(box64context_t* context, elfheader_t* head, int mainbin
 {
     ptr_t offs = 0;
     loadProtectionFromMap();
-    int log_level = box64_load_addr?LOG_INFO:LOG_DEBUG;
+    int log_level = BOX64ENV(load_addr)?LOG_INFO:LOG_DEBUG;
 
     head->multiblock_n = 0; // count PHEntrie with LOAD
     uintptr_t max_align = (box64_pagesize-1);
@@ -141,10 +141,10 @@ int AllocLoadElfMemory32(box64context_t* context, elfheader_t* head, int mainbin
             ++head->multiblock_n;
         }
 
-    if(!head->vaddr && box64_load_addr) {
-        offs = to_ptrv(find31bitBlockNearHint((void*)box64_load_addr, head->memsz, max_align));
-        box64_load_addr = offs + head->memsz;
-        box64_load_addr = (box64_load_addr+0x10ffffff)&~0xffffff;
+    if(!head->vaddr && BOX64ENV(load_addr)) {
+        offs = to_ptrv(find31bitBlockNearHint((void*)BOX64ENV(load_addr), head->memsz, max_align));
+        BOX64ENV(load_addr) = offs + head->memsz;
+        BOX64ENV(load_addr) = (BOX64ENV(load_addr)+0x10ffffff)&~0xffffff;
     }
     if(!offs && !head->vaddr)
         offs = (uintptr_t)find31bitBlockElf(head->memsz, mainbin, max_align);
@@ -311,7 +311,7 @@ int AllocLoadElfMemory32(box64context_t* context, elfheader_t* head, int mainbin
                     mprotect((void*)paddr, asize, prot);
             }
 #ifdef DYNAREC
-            if(box64_dynarec && (e->p_flags & PF_X)) {
+            if(BOX64ENV(dynarec) && (e->p_flags & PF_X)) {
                 dynarec_log(LOG_DEBUG, "Add ELF eXecutable Memory %p:%p\n", head->multiblocks[n].p, (void*)head->multiblocks[n].asize);
                 addDBFromAddressRange((uintptr_t)head->multiblocks[n].p, head->multiblocks[n].asize);
             }
@@ -336,7 +336,8 @@ int AllocLoadElfMemory32(box64context_t* context, elfheader_t* head, int mainbin
                 memset(dest+e->p_filesz, 0, e->p_memsz - e->p_filesz);
         }
     }
-
+    // record map
+    RecordEnvMappings((uintptr_t)head->image, head->memsz, head->fileno);
     // can close the elf file now!
     fclose(head->file);
     head->file = NULL;
@@ -407,7 +408,7 @@ static int FindR386COPYRel(elfheader_t* h, const char* name, ptr_t *offs, uint32
             if((t==R_386_COPY) && symname && !strcmp(symname, name) && (sym->st_size==size)) {
                 int version2 = h->VerSym?((Elf32_Half*)((uintptr_t)h->VerSym+h->delta))[ELF32_R_SYM(rel[i].r_info)]:-1;
                 if(version2!=-1) version2 &= 0x7fff;
-                if(version && !version2) version2=-1;   // match a versionned symbol against a global "local" symbol
+                if(version && !version2) version2=-1;   // match a versioned symbol against a global "local" symbol
                 const char* vername2 = GetSymbolVersion(h, version2);
                 Elf32_Half flags = GetSymbolVersionFlag(h, version2);
                 int veropt2 = flags?0:1;

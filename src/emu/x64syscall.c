@@ -34,6 +34,7 @@
 #include "callback.h"
 #include "signals.h"
 #include "x64tls.h"
+#include "elfloader.h"
 
 typedef struct x64_sigaction_s x64_sigaction_t;
 typedef struct x64_stack_s x64_stack_t;
@@ -294,6 +295,7 @@ static const scwrap_t syscallwrap[] = {
     //[317] = {__NR_seccomp, 3},
     [318] = {__NR_getrandom, 3},
     [319] = {__NR_memfd_create, 2},
+    //[323] = {__NR_userfaultfd, 1}, //disable for now
     [324] = {__NR_membarrier, 2},
     #ifdef __NR_copy_file_range
     // TODO: call back if unavailable?
@@ -305,6 +307,9 @@ static const scwrap_t syscallwrap[] = {
     #endif
     #ifdef __NR_fchmodat4
     [434] = {__NR_fchmodat4, 4},
+    #endif
+    #ifdef __NR_faccessat2
+    [439] = {__NR_faccessat2, 4},
     #endif
     #ifdef __NR_landlock_create_ruleset	
     [444] = {__NR_landlock_create_ruleset, 3},
@@ -404,36 +409,58 @@ typedef struct old_utsname_s {
 //    int  xss;
 //};
 
+typedef struct clone_s {
+    x64emu_t* emu;
+    void* stack2free;
+} clone_t;
+
 static int clone_fn(void* arg)
 {
-    x64emu_t *emu = (x64emu_t*)arg;
+    clone_t* args = arg;
+    x64emu_t *emu = args->emu;
+    thread_forget_emu();
     thread_set_emu(emu);
     R_RAX = 0;
     DynaRun(emu);
     int ret = R_EAX;
     FreeX64Emu(&emu);
-    my_context->stack_clone_used = 0;
-    return ret;
+    void* stack2free = args->stack2free;
+    box_free(args);
+    if(my_context->stack_clone_used && !stack2free)
+        my_context->stack_clone_used = 0;
+    if(stack2free)
+        box_free(stack2free);   // this free the stack, so it will crash very soon!
+    _exit(ret);
 }
 
 void EXPORT x64Syscall(x64emu_t *emu)
 {
     RESET_FLAGS(emu);
     uint32_t s = R_EAX; // EAX? (syscalls only go up to 547 anyways)
+    // check if it's a wine process, then filter the syscall (simulate SECCMP)
+    if(box64_wine && !box64_is32bits) {
+        //64bits only here...
+        uintptr_t ret_addr = R_RIP-2;
+        if(/*ret_addr<0x700000000000LL &&*/ (my_context->signals[SIGSYS]>2) && !FindElfAddress(my_context, ret_addr)) {
+            // not a linux elf, not a syscall to setup x86_64 arch. Signal SIGSYS
+            emit_signal(emu, SIGSYS, (void*)ret_addr, R_EAX&0xffff);  // what are the parameters?
+            return;
+        }
+    }
     int log = 0;
     char t_buff[256] = "\0";
     char t_buffret[128] = "\0";
     char buff2[64] = "\0";
     char* buff = NULL;
     char* buffret = NULL;
-    if(box64_log>=LOG_DEBUG || cycle_log) {
+    if(BOX64ENV(log) >= LOG_DEBUG || BOX64ENV(rolling_log)) {
         log = 1;
-        buff = cycle_log?my_context->log_call[my_context->current_line]:t_buff;
-        buffret = cycle_log?my_context->log_ret[my_context->current_line]:t_buffret;
-        if(cycle_log)
-            my_context->current_line = (my_context->current_line+1)%cycle_log;
+        buff = BOX64ENV(rolling_log)?my_context->log_call[my_context->current_line]:t_buff;
+        buffret = BOX64ENV(rolling_log)?my_context->log_ret[my_context->current_line]:t_buffret;
+        if(BOX64ENV(rolling_log))
+            my_context->current_line = (my_context->current_line+1)%BOX64ENV(rolling_log);
         snprintf(buff, 255, "%04d|%p: Calling syscall 0x%02X (%d) %p %p %p %p %p %p", GetTID(), (void*)R_RIP, s, s, (void*)R_RDI, (void*)R_RSI, (void*)R_RDX, (void*)R_R10, (void*)R_R8, (void*)R_R9);
-        if(!cycle_log)
+        if(!BOX64ENV(rolling_log))
             printf_log(LOG_NONE, "%s", buff);
     }
     // check wrapper first
@@ -456,7 +483,7 @@ void EXPORT x64Syscall(x64emu_t *emu)
         if(S_RAX==-1 && errno>0)
             S_RAX = -errno;
         if(log) snprintf(buffret, 127, "0x%x%s", R_EAX, buff2);
-        if(log && !cycle_log) printf_log(LOG_NONE, "=> %s\n", buffret);
+        if(log && !BOX64ENV(rolling_log)) printf_log(LOG_NONE, "=> %s\n", buffret);
         return;
     }
     switch (s) {
@@ -589,37 +616,22 @@ void EXPORT x64Syscall(x64emu_t *emu)
                     void* stack_base = (void*)R_RSI;
                     int stack_size = 0;
                     uintptr_t sp = R_RSI;
-                    if(!R_RSI) {
-                        // allocate a new stack...
-                        int currstack = 0;
-                        if((R_RSP>=(uintptr_t)emu->init_stack) && (R_RSP<=((uintptr_t)emu->init_stack+emu->size_stack)))
-                            currstack = 1;
-                        stack_size = (currstack && emu->size_stack)?emu->size_stack:(1024*1024);
-                        stack_base = mmap(NULL, stack_size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_GROWSDOWN, -1, 0);
-                        // copy value from old stack to new stack
-                        if(currstack) {
-                            memcpy(stack_base, emu->init_stack, stack_size);
-                            sp = (uintptr_t)emu->init_stack + R_RSP - (uintptr_t)stack_base;
-                        } else {
-                            int size_to_copy = (uintptr_t)emu->init_stack + emu->size_stack - (R_RSP);
-                            memcpy(stack_base+stack_size-size_to_copy, (void*)R_RSP, size_to_copy);
-                            sp = (uintptr_t)stack_base+stack_size-size_to_copy;
-                        }
-                    }
                     x64emu_t * newemu = NewX64Emu(emu->context, R_RIP, (uintptr_t)stack_base, stack_size, (R_RSI)?0:1);
                     SetupX64Emu(newemu, emu);
                     CloneEmu(newemu, emu);
+                    clone_t* args = box_calloc(1, sizeof(clone_t));
                     newemu->regs[_SP].q[0] = sp;  // setup new stack pointer
+                    args->emu = newemu;
                     void* mystack = NULL;
                     if(my_context->stack_clone_used) {
-                        mystack = box_malloc(1024*1024);  // stack for own process... memory leak, but no practical way to remove it
+                        args->stack2free = mystack = box_malloc(1024*1024);  // stack for own process...
                     } else {
                         if(!my_context->stack_clone)
                             my_context->stack_clone = box_malloc(1024*1024);
                         mystack = my_context->stack_clone;
                         my_context->stack_clone_used = 1;
                     }
-                    int64_t ret = clone(clone_fn, (void*)((uintptr_t)mystack+1024*1024), R_RDI, newemu, R_RDX, R_R8, R_R10);
+                    int64_t ret = clone(clone_fn, (void*)((uintptr_t)mystack+1024*1024), R_RDI, args, R_RDX, R_R8, R_R10);
                     S_RAX = ret;
                 }
                 else
@@ -827,9 +839,16 @@ void EXPORT x64Syscall(x64emu_t *emu)
                 S_RAX = -errno;
             break;
         #endif
+        #ifndef __NR_faccessat2
+        case 439:
+            S_RAX = faccessat(S_EDI, (void*)R_RSI, (mode_t)R_RDX, S_R10d);
+            if(S_RAX==-1)
+                S_RAX = -errno;
+            break;
+        #endif
         case 449:
             #ifdef __NR_futex_waitv
-            if(box64_futex_waitv)
+            if(BOX64ENV(futex_waitv))
                 S_RAX = syscall(__NR_futex_waitv, R_RDI, R_RSI, R_RDX, R_R10, R_R8);
             else
             #endif
@@ -842,7 +861,7 @@ void EXPORT x64Syscall(x64emu_t *emu)
             return;
     }
     if(log) snprintf(buffret, 127, "0x%lx%s", R_RAX, buff2);
-    if(log && !cycle_log) printf_log(LOG_NONE, "=> %s\n", buffret);
+    if(log && !BOX64ENV(rolling_log)) printf_log(LOG_NONE, "=> %s\n", buffret);
 }
 
 #define stack(n) (R_RSP+8+n)
@@ -1105,9 +1124,13 @@ long EXPORT my_syscall(x64emu_t *emu)
         case 434:
             return fchmodat(S_ESI, (void*)R_RDX, (mode_t)R_RCX, S_R8d);
         #endif
+        #ifndef __NR_faccessat2
+        case 439:
+            return faccessat(S_ESI, (void*)R_RDX, (mode_t)R_RCX, S_R8d);
+        #endif
         case 449:
             #ifdef __NR_futex_waitv
-            if(box64_futex_waitv)
+            if(BOX64ENV(futex_waitv))
                 return syscall(__NR_futex_waitv, R_RSI, R_RDX, R_RCX, R_R8, R_R9);
             else
             #endif

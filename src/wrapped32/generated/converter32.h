@@ -96,6 +96,14 @@ typedef struct struct_LLLLLLLLLLLLLLLLLL_s {
 } struct_LLLLLLLLLLLLLLLLLL_t;
 void from_struct_LLLLLLLLLLLLLLLLLL(struct_LLLLLLLLLLLLLLLLLL_t *dest, ptr_t src);
 void to_struct_LLLLLLLLLLLLLLLLLL(ptr_t dest, const struct_LLLLLLLLLLLLLLLLLL_t *src);
+typedef struct struct_LpCC_s {
+	unsigned long L0;
+	void* p1;
+	uint8_t C2;
+	uint8_t C3;
+} struct_LpCC_t;
+void from_struct_LpCC(struct_LpCC_t *dest, ptr_t src);
+void to_struct_LpCC(ptr_t dest, const struct_LpCC_t *src);
 typedef struct struct_h_s {
 	uintptr_t h0;
 } struct_h_t;
@@ -106,6 +114,12 @@ typedef struct struct_H_s {
 } struct_H_t;
 void from_struct_H(struct_H_t *dest, ptr_t src);
 void to_struct_H(ptr_t dest, const struct_H_t *src);
+typedef struct struct_pL_s {
+	void* p0;
+	unsigned long L1;
+} struct_pL_t;
+void from_struct_pL(struct_pL_t *dest, ptr_t src);
+void to_struct_pL(ptr_t dest, const struct_pL_t *src);
 typedef struct struct_ppppii_s {
 	void* p0;
 	void* p1;
@@ -146,6 +160,27 @@ typedef struct struct_up_s {
 } struct_up_t;
 void from_struct_up(struct_up_t *dest, ptr_t src);
 void to_struct_up(ptr_t dest, const struct_up_t *src);
+typedef struct struct_upi_s {
+	uint32_t u0;
+	void* p1;
+	int i2;
+} struct_upi_t;
+void from_struct_upi(struct_upi_t *dest, ptr_t src);
+void to_struct_upi(ptr_t dest, const struct_upi_t *src);
+typedef struct struct_Ldd_s {
+	unsigned long L0;
+	double d1;
+	double d2;
+} struct_Ldd_t;
+void from_struct_Ldd(struct_Ldd_t *dest, ptr_t src);
+void to_struct_Ldd(ptr_t dest, const struct_Ldd_t *src);
+typedef struct struct_upu_s {
+	uint32_t u0;
+	void* p1;
+	uint32_t u2;
+} struct_upu_t;
+void from_struct_upu(struct_upu_t *dest, ptr_t src);
+void to_struct_upu(ptr_t dest, const struct_upu_t *src);
 typedef struct struct_LWWWcc_s {
 	unsigned long L0;
 	unsigned short W1;
@@ -242,6 +277,12 @@ typedef struct struct_pp_s {
 } struct_pp_t;
 void from_struct_pp(struct_pp_t *dest, ptr_t src);
 void to_struct_pp(ptr_t dest, const struct_pp_t *src);
+typedef struct struct_pu_s {
+	void* p0;
+	uint32_t u1;
+} struct_pu_t;
+void from_struct_pu(struct_pu_t *dest, ptr_t src);
+void to_struct_pu(ptr_t dest, const struct_pu_t *src);
 typedef struct struct_ppi_s {
 	void* p0;
 	void* p1;
@@ -263,6 +304,13 @@ typedef struct struct_puu_s {
 } struct_puu_t;
 void from_struct_puu(struct_puu_t *dest, ptr_t src);
 void to_struct_puu(ptr_t dest, const struct_puu_t *src);
+typedef struct struct_pii_s {
+	void* p0;
+	int i1;
+	int i2;
+} struct_pii_t;
+void from_struct_pii(struct_pii_t *dest, ptr_t src);
+void to_struct_pii(ptr_t dest, const struct_pii_t *src);
 typedef struct struct_piiL_s {
 	void* p0;
 	int i1;
@@ -285,6 +333,14 @@ typedef struct struct_ppup_s {
 	uint32_t u2;
 	void* p3;
 } struct_ppup_t;
+typedef struct struct_ipip_s {
+	int i0;
+	void* p1;
+	int i2;
+	void* p3;
+} struct_ipip_t;
+void from_struct_ipip(struct_ipip_t *dest, ptr_t src);
+void to_struct_ipip(ptr_t dest, const struct_ipip_t *src);
 void from_struct_ppup(struct_ppup_t *dest, ptr_t src);
 void to_struct_ppup(ptr_t dest, const struct_ppup_t *src);
 typedef struct struct_iiiiiLi_s {
@@ -396,5 +452,49 @@ typedef struct struct_WWWWWWWWWuip_s {
 } struct_WWWWWWWWWuip_t;
 void from_struct_WWWWWWWWWuip(struct_WWWWWWWWWuip_t *dest, ptr_t src);
 void to_struct_WWWWWWWWWuip(ptr_t dest, const struct_WWWWWWWWWuip_t *src);
+typedef struct struct_LiiwwwwwwwwL_s {
+	unsigned long L0;
+	int i1;
+	int i2;
+	short w3;
+	short w4;
+	short w5;
+	short w6;
+	short w7;
+	short w8;
+	short w9;
+	short w10;
+	unsigned long L11;
+} struct_LiiwwwwwwwwL_t;
+void from_struct_LiiwwwwwwwwL(struct_LiiwwwwwwwwL_t *dest, ptr_t src);
+void to_struct_LiiwwwwwwwwL(ptr_t dest, const struct_LiiwwwwwwwwL_t *src);
+typedef struct struct_iLiiiiLiiiiLi_s {
+	int i0;
+	unsigned long L1;
+	int i2;
+	int i3;
+	int i4;
+	int i5;
+	unsigned long L6;
+	int i7;
+	int i8;
+	int i9;
+	int i10;
+	unsigned long L11;
+	int i12;
+} struct_iLiiiiLiiiiLi_t;
+void from_struct_iLiiiiLiiiiLi(struct_iLiiiiLiiiiLi_t* dest, ptr_t src);
+void to_struct_iLiiiiLiiiiLi(ptr_t dest, const struct_iLiiiiLiiiiLi_t* src);
+typedef struct struct_pppiiip_s {
+	void* p0;
+	void* p1;
+	void* p2;
+	int i3;
+	int i4;
+	int i5;
+	void* p6;
+} struct_pppiiip_t;
+void from_struct_pppiiip(struct_pppiiip_t *dest, ptr_t src);
+void to_struct_pppiiip(ptr_t dest, const struct_pppiiip_t *src);
 
 #endif // __CONVERTER_H_

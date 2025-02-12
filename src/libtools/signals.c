@@ -31,10 +31,13 @@
 #include "threads.h"
 #include "emu/x87emu_private.h"
 #include "custommem.h"
+#include "bridge.h"
+#include "khash.h"
 #ifdef DYNAREC
 #include "dynablock.h"
 #include "../dynarec/dynablock_private.h"
 #include "dynarec_native.h"
+#include "dynarec/dynarec_arch.h"
 #endif
 
 
@@ -273,6 +276,12 @@ x64_stack_t* sigstack_getstack() {
     return (x64_stack_t*)pthread_getspecific(sigstack_key);
 }
 
+#ifndef DYNAREC
+typedef void dynablock_t;
+dynablock_t* FindDynablockFromNativeAddress(void* addr) {return NULL;}
+uintptr_t getX64Address(dynablock_t* db, uintptr_t pc) {return 0;}
+#endif
+
 // this allow handling "safe" function that just abort if accessing a bad address
 static __thread JUMPBUFF signal_jmpbuf;
 #ifdef ANDROID
@@ -293,7 +302,7 @@ uint64_t RunFunctionHandler(x64emu_t* emu, int* exit, int dynarec, x64_ucontext_
         va_start (va, nargs);
         int sig = va_arg(va, int);
         va_end (va);
-        printf_log(LOG_NONE, "%04d|BOX64: Warning, calling Signal %d function handler %s\n", GetTID(), sig, fnc?"SIG_IGN":"SIG_DFL");
+        printf_log(LOG_NONE, "%04d|Warning, calling Signal %d function handler %s\n", GetTID(), sig, fnc?"SIG_IGN":"SIG_DFL");
         if(fnc==0) {
             printf_log(LOG_NONE, "Unhandled signal caught, aborting\n");
             abort();
@@ -314,7 +323,7 @@ uint64_t RunFunctionHandler(x64emu_t* emu, int* exit, int dynarec, x64_ucontext_
     if(!emu)
         emu = thread_get_emu();
     #ifdef DYNAREC
-    if(box64_dynarec_test)
+    if (BOX64ENV(dynarec_test))
         emu->test.test = 0;
     #endif
 
@@ -365,11 +374,11 @@ uint64_t RunFunctionHandler(x64emu_t* emu, int* exit, int dynarec, x64_ucontext_
     emu->flags.quitonlongjmp = oldquitonlongjmp;
 
     #ifdef DYNAREC
-    if(box64_dynarec_test) {
+    if (BOX64ENV(dynarec_test)) {
         emu->test.test = 0;
         emu->test.clean = 0;
     }
-    #endif
+#endif
 
     if(emu->flags.longjmp) {
         // longjmp inside signal handler, lets grab all relevent value and do the actual longjmp in the signal handler
@@ -444,6 +453,7 @@ EXPORT int my_sigaltstack(x64emu_t* emu, const x64_stack_t* ss, x64_stack_t* oss
     printf_log(LOG_DEBUG, "%04d|sigaltstack called ss=%p[flags=0x%x, sp=%p, ss=0x%lx], oss=%p\n", GetTID(), ss, ss->ss_flags, ss->ss_sp, ss->ss_size, oss);
     if(ss->ss_flags && ss->ss_flags!=SS_DISABLE && ss->ss_flags!=SS_ONSTACK) {
         errno = EINVAL;
+        signal_jmpbuf_active = 0;
         return -1;
     }
 
@@ -490,6 +500,31 @@ uintptr_t getX64Address(dynablock_t* db, uintptr_t native_addr)
     } while(db->instsize[i].x64 || db->instsize[i].nat);
     return x64addr;
 }
+int getX64AddressInst(dynablock_t* db, uintptr_t x64pc)
+{
+    uintptr_t x64addr = (uintptr_t)db->x64_addr;
+    uintptr_t armaddr = (uintptr_t)db->block;
+    int ret = 0;
+    if(x64pc<(uintptr_t)db->x64_addr || x64pc>(uintptr_t)db->x64_addr+db->x64_size)
+        return -1;
+    int i = 0;
+    do {
+        int x64sz = 0;
+        int armsz = 0;
+        do {
+            x64sz+=db->instsize[i].x64;
+            armsz+=db->instsize[i].nat*4;
+            ++i;
+        } while((db->instsize[i-1].x64==15) || (db->instsize[i-1].nat==15));
+        // if the opcode is a NOP on ARM side (so armsz==0), it cannot be an address to find
+        if((x64pc>=x64addr) && (x64pc<(x64addr+x64sz)))
+            return ret;
+        armaddr+=armsz;
+        x64addr+=x64sz;
+        ret++;
+    } while(db->instsize[i].x64 || db->instsize[i].nat);
+    return ret;
+}
 x64emu_t* getEmuSignal(x64emu_t* emu, ucontext_t* p, dynablock_t* db)
 {
 #if defined(ARM64)
@@ -501,8 +536,8 @@ x64emu_t* getEmuSignal(x64emu_t* emu, ucontext_t* p, dynablock_t* db)
             emu = (x64emu_t*)p->uc_mcontext.__gregs[4];
         }
 #elif defined(RV64)
-        if(db && p->uc_mcontext.__gregs[10]>0x10000) {
-            emu = (x64emu_t*)p->uc_mcontext.__gregs[10];
+        if(db && p->uc_mcontext.__gregs[25]>0x10000) {
+            emu = (x64emu_t*)p->uc_mcontext.__gregs[25];
         }
 #else
 #error Unsupported Architecture
@@ -584,58 +619,93 @@ void copyUCTXreg2Emu(x64emu_t* emu, ucontext_t* p, uintptr_t ip) {
     emu->ip.q[0] = ip;
     emu->eflags.x64 = p->uc_mcontext.regs[26];
 #elif defined(LA64)
-        emu->regs[_AX].q[0] = p->uc_mcontext.__gregs[12];
-        emu->regs[_CX].q[0] = p->uc_mcontext.__gregs[13];
-        emu->regs[_DX].q[0] = p->uc_mcontext.__gregs[14];
-        emu->regs[_BX].q[0] = p->uc_mcontext.__gregs[15];
-        emu->regs[_SP].q[0] = p->uc_mcontext.__gregs[16];
-        emu->regs[_BP].q[0] = p->uc_mcontext.__gregs[17];
-        emu->regs[_SI].q[0] = p->uc_mcontext.__gregs[18];
-        emu->regs[_DI].q[0] = p->uc_mcontext.__gregs[19];
-        emu->regs[_R8].q[0] = p->uc_mcontext.__gregs[23];
-        emu->regs[_R9].q[0] = p->uc_mcontext.__gregs[24];
-        emu->regs[_R10].q[0] = p->uc_mcontext.__gregs[25];
-        emu->regs[_R11].q[0] = p->uc_mcontext.__gregs[26];
-        emu->regs[_R12].q[0] = p->uc_mcontext.__gregs[27];
-        emu->regs[_R13].q[0] = p->uc_mcontext.__gregs[28];
-        emu->regs[_R14].q[0] = p->uc_mcontext.__gregs[29];
-        emu->regs[_R15].q[0] = p->uc_mcontext.__gregs[30];
-        emu->ip.q[0] = ip;
-        emu->eflags.x64 = p->uc_mcontext.__gregs[31];
+    emu->regs[_AX].q[0] = p->uc_mcontext.__gregs[12];
+    emu->regs[_CX].q[0] = p->uc_mcontext.__gregs[13];
+    emu->regs[_DX].q[0] = p->uc_mcontext.__gregs[14];
+    emu->regs[_BX].q[0] = p->uc_mcontext.__gregs[15];
+    emu->regs[_SP].q[0] = p->uc_mcontext.__gregs[16];
+    emu->regs[_BP].q[0] = p->uc_mcontext.__gregs[17];
+    emu->regs[_SI].q[0] = p->uc_mcontext.__gregs[18];
+    emu->regs[_DI].q[0] = p->uc_mcontext.__gregs[19];
+    emu->regs[_R8].q[0] = p->uc_mcontext.__gregs[23];
+    emu->regs[_R9].q[0] = p->uc_mcontext.__gregs[24];
+    emu->regs[_R10].q[0] = p->uc_mcontext.__gregs[25];
+    emu->regs[_R11].q[0] = p->uc_mcontext.__gregs[26];
+    emu->regs[_R12].q[0] = p->uc_mcontext.__gregs[27];
+    emu->regs[_R13].q[0] = p->uc_mcontext.__gregs[28];
+    emu->regs[_R14].q[0] = p->uc_mcontext.__gregs[29];
+    emu->regs[_R15].q[0] = p->uc_mcontext.__gregs[30];
+    emu->ip.q[0] = ip;
+    emu->eflags.x64 = p->uc_mcontext.__gregs[31];
 #elif defined(RV64)
-        emu->regs[_AX].q[0] = p->uc_mcontext.__gregs[16];
-        emu->regs[_CX].q[0] = p->uc_mcontext.__gregs[17];
-        emu->regs[_DX].q[0] = p->uc_mcontext.__gregs[18];
-        emu->regs[_BX].q[0] = p->uc_mcontext.__gregs[19];
-        emu->regs[_SP].q[0] = p->uc_mcontext.__gregs[20];
-        emu->regs[_BP].q[0] = p->uc_mcontext.__gregs[21];
-        emu->regs[_SI].q[0] = p->uc_mcontext.__gregs[22];
-        emu->regs[_DI].q[0] = p->uc_mcontext.__gregs[23];
-        emu->regs[_R8].q[0] = p->uc_mcontext.__gregs[24];
-        emu->regs[_R9].q[0] = p->uc_mcontext.__gregs[25];
-        emu->regs[_R10].q[0] = p->uc_mcontext.__gregs[26];
-        emu->regs[_R11].q[0] = p->uc_mcontext.__gregs[27];
-        emu->regs[_R12].q[0] = p->uc_mcontext.__gregs[28];
-        emu->regs[_R13].q[0] = p->uc_mcontext.__gregs[29];
-        emu->regs[_R14].q[0] = p->uc_mcontext.__gregs[30];
-        emu->regs[_R15].q[0] = p->uc_mcontext.__gregs[31];
-        emu->ip.q[0] = ip;
-        emu->eflags.x64 = p->uc_mcontext.__gregs[8];
+    emu->regs[_AX].q[0] = p->uc_mcontext.__gregs[16];
+    emu->regs[_CX].q[0] = p->uc_mcontext.__gregs[13];
+    emu->regs[_DX].q[0] = p->uc_mcontext.__gregs[12];
+    emu->regs[_BX].q[0] = p->uc_mcontext.__gregs[24];
+    emu->regs[_SP].q[0] = p->uc_mcontext.__gregs[9];
+    emu->regs[_BP].q[0] = p->uc_mcontext.__gregs[8];
+    emu->regs[_SI].q[0] = p->uc_mcontext.__gregs[11];
+    emu->regs[_DI].q[0] = p->uc_mcontext.__gregs[10];
+    emu->regs[_R8].q[0] = p->uc_mcontext.__gregs[14];
+    emu->regs[_R9].q[0] = p->uc_mcontext.__gregs[15];
+    emu->regs[_R10].q[0] = p->uc_mcontext.__gregs[26];
+    emu->regs[_R11].q[0] = p->uc_mcontext.__gregs[27];
+    emu->regs[_R12].q[0] = p->uc_mcontext.__gregs[18];
+    emu->regs[_R13].q[0] = p->uc_mcontext.__gregs[19];
+    emu->regs[_R14].q[0] = p->uc_mcontext.__gregs[20];
+    emu->regs[_R15].q[0] = p->uc_mcontext.__gregs[21];
+    emu->ip.q[0] = ip;
+    emu->eflags.x64 = p->uc_mcontext.__gregs[23];
 #else
 #error  Unsupported architecture
 #endif
 #endif
 }
 
-int sigbus_specialcases(siginfo_t* info, void * ucntx, void* pc, void* _fpsimd)
+KHASH_SET_INIT_INT64(unaligned)
+static kh_unaligned_t    *unaligned = NULL;
+
+void add_unaligned_address(uintptr_t addr)
+{
+    if(!unaligned)
+        unaligned = kh_init(unaligned);
+    khint_t k;
+    int ret;
+    k = kh_put(unaligned, unaligned, addr, &ret);    // just add
+}
+
+int is_addr_unaligned(uintptr_t addr)
+{
+    if(!unaligned)
+        return 0;
+    khint_t k = kh_get(unaligned, unaligned, addr);
+    return (k==kh_end(unaligned))?0:1;
+}
+
+#ifdef DYNAREC
+int mark_db_unaligned(dynablock_t* db, uintptr_t x64pc)
+{
+    add_unaligned_address(x64pc);
+    db->hash++; // dirty the block
+    MarkDynablock(db);      // and mark it
+if(BOX64ENV(showsegv)) printf_log(LOG_INFO, "Marked db %p as dirty, and address %p as needing unaligned handling\n", db, (void*)x64pc);
+    return 2;   // marked, exit handling...
+}
+#endif
+
+int sigbus_specialcases(siginfo_t* info, void * ucntx, void* pc, void* _fpsimd, dynablock_t* db, uintptr_t x64pc)
 {
     if((uintptr_t)pc<0x10000)
         return 0;
+#ifdef DYNAREC
+    if(ARCH_UNALIGNED(db, x64pc))
+        /*return*/ mark_db_unaligned(db, x64pc);    // don't force an exit for now
+#endif
 #ifdef ARM64
     ucontext_t *p = (ucontext_t *)ucntx;
     uint32_t opcode = *(uint32_t*)pc;
     struct fpsimd_context *fpsimd = (struct fpsimd_context *)_fpsimd;
-    //printf_log(LOG_INFO, "Checking SIGBUS special casses with pc=%p, opcode=%x, fpsimd=%p\n", pc, opcode, fpsimd);
+    //printf_log(LOG_INFO, "Checking SIGBUS special cases with pc=%p, opcode=%x, fpsimd=%p\n", pc, opcode, fpsimd);
     if((opcode&0b10111111110000000000000000000000)==0b10111001000000000000000000000000) {
         // this is STR
         int scale = (opcode>>30)&3;
@@ -921,23 +991,86 @@ int sigbus_specialcases(siginfo_t* info, void * ucntx, void* pc, void* _fpsimd)
         p->uc_mcontext.pc+=4;   // go to next opcode
         return 1;
     }
+    if((opcode&0b10111111111000000000110000000000) == 0b10111000010000000000010000000000) {
+        // this is a LDR postoffset
+        int size = 1<<((opcode>>30)&3);
+        int val = opcode&31;
+        int dest = (opcode>>5)&31;
+        int64_t offset = (opcode>>12)&0b111111111;
+        if((offset>>(9-1))&1)
+            offset |= (0xffffffffffffffffll<<9);
+        volatile uint8_t* addr = (void*)(p->uc_mcontext.regs[dest]);
+        uint64_t value = 0;
+        if(size==8 && (((uintptr_t)addr)&3)==0) {
+            for(int i=0; i<2; ++i)
+                value |= ((uint64_t)((volatile  uint32_t*)addr)[i]) << (i*32);
+        } else
+            for(int i=0; i<size; ++i)
+                value |= ((uint64_t)addr[i]) << (i*8);
+        p->uc_mcontext.regs[val] = value;
+        p->uc_mcontext.regs[dest] += offset;
+        p->uc_mcontext.pc+=4;   // go to next opcode
+        return 1;
+    }
+    if((opcode&0b10111111111000000000110000000000) == 0b10111000000000000000010000000000) {
+        // this is a STR postoffset
+        int size = 1<<((opcode>>30)&3);
+        int val = opcode&31;
+        int src = (opcode>>5)&31;
+        int64_t offset = (opcode>>12)&0b111111111;
+        if((offset>>(9-1))&1)
+            offset |= (0xffffffffffffffffll<<9);
+        volatile uint8_t* addr = (void*)(p->uc_mcontext.regs[src]);
+        uint64_t value = p->uc_mcontext.regs[val];
+        if(size==8 && (((uintptr_t)addr)&3)==0) {
+            for(int i=0; i<2; ++i)
+                ((volatile uint32_t*)addr)[i] = (value>>(i*32))&0xffffffff;
+        } else
+            for(int i=0; i<size; ++i)
+                addr[i] = (value>>(i*8))&0xff;
+        p->uc_mcontext.regs[src] += offset;
+        p->uc_mcontext.pc+=4;   // go to next opcode
+        return 1;
+    }
+#elif RV64
+#define GET_FIELD(v, high, low) (((v) >> low) & ((1ULL << (high - low + 1)) - 1))
+#define SIGN_EXT(val, val_sz) (((int32_t)(val) << (32 - (val_sz))) >> (32 - (val_sz)))
+
+    ucontext_t *p = (ucontext_t *)ucntx;
+    uint32_t inst = *(uint32_t*)pc;
+
+    uint32_t funct3 = GET_FIELD(inst, 14, 12);
+    uint32_t opcode = GET_FIELD(inst, 6, 0);
+    if ((opcode == 0b0100011 || opcode == 0b0100111 /* F */) && (funct3 == 0b010 /* (F)SW */ || funct3 == 0b011 /* (F)SD */ || funct3 == 0b001 /* SH */)) {
+        int val = (inst >> 20) & 0x1f;
+        int dest = (inst >> 15) & 0x1f;
+        int64_t imm = (GET_FIELD(inst, 31, 25) << 5) | (GET_FIELD(inst, 11, 7));
+        imm = SIGN_EXT(imm, 12);
+        volatile uint8_t *addr = (void *)(p->uc_mcontext.__gregs[dest] + imm);
+        uint64_t value = opcode == 0b0100011 ? p->uc_mcontext.__gregs[val] : p->uc_mcontext.__fpregs.__d.__f[val<<1];
+        for(int i = 0; i < (funct3 == 0b010 ? 4 : funct3 == 0b011 ? 8 : 2); ++i) {
+            addr[i] = (value >> (i * 8)) & 0xff;
+        }
+        p->uc_mcontext.__gregs[0] += 4; // pc += 4
+        return 1;
+    } else {
+        printf_log(LOG_NONE, "Unsupported SIGBUS special cases with pc=%p, opcode=%x\n", pc, inst);
+    }
+
+#undef GET_FIELD
+#undef SIGN_EXT
 #endif
     return 0;
+#undef CHECK
 }
 
 #ifdef BOX32
-void my_sigactionhandler_oldcode_32(int32_t sig, int simple, siginfo_t* info, void * ucntx, int* old_code, void* cur_db);
+void my_sigactionhandler_oldcode_32(x64emu_t* emu, int32_t sig, int simple, siginfo_t* info, void * ucntx, int* old_code, void* cur_db);
 #endif
-void my_sigactionhandler_oldcode(x64emu_t* emu, int32_t sig, int simple, siginfo_t* info, void * ucntx, int* old_code, void* cur_db)
+void my_sigactionhandler_oldcode_64(x64emu_t* emu, int32_t sig, int simple, siginfo_t* info, void * ucntx, int* old_code, void* cur_db)
 {
-    #ifdef BOX32
-    if(box64_is32bits) {
-        my_sigactionhandler_oldcode_32(sig, simple, info, ucntx, old_code, cur_db);
-        return;
-    }
-    #endif
     int Locks = unlockMutex();
-    int log_minimum = (box64_showsegv)?LOG_NONE:LOG_DEBUG;
+    int log_minimum = (BOX64ENV(showsegv))?LOG_NONE:LOG_DEBUG;
 
     printf_log(LOG_DEBUG, "Sigactionhanlder for signal #%d called (jump to %p/%s)\n", sig, (void*)my_context->signals[sig], GetNativeName((void*)my_context->signals[sig]));
 
@@ -972,7 +1105,7 @@ void my_sigactionhandler_oldcode(x64emu_t* emu, int32_t sig, int simple, siginfo
     if(p) {
         pc = (void*)p->uc_mcontext.__gregs[0];
         if(db)
-            frame = (uintptr_t)p->uc_mcontext.__gregs[16+_SP];
+            frame = (uintptr_t)p->uc_mcontext.__gregs[9];
     }
 #else
 #error Unsupported architecture
@@ -1026,76 +1159,11 @@ void my_sigactionhandler_oldcode(x64emu_t* emu, int32_t sig, int simple, siginfo
     sigcontext->uc_mcontext.gregs[X64_RBP] = R_RBP;
     sigcontext->uc_mcontext.gregs[X64_RSP] = R_RSP;
     sigcontext->uc_mcontext.gregs[X64_RBX] = R_RBX;
-    sigcontext->uc_mcontext.gregs[X64_RIP] = R_RIP;//emu->old_ip;   // old_ip should be more accurate as the "current" IP, but it's not always up-to-date
+    sigcontext->uc_mcontext.gregs[X64_RIP] = R_RIP;
     // flags
     sigcontext->uc_mcontext.gregs[X64_EFL] = emu->eflags.x64;
     // get segments
     sigcontext->uc_mcontext.gregs[X64_CSGSFS] = ((uint64_t)(R_CS)) | (((uint64_t)(R_GS))<<16) | (((uint64_t)(R_FS))<<32);
-#if defined(DYNAREC)
-#if defined(ARM64)
-    if(db && p) {
-        sigcontext->uc_mcontext.gregs[X64_RAX] = p->uc_mcontext.regs[10];
-        sigcontext->uc_mcontext.gregs[X64_RCX] = p->uc_mcontext.regs[11];
-        sigcontext->uc_mcontext.gregs[X64_RDX] = p->uc_mcontext.regs[12];
-        sigcontext->uc_mcontext.gregs[X64_RBX] = p->uc_mcontext.regs[13];
-        sigcontext->uc_mcontext.gregs[X64_RSP] = p->uc_mcontext.regs[14];
-        sigcontext->uc_mcontext.gregs[X64_RBP] = p->uc_mcontext.regs[15];
-        sigcontext->uc_mcontext.gregs[X64_RSI] = p->uc_mcontext.regs[16];
-        sigcontext->uc_mcontext.gregs[X64_RDI] = p->uc_mcontext.regs[17];
-        sigcontext->uc_mcontext.gregs[X64_R8] = p->uc_mcontext.regs[18];
-        sigcontext->uc_mcontext.gregs[X64_R9] = p->uc_mcontext.regs[19];
-        sigcontext->uc_mcontext.gregs[X64_R10] = p->uc_mcontext.regs[20];
-        sigcontext->uc_mcontext.gregs[X64_R11] = p->uc_mcontext.regs[21];
-        sigcontext->uc_mcontext.gregs[X64_R12] = p->uc_mcontext.regs[22];
-        sigcontext->uc_mcontext.gregs[X64_R13] = p->uc_mcontext.regs[23];
-        sigcontext->uc_mcontext.gregs[X64_R14] = p->uc_mcontext.regs[24];
-        sigcontext->uc_mcontext.gregs[X64_R15] = p->uc_mcontext.regs[25];
-        sigcontext->uc_mcontext.gregs[X64_RIP] = getX64Address(db, (uintptr_t)pc);
-    }
-#elif defined(LA64)
-    if(db && p) {
-        sigcontext->uc_mcontext.gregs[X64_RAX] = p->uc_mcontext.__gregs[12];
-        sigcontext->uc_mcontext.gregs[X64_RCX] = p->uc_mcontext.__gregs[13];
-        sigcontext->uc_mcontext.gregs[X64_RDX] = p->uc_mcontext.__gregs[14];
-        sigcontext->uc_mcontext.gregs[X64_RBX] = p->uc_mcontext.__gregs[15];
-        sigcontext->uc_mcontext.gregs[X64_RSP] = p->uc_mcontext.__gregs[16];
-        sigcontext->uc_mcontext.gregs[X64_RBP] = p->uc_mcontext.__gregs[17];
-        sigcontext->uc_mcontext.gregs[X64_RSI] = p->uc_mcontext.__gregs[18];
-        sigcontext->uc_mcontext.gregs[X64_RDI] = p->uc_mcontext.__gregs[19];
-        sigcontext->uc_mcontext.gregs[X64_R8] = p->uc_mcontext.__gregs[23];
-        sigcontext->uc_mcontext.gregs[X64_R9] = p->uc_mcontext.__gregs[24];
-        sigcontext->uc_mcontext.gregs[X64_R10] = p->uc_mcontext.__gregs[25];
-        sigcontext->uc_mcontext.gregs[X64_R11] = p->uc_mcontext.__gregs[26];
-        sigcontext->uc_mcontext.gregs[X64_R12] = p->uc_mcontext.__gregs[27];
-        sigcontext->uc_mcontext.gregs[X64_R13] = p->uc_mcontext.__gregs[28];
-        sigcontext->uc_mcontext.gregs[X64_R14] = p->uc_mcontext.__gregs[29];
-        sigcontext->uc_mcontext.gregs[X64_R15] = p->uc_mcontext.__gregs[30];
-        sigcontext->uc_mcontext.gregs[X64_RIP] = getX64Address(db, (uintptr_t)pc);
-    }
-#elif defined(RV64)
-    if(db && p) {
-        sigcontext->uc_mcontext.gregs[X64_RAX] = p->uc_mcontext.__gregs[16];
-        sigcontext->uc_mcontext.gregs[X64_RCX] = p->uc_mcontext.__gregs[17];
-        sigcontext->uc_mcontext.gregs[X64_RDX] = p->uc_mcontext.__gregs[18];
-        sigcontext->uc_mcontext.gregs[X64_RBX] = p->uc_mcontext.__gregs[19];
-        sigcontext->uc_mcontext.gregs[X64_RSP] = p->uc_mcontext.__gregs[20];
-        sigcontext->uc_mcontext.gregs[X64_RBP] = p->uc_mcontext.__gregs[21];
-        sigcontext->uc_mcontext.gregs[X64_RSI] = p->uc_mcontext.__gregs[22];
-        sigcontext->uc_mcontext.gregs[X64_RDI] = p->uc_mcontext.__gregs[23];
-        sigcontext->uc_mcontext.gregs[X64_R8] = p->uc_mcontext.__gregs[24];
-        sigcontext->uc_mcontext.gregs[X64_R9] = p->uc_mcontext.__gregs[25];
-        sigcontext->uc_mcontext.gregs[X64_R10] = p->uc_mcontext.__gregs[26];
-        sigcontext->uc_mcontext.gregs[X64_R11] = p->uc_mcontext.__gregs[27];
-        sigcontext->uc_mcontext.gregs[X64_R12] = p->uc_mcontext.__gregs[28];
-        sigcontext->uc_mcontext.gregs[X64_R13] = p->uc_mcontext.__gregs[29];
-        sigcontext->uc_mcontext.gregs[X64_R14] = p->uc_mcontext.__gregs[30];
-        sigcontext->uc_mcontext.gregs[X64_R15] = p->uc_mcontext.__gregs[31];
-        sigcontext->uc_mcontext.gregs[X64_RIP] = getX64Address(db, (uintptr_t)pc);
-    }
-#else
-#error Unsupported architecture
-#endif
-#endif
     if(R_CS==0x23) {
         // trucate regs to 32bits, just in case
         #define GO(R)   sigcontext->uc_mcontext.gregs[X64_R##R]&=0xFFFFFFFF
@@ -1375,6 +1443,77 @@ void my_sigactionhandler_oldcode(x64emu_t* emu, int32_t sig, int simple, siginfo
     relockMutex(Locks);
 }
 
+void my_sigactionhandler_oldcode(x64emu_t* emu, int32_t sig, int simple, siginfo_t* info, void * ucntx, int* old_code, void* cur_db, uintptr_t x64pc)
+{
+    #define GO(A) uintptr_t old_##A = R_##A;
+    GO(RAX);
+    GO(RBX);
+    GO(RCX);
+    GO(RDX);
+    GO(RBP);
+    GO(RSP);
+    GO(RDI);
+    GO(RSI);
+    GO(R8);
+    GO(R9);
+    GO(R10);
+    GO(R11);
+    GO(R12);
+    GO(R13);
+    GO(R14);
+    GO(R15);
+    GO(RIP);
+    #undef GO
+    sse_regs_t old_xmm[16];
+    sse_regs_t old_ymm[16];
+    mmx87_regs_t old_mmx[8];
+    mmx87_regs_t old_x87[8];
+    uint32_t old_top = emu->top;
+    memcpy(old_xmm, emu->xmm, sizeof(old_xmm));
+    memcpy(old_ymm, emu->ymm, sizeof(old_ymm));
+    memcpy(old_mmx, emu->mmx, sizeof(old_mmx));
+    memcpy(old_x87, emu->x87, sizeof(old_x87));
+    #ifdef DYNAREC
+    dynablock_t* db = cur_db;
+    if(db) {
+        copyUCTXreg2Emu(emu, ucntx, x64pc);
+        adjustregs(emu);
+        if(db && db->arch_size)
+            ARCH_ADJUST(db, emu, ucntx, x64pc);
+    }
+    #endif
+    #ifdef BOX32
+    if(box64_is32bits) {
+        my_sigactionhandler_oldcode_32(emu, sig, simple, info, ucntx, old_code, cur_db);
+    } else
+    #endif
+    my_sigactionhandler_oldcode_64(emu, sig, simple, info, ucntx, old_code, cur_db);
+    #define GO(A) R_##A = old_##A
+    GO(RAX);
+    GO(RBX);
+    GO(RCX);
+    GO(RDX);
+    GO(RBP);
+    GO(RSP);
+    GO(RDI);
+    GO(RSI);
+    GO(R8);
+    GO(R9);
+    GO(R10);
+    GO(R11);
+    GO(R12);
+    GO(R13);
+    GO(R14);
+    GO(R15);
+    GO(RIP);
+    #undef GO
+    memcpy(emu->xmm, old_xmm, sizeof(old_xmm));
+    memcpy(emu->ymm, old_ymm, sizeof(old_ymm));
+    memcpy(emu->mmx, old_mmx, sizeof(old_mmx));
+    memcpy(emu->x87, old_x87, sizeof(old_x87));
+    emu->top = old_top;
+}
+
 extern void* current_helper;
 #define USE_SIGNAL_MUTEX
 #ifdef USE_SIGNAL_MUTEX
@@ -1396,7 +1535,7 @@ extern int box64_exit_code;
 void my_box64signalhandler(int32_t sig, siginfo_t* info, void * ucntx)
 {
     // sig==SIGSEGV || sig==SIGBUS || sig==SIGILL || sig==SIGABRT here!
-    int log_minimum = (box64_showsegv)?LOG_NONE:((sig==SIGSEGV && my_context->is_sigaction[sig])?LOG_DEBUG:LOG_INFO);
+    int log_minimum = (BOX64ENV(showsegv))?LOG_NONE:((sig==SIGSEGV && my_context->is_sigaction[sig])?LOG_DEBUG:LOG_INFO);
     if(signal_jmpbuf_active) {
         signal_jmpbuf_active = 0;
         longjmp(SIG_JMPBUF, 1);
@@ -1405,6 +1544,7 @@ void my_box64signalhandler(int32_t sig, siginfo_t* info, void * ucntx)
     void* addr = (void*)info->si_addr;  // address that triggered the issue
     void* rsp = NULL;
     x64emu_t* emu = thread_get_emu();
+    int tid = GetTID();
 #ifdef __aarch64__
     void * pc = (void*)p->uc_mcontext.pc;
     struct fpsimd_context *fpsimd = NULL;
@@ -1438,19 +1578,34 @@ void my_box64signalhandler(int32_t sig, siginfo_t* info, void * ucntx)
     void* fpsimd = NULL;
     #warning Unhandled architecture
 #endif
-    if((sig==SIGBUS) && (addr!=pc) && sigbus_specialcases(info, ucntx, pc, fpsimd)) {
-        // special case fixed, restore everything and just continues
-        if(box64_log>=LOG_DEBUG || box64_showsegv) {
-            static void*  old_pc[2] = {0};
-            static int old_pc_i = 0;
-            if(old_pc[0]!=pc && old_pc[1]!=pc) {
-                old_pc[old_pc_i++] = pc;
-                if(old_pc_i==2)
-                    old_pc_i = 0;
-                printf_log(LOG_INFO, "Special unalinged cased fixed @%p, opcode=%08x (addr=%p)\n", pc, *(uint32_t*)pc, addr);
+    dynablock_t* db = NULL;
+    int db_searched = 0;
+    uintptr_t x64pc = (uintptr_t)-1;
+    x64pc = R_RIP;
+    if((sig==SIGBUS) && (addr!=pc)) {
+        db = FindDynablockFromNativeAddress(pc);
+        if(db)
+            x64pc = getX64Address(db, (uintptr_t)pc);
+        db_searched = 1;
+        int fixed = 0;
+        if((fixed=sigbus_specialcases(info, ucntx, pc, fpsimd, db, x64pc))) {
+            // special case fixed, restore everything and just continues
+            if (BOX64ENV(log)>=LOG_DEBUG || BOX64ENV(showsegv)) {
+                static void*  old_pc[2] = {0};
+                static int old_pc_i = 0;
+                if(old_pc[0]!=pc && old_pc[1]!=pc) {
+                    old_pc[old_pc_i++] = pc;
+                    if(old_pc_i==2)
+                        old_pc_i = 0;
+                    uint8_t* x64 = (uint8_t*)x64pc;
+                    if(db)
+                        printf_log(LOG_INFO, "Special unaligned case fixed @%p, opcode=%08x (addr=%p, db=%p, x64pc=%p[%02hhX %02hhX %02hhX %02hhX %02hhX])\n", pc, *(uint32_t*)pc, addr, db, x64pc, x64[0], x64[1], x64[2], x64[3], x64[4], x64[5]);
+                    else
+                        printf_log(LOG_INFO, "Special unaligned case fixed @%p, opcode=%08x (addr=%p)\n", pc, *(uint32_t*)pc, addr);
+                }
             }
+            return;
         }
-        return;
     }
     int Locks = unlockMutex();
     uint32_t prot = getProtection((uintptr_t)addr);
@@ -1462,6 +1617,32 @@ void my_box64signalhandler(int32_t sig, siginfo_t* info, void * ucntx)
         info->si_code = 2;
     }
     #endif
+#ifdef RV64
+    if((sig==SIGSEGV) && (addr==pc) && (info->si_code==2) && (prot==(PROT_READ|PROT_WRITE|PROT_EXEC))) {
+        if(!db_searched) {
+            db = FindDynablockFromNativeAddress(pc);
+            if(db)
+                x64pc = getX64Address(db, (uintptr_t)pc);
+            db_searched = 1;
+        }
+        int fixed = 0;
+        if((fixed = sigbus_specialcases(info, ucntx, pc, fpsimd, db, x64pc))) {
+            // special case fixed, restore everything and just continues
+            if (BOX64ENV(log) >= LOG_DEBUG || BOX64ENV(showsegv)) {
+                static void*  old_pc[2] = {0};
+                static int old_pc_i = 0;
+                if(old_pc[0]!=pc && old_pc[1]!=pc) {
+                    old_pc[old_pc_i++] = pc;
+                    if(old_pc_i==2)
+                        old_pc_i = 0;
+                    printf_log(LOG_NONE, "Special unalinged cased fixed @%p, opcode=%08x (addr=%p)\n", pc, *(uint32_t *)pc, addr);
+                }
+            }
+            relockMutex(Locks);
+            return;
+        }
+    }
+#endif
 #ifdef DYNAREC
     if((Locks & is_dyndump_locked) && ((sig==SIGSEGV) || (sig==SIGBUS)) && current_helper) {
         printf_log(LOG_INFO, "FillBlock triggered a %s at %p from %p\n", (sig==SIGSEGV)?"segfault":"bus error", addr, pc);
@@ -1470,65 +1651,29 @@ void my_box64signalhandler(int32_t sig, siginfo_t* info, void * ucntx)
         cancelFillBlock();  // Segfault inside a Fillblock, cancel it's creation...
         // cancelFillBlock does not return
     }
-    dynablock_t* db = NULL;
-    int db_searched = 0;
     if ((sig==SIGSEGV) && (addr) && (info->si_code == SEGV_ACCERR) && (prot&PROT_DYNAREC)) {
         lock_signal();
         // check if SMC inside block
-        db = FindDynablockFromNativeAddress(pc);
-        db_searched = 1;
-        static uintptr_t repeated_page = 0;
-        dynarec_log(LOG_DEBUG, "SIGSEGV with Access error on %p for %p , db=%p(%p), prot=0x%hhx (old page=%p)\n", pc, addr, db, db?((void*)db->x64_addr):NULL, prot, (void*)repeated_page);
-        static int repeated_count = 0;
-        if(repeated_page == ((uintptr_t)addr&~(box64_pagesize-1))) {
-            ++repeated_count;   // Access eoor multiple time on same page, disable dynarec on this page a few time...
-            if(repeated_count>1) {
-                dynarec_log(LOG_DEBUG, "Detecting a Hotpage at %p (%d)\n", (void*)repeated_page, repeated_count);
-                SetHotPage(repeated_page);
-            }
-        } else {
-            repeated_page = (uintptr_t)addr&~(box64_pagesize-1);
-            repeated_count = 0;
+        if(!db_searched) {
+            db = FindDynablockFromNativeAddress(pc);
+            if(db)
+                x64pc = getX64Address(db, (uintptr_t)pc);
+            db_searched = 1;
         }
         // access error, unprotect the block (and mark them dirty)
         unprotectDB((uintptr_t)addr, 1, 1);    // unprotect 1 byte... But then, the whole page will be unprotected
+        if(db) CheckHotPage((uintptr_t)addr);
         int db_need_test = db?getNeedTest((uintptr_t)db->x64_addr):0;
-        if(db && ((addr>=db->x64_addr && addr<(db->x64_addr+db->x64_size)) || db_need_test)) {
+        if(db && ((addr>=db->x64_addr && addr<(db->x64_addr+db->x64_size)) || (db_need_test && !BOX64ENV(dynarec_dirty)))) {
             emu = getEmuSignal(emu, p, db);
             // dynablock got auto-dirty! need to get out of it!!!
             if(emu->jmpbuf) {
-                copyUCTXreg2Emu(emu, p, getX64Address(db, (uintptr_t)pc));
+                uintptr_t x64pc = getX64Address(db, (uintptr_t)pc);
+                copyUCTXreg2Emu(emu, p, x64pc);
                 adjustregs(emu);
-#ifdef ARM64
-                //TODO: Need proper SIMD/x87 register traking!
-                /*if(fpsimd) {
-                    emu->xmm[0].u128 = fpsimd->vregs[0];
-                    emu->xmm[1].u128 = fpsimd->vregs[1];
-                    emu->xmm[2].u128 = fpsimd->vregs[2];
-                    emu->xmm[3].u128 = fpsimd->vregs[3];
-                }*/
-#elif defined(LA64)
-                /*if(fpsimd) {
-                    emu->xmm[0].u128 = fpsimd->vregs[0];
-                    emu->xmm[1].u128 = fpsimd->vregs[1];
-                    emu->xmm[2].u128 = fpsimd->vregs[2];
-                    emu->xmm[3].u128 = fpsimd->vregs[3];
-                }*/
-#elif defined(RV64)
-                /*if(fpsimd) {
-                    emu->xmm[0].u128 = fpsimd->vregs[0];
-                    emu->xmm[1].u128 = fpsimd->vregs[1];
-                    emu->xmm[2].u128 = fpsimd->vregs[2];
-                    emu->xmm[3].u128 = fpsimd->vregs[3];
-                }*/
-#else
-#error  Unsupported architecture
-#endif
-                if(addr>=db->x64_addr && addr<(db->x64_addr+db->x64_size)) {
-                    dynarec_log(LOG_INFO, "Auto-SMC detected, getting out of current Dynablock (%p, x64addr=%p, need_test=%d/%d/%d)!\n", db, db->x64_addr, db_need_test, db->dirty, db->always_test);
-                } else {
-                    dynarec_log(LOG_INFO, "Dynablock (%p, x64addr=%p, need_test=%d/%d/%d) unprotected, getting out at %p (%p)!\n", db, db->x64_addr, db_need_test, db->dirty, db->always_test, (void*)R_RIP, (void*)addr);
-                }
+                if(db && db->arch_size)
+                    ARCH_ADJUST(db, emu, p, x64pc);
+                dynarec_log(LOG_INFO, "Dynablock (%p, x64addr=%p, need_test=%d/%d/%d) %s, getting out at %p (%p)!\n", db, db->x64_addr, db_need_test, db->dirty, db->always_test, (addr>=db->x64_addr && addr<(db->x64_addr+db->x64_size))?"Auto-SMC":"unprotected", (void*)R_RIP, (void*)addr);
                 //relockMutex(Locks);
                 unlock_signal();
                 if(Locks & is_dyndump_locked)
@@ -1552,13 +1697,17 @@ void my_box64signalhandler(int32_t sig, siginfo_t* info, void * ucntx)
         unlock_signal();
     } else if ((sig==SIGSEGV) && (addr) && (info->si_code == SEGV_ACCERR) && ((prot&(PROT_READ|PROT_WRITE))==(PROT_READ|PROT_WRITE))) {
         lock_signal();
-        db = FindDynablockFromNativeAddress(pc);
-        db_searched = 1;
+        if(!db_searched) {
+            db = FindDynablockFromNativeAddress(pc);
+            if(db)
+                x64pc = getX64Address(db, (uintptr_t)pc);
+            db_searched = 1;
+        }
         if(db && db->x64_addr>= addr && (db->x64_addr+db->x64_size)<addr) {
             dynarec_log(LOG_INFO, "Warning, addr inside current dynablock!\n");
         }
         // mark stuff as unclean
-        if(box64_dynarec)
+        if(BOX64ENV(dynarec))
             cleanDBFromAddressRange(((uintptr_t)addr)&~(box64_pagesize-1), box64_pagesize, 0);
         static void* glitch_pc = NULL;
         static void* glitch_addr = NULL;
@@ -1566,7 +1715,7 @@ void my_box64signalhandler(int32_t sig, siginfo_t* info, void * ucntx)
         if(addr && pc /*&& db*/) {
             if((glitch_pc!=pc || glitch_addr!=addr || glitch_prot!=prot)) {
                 // probably a glitch due to intensive multitask...
-                dynarec_log(/*LOG_DEBUG*/LOG_INFO, "SIGSEGV with Access error on %p for %p, db=%p, prot=0x%x, retrying\n", pc, addr, db, prot);
+                dynarec_log(/*LOG_DEBUG*/LOG_INFO, "%04d|SIGSEGV with Access error on %p for %p, db=%p, prot=0x%x, retrying\n", tid, pc, addr, db, prot);
                 glitch_pc = pc;
                 glitch_addr = addr;
                 glitch_prot = prot;
@@ -1574,7 +1723,7 @@ void my_box64signalhandler(int32_t sig, siginfo_t* info, void * ucntx)
                 unlock_signal();
                 return; // try again
             }
-dynarec_log(/*LOG_DEBUG*/LOG_INFO, "Repeated SIGSEGV with Access error on %p for %p, db=%p, prot=0x%x\n", pc, addr, db, prot);
+dynarec_log(/*LOG_DEBUG*/LOG_INFO, "%04d|Repeated SIGSEGV with Access error on %p for %p, db=%p, prot=0x%x\n", tid, pc, addr, db, prot);
             glitch_pc = NULL;
             glitch_addr = NULL;
             glitch_prot = 0;
@@ -1605,10 +1754,12 @@ dynarec_log(/*LOG_DEBUG*/LOG_INFO, "Repeated SIGSEGV with Access error on %p for
         // unprotect and continue to signal handler, because Write is not there on purpose
         unprotectDB((uintptr_t)addr, 1, 1);    // unprotect 1 byte... But then, the whole page will be unprotected
     }
-    if(!db_searched)
+    if(!db_searched) {
         db = FindDynablockFromNativeAddress(pc);
-#else
-    void* db = NULL;
+        if(db)
+            x64pc = getX64Address(db, (uintptr_t)pc);
+        db_searched = 1;
+    }
 #endif
     if((sig==SIGSEGV || sig==SIGBUS) && box64_quit) {
         printf_log(LOG_INFO, "Sigfault/Segbus while quitting, exiting silently\n");
@@ -1619,11 +1770,36 @@ dynarec_log(/*LOG_DEBUG*/LOG_INFO, "Repeated SIGSEGV with Access error on %p for
     static void* old_addr = 0;
     static int old_tid = 0;
     static uint32_t old_prot = 0;
-    int tid = GetTID();
     int mapped = memExist((uintptr_t)addr);
     const char* signame = (sig==SIGSEGV)?"SIGSEGV":((sig==SIGBUS)?"SIGBUS":((sig==SIGILL)?"SIGILL":"SIGABRT"));
+    rsp = (void*)R_RSP;
+#if defined(DYNAREC)
+#if defined(ARM64)
+    if(db) {
+        rsp = (void*)p->uc_mcontext.regs[10+_SP];
+    }
+#elif defined(LA64)
+    if(db && p->uc_mcontext.__gregs[4]>0x10000) {
+        emu = (x64emu_t*)p->uc_mcontext.__gregs[4];
+    }
+    if(db) {
+        rsp = (void*)p->uc_mcontext.__gregs[12+_SP];
+    }
+#elif defined(RV64)
+    if(db && p->uc_mcontext.__gregs[25]>0x10000) {
+        emu = (x64emu_t*)p->uc_mcontext.__gregs[25];
+    }
+    if(db) {
+        rsp = (void*)p->uc_mcontext.__gregs[9];
+    }
+#else
+#error Unsupported Architecture
+#endif //arch
+#endif //DYNAREC
+    if(!db && (sig==SIGSEGV) && ((uintptr_t)addr==(x64pc-1)))
+        x64pc--;
     if(old_code==info->si_code && old_pc==pc && old_addr==addr && old_tid==tid && old_prot==prot) {
-        printf_log(log_minimum, "%04d|Double %s (code=%d, pc=%p, addr=%p, prot=%02x)!\n", tid, signame, old_code, old_pc, old_addr, prot);
+        printf_log(log_minimum, "%04d|Double %s (code=%d, pc=%p, x64pc=%p, addr=%p, prot=%02x)!\n", tid, signame, old_code, old_pc, x64pc, old_addr, prot);
         exit(-1);
     } else {
         if((sig==SIGSEGV) && (info->si_code == SEGV_ACCERR) && ((prot&~PROT_CUSTOM)==(PROT_READ|PROT_WRITE) || (prot&~PROT_CUSTOM)==(PROT_READ|PROT_WRITE|PROT_EXEC))) {
@@ -1653,43 +1829,21 @@ dynarec_log(/*LOG_DEBUG*/LOG_INFO, "Repeated SIGSEGV with Access error on %p for
         old_addr = addr;
         old_tid = tid;
         old_prot = prot;
-        const char* name = (log_minimum<=box64_log)?GetNativeName(pc):NULL;
-        uintptr_t x64pc = (uintptr_t)-1;
+        const char* name = NULL;
         const char* x64name = NULL;
+        if (log_minimum<=BOX64ENV(log)) {
+            signal_jmpbuf_active = 1;
+            if(sigsetjmp(SIG_JMPBUF, 1)) {
+                // segfault while gathering function name...
+                name = "???";
+            } else
+                name = GetNativeName(pc);
+            signal_jmpbuf_active = 0;
+        }
         // Adjust RIP for special case of NULL function run
         if(sig==SIGSEGV && R_RIP==0x1 && (uintptr_t)info->si_addr==0x0)
             R_RIP = 0x0;
-        x64pc = R_RIP;
-        rsp = (void*)R_RSP;
-#if defined(DYNAREC)
-#if defined(ARM64)
-        if(db) {
-            x64pc = getX64Address(db, (uintptr_t)pc);
-            rsp = (void*)p->uc_mcontext.regs[10+_SP];
-        }
-#elif defined(LA64)
-        if(db && p->uc_mcontext.__gregs[4]>0x10000) {
-            emu = (x64emu_t*)p->uc_mcontext.__gregs[4];
-        }
-        if(db) {
-            x64pc = getX64Address(db, (uintptr_t)pc);
-            rsp = (void*)p->uc_mcontext.__gregs[12+_SP];
-        }
-#elif defined(RV64)
-        if(db && p->uc_mcontext.__gregs[10]>0x10000) {
-            emu = (x64emu_t*)p->uc_mcontext.__gregs[10];
-        }
-        if(db) {
-            x64pc = getX64Address(db, (uintptr_t)pc);
-            rsp = (void*)p->uc_mcontext.__gregs[16+_SP];
-        }
-#else
-#error Unsupported Architecture
-#endif //arch
-#endif //DYNAREC
-        if(!db && (sig==SIGSEGV) && ((uintptr_t)addr==(x64pc-1)))
-            x64pc--;
-        if(log_minimum<=box64_log) {
+        if(log_minimum<=BOX64ENV(log)) {
             elfheader_t* elf = FindElfAddress(my_context, x64pc);
             if(elf) {
                 signal_jmpbuf_active = 1;
@@ -1701,7 +1855,7 @@ dynarec_log(/*LOG_DEBUG*/LOG_INFO, "Repeated SIGSEGV with Access error on %p for
                 signal_jmpbuf_active = 0;
             }
         }
-        if(jit_gdb) {
+        if(BOX64ENV(jitgdb)) {
             pid_t pid = getpid();
             int v = vfork(); // is this ok in a signal handler???
             if(v<0) {
@@ -1709,7 +1863,7 @@ dynarec_log(/*LOG_DEBUG*/LOG_INFO, "Repeated SIGSEGV with Access error on %p for
             } else if(v) {
                 // parent process, the one that have the segfault
                 volatile int waiting = 1;
-                printf("Waiting for %s (pid %d)...\n", (jit_gdb==2)?"gdbserver":"gdb", pid);
+                printf("Waiting for %s (pid %d)...\n", (BOX64ENV(jitgdb)==2)?"gdbserver":"gdb", pid);
                 while(waiting) {
                     // using gdb, use "set waiting=0" to stop waiting...
                     usleep(1000);
@@ -1717,18 +1871,18 @@ dynarec_log(/*LOG_DEBUG*/LOG_INFO, "Repeated SIGSEGV with Access error on %p for
             } else {
                 char myarg[50] = {0};
                 sprintf(myarg, "%d", pid);
-                if(jit_gdb==2)
+                if(BOX64ENV(jitgdb)==2)
                     execlp("gdbserver", "gdbserver", "127.0.0.1:1234", "--attach", myarg, (char*)NULL);
-                else if(jit_gdb==3)
+                else if(BOX64ENV(jitgdb)==3)
                     execlp("lldb", "lldb", "-p", myarg, (char*)NULL);
                 else
                     execlp("gdb", "gdb", "-pid", myarg, (char*)NULL);
                 exit(-1);
             }
         }
-        print_cycle_log(log_minimum);
+        print_rolling_log(log_minimum);
 
-        if((box64_showbt || sig==SIGABRT) && log_minimum<=box64_log) {
+        if((BOX64ENV(showbt) || sig==SIGABRT) && log_minimum<=BOX64ENV(log)) {
             // show native bt
             #define BT_BUF_SIZE 100
             int nptrs;
@@ -1800,7 +1954,7 @@ dynarec_log(/*LOG_DEBUG*/LOG_INFO, "Repeated SIGSEGV with Access error on %p for
             #undef GO
         }
 
-        if(log_minimum<=box64_log) {
+        if(log_minimum<=BOX64ENV(log)) {
             static const char* reg_name[] = {"RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RSI", "RDI", " R8", " R9","R10","R11", "R12","R13","R14","R15"};
             static const char* seg_name[] = {"ES", "CS", "SS", "DS", "FS", "GS"};
             int shown_regs = 0;
@@ -1815,52 +1969,52 @@ dynarec_log(/*LOG_DEBUG*/LOG_INFO, "Repeated SIGSEGV with Access error on %p for
                 prot, db, db?db->block:0, db?(db->block+db->size):0,
                 db?db->x64_addr:0, db?(db->x64_addr+db->x64_size):0,
                 getAddrFunctionName((uintptr_t)(db?db->x64_addr:0)),
-                (db?getNeedTest((uintptr_t)db->x64_addr):0)?"need_stest":"clean", db?db->hash:0, hash,
+                (db?getNeedTest((uintptr_t)db->x64_addr):0)?"needs_test":"clean", db?db->hash:0, hash,
                 (void*)my_context->signals[sig]);
 #if defined(ARM64)
             if(db) {
                 shown_regs = 1;
                 for (int i=0; i<16; ++i) {
-                    if(!(i%4)) printf_log(log_minimum, "\n");
-                    printf_log(log_minimum, "%s:0x%016llx ", reg_name[i], p->uc_mcontext.regs[10+i]);
+                    if(!(i%4)) printf_log_prefix(0, log_minimum, "\n");
+                    printf_log_prefix(0, log_minimum, "%s:0x%016llx ", reg_name[i], p->uc_mcontext.regs[10+i]);
                 }
-                printf_log(log_minimum, "\n");
+                printf_log_prefix(0, log_minimum, "\n");
                 for (int i=0; i<6; ++i)
-                    printf_log(log_minimum, "%s:0x%04x ", seg_name[i], emu->segs[i]);
+                    printf_log_prefix(0, log_minimum, "%s:0x%04x ", seg_name[i], emu->segs[i]);
             }
             if(rsp!=addr && getProtection((uintptr_t)rsp-4*8) && getProtection((uintptr_t)rsp+4*8))
                 for (int i=-4; i<4; ++i) {
-                    printf_log(log_minimum, "%sRSP%c0x%02x:0x%016lx", (i%4)?" ":"\n", i<0?'-':'+', abs(i)*8, *(uintptr_t*)(rsp+i*8));
+                    printf_log_prefix(0, log_minimum, "%sRSP%c0x%02x:0x%016lx", (i%4)?" ":"\n", i<0?'-':'+', abs(i)*8, *(uintptr_t*)(rsp+i*8));
                 }
 #elif defined(RV64)
             if(db) {
                 shown_regs = 1;
                 for (int i=0; i<16; ++i) {
-                    if(!(i%4)) printf_log(log_minimum, "\n");
-                    printf_log(log_minimum, "%s:0x%016llx ", reg_name[i], p->uc_mcontext.__gregs[16+i]);
+                    if(!(i%4)) printf_log_prefix(0, log_minimum, "\n");
+                    printf_log_prefix(0, log_minimum, "%s:0x%016llx ", reg_name[i], p->uc_mcontext.__gregs[(((uint8_t[]) { 16, 13, 12, 24, 9, 8, 11, 10, 14, 15, 26, 27, 18, 19, 20, 21 })[i])]);
                 }
-                printf_log(log_minimum, "\n");
+                printf_log_prefix(0, log_minimum, "\n");
                 for (int i=0; i<6; ++i)
-                    printf_log(log_minimum, "%s:0x%04x ", seg_name[i], emu->segs[i]);
+                    printf_log_prefix(0, log_minimum, "%s:0x%04x ", seg_name[i], emu->segs[i]);
             }
             if(rsp!=addr && getProtection((uintptr_t)rsp-4*8) && getProtection((uintptr_t)rsp+4*8))
                 for (int i=-4; i<4; ++i) {
-                    printf_log(log_minimum, "%sRSP%c0x%02x:0x%016lx", (i%4)?" ":"\n", i<0?'-':'+', abs(i)*8, *(uintptr_t*)(rsp+i*8));
+                    printf_log_prefix(0, log_minimum, "%sRSP%c0x%02x:0x%016lx", (i%4)?" ":"\n", i<0?'-':'+', abs(i)*8, *(uintptr_t*)(rsp+i*8));
                 }
 #elif defined(LA64)
             if(db) {
                 shown_regs = 1;
                 for (int i=0; i<16; ++i) {
-                    if(!(i%4)) printf_log(log_minimum, "\n");
-                    printf_log(log_minimum, "%s:0x%016llx ", reg_name[i], p->uc_mcontext.__gregs[12+i]);
+                    if(!(i%4)) printf_log_prefix(0, log_minimum, "\n");
+                    printf_log_prefix(0, log_minimum, "%s:0x%016llx ", reg_name[i], p->uc_mcontext.__gregs[12+i]);
                 }
-                printf_log(log_minimum, "\n");
+                printf_log_prefix(0, log_minimum, "\n");
                 for (int i=0; i<6; ++i)
-                    printf_log(log_minimum, "%s:0x%04x ", seg_name[i], emu->segs[i]);
+                    printf_log_prefix(0, log_minimum, "%s:0x%04x ", seg_name[i], emu->segs[i]);
             }
             if(rsp!=addr && getProtection((uintptr_t)rsp-4*8) && getProtection((uintptr_t)rsp+4*8))
                 for (int i=-4; i<4; ++i) {
-                    printf_log(log_minimum, "%sRSP%c0x%02x:0x%016lx", (i%4)?" ":"\n", i<0?'-':'+', abs(i)*8, *(uintptr_t*)(rsp+i*8));
+                    printf_log_prefix(0, log_minimum, "%sRSP%c0x%02x:0x%016lx", (i%4)?" ":"\n", i<0?'-':'+', abs(i)*8, *(uintptr_t*)(rsp+i*8));
                 }
 #else
             #warning TODO
@@ -1870,25 +2024,25 @@ dynarec_log(/*LOG_DEBUG*/LOG_INFO, "Repeated SIGSEGV with Access error on %p for
 #endif
             if(!shown_regs) {
                 for (int i=0; i<16; ++i) {
-                    if(!(i%4)) printf_log(log_minimum, "\n");
-                    printf_log(log_minimum, "%s:0x%016llx ", reg_name[i], emu->regs[i].q[0]);
+                    if(!(i%4)) printf_log_prefix(0, log_minimum, "\n");
+                    printf_log_prefix(0, log_minimum, "%s:0x%016llx ", reg_name[i], emu->regs[i].q[0]);
                 }
-                printf_log(log_minimum, "\n");
+                printf_log_prefix(0, log_minimum, "\n");
                 for (int i=0; i<6; ++i)
-                    printf_log(log_minimum, "%s:0x%04x ", seg_name[i], emu->segs[i]);
+                    printf_log_prefix(0, log_minimum, "%s:0x%04x ", seg_name[i], emu->segs[i]);
             }
             if(sig==SIGILL) {
-                printf_log(log_minimum, " opcode=%02X %02X %02X %02X %02X %02X %02X %02X (%02X %02X %02X %02X %02X)\n", ((uint8_t*)pc)[0], ((uint8_t*)pc)[1], ((uint8_t*)pc)[2], ((uint8_t*)pc)[3], ((uint8_t*)pc)[4], ((uint8_t*)pc)[5], ((uint8_t*)pc)[6], ((uint8_t*)pc)[7], ((uint8_t*)x64pc)[0], ((uint8_t*)x64pc)[1], ((uint8_t*)x64pc)[2], ((uint8_t*)x64pc)[3], ((uint8_t*)x64pc)[4]);
+                printf_log_prefix(0, log_minimum, " opcode=%02X %02X %02X %02X %02X %02X %02X %02X (%02X %02X %02X %02X %02X)\n", ((uint8_t*)pc)[0], ((uint8_t*)pc)[1], ((uint8_t*)pc)[2], ((uint8_t*)pc)[3], ((uint8_t*)pc)[4], ((uint8_t*)pc)[5], ((uint8_t*)pc)[6], ((uint8_t*)pc)[7], ((uint8_t*)x64pc)[0], ((uint8_t*)x64pc)[1], ((uint8_t*)x64pc)[2], ((uint8_t*)x64pc)[3], ((uint8_t*)x64pc)[4]);
             } else if(sig==SIGBUS || (sig==SIGSEGV && (x64pc!=(uintptr_t)addr) && (pc!=addr))) {
-                printf_log(log_minimum, " %sopcode=%02X %02X %02X %02X %02X %02X %02X %02X (opcode=%08x)\n", (emu->segs[_CS]==0x23)?"x86":"x64", ((uint8_t*)x64pc)[0], ((uint8_t*)x64pc)[1], ((uint8_t*)x64pc)[2], ((uint8_t*)x64pc)[3], ((uint8_t*)x64pc)[4], ((uint8_t*)x64pc)[5], ((uint8_t*)x64pc)[6], ((uint8_t*)x64pc)[7], *(uint32_t*)pc);
+                printf_log_prefix(0, log_minimum, " %sopcode=%02X %02X %02X %02X %02X %02X %02X %02X (opcode=%08x)\n", (emu->segs[_CS]==0x23)?"x86":"x64", ((uint8_t*)x64pc)[0], ((uint8_t*)x64pc)[1], ((uint8_t*)x64pc)[2], ((uint8_t*)x64pc)[3], ((uint8_t*)x64pc)[4], ((uint8_t*)x64pc)[5], ((uint8_t*)x64pc)[6], ((uint8_t*)x64pc)[7], *(uint32_t*)pc);
             } else {
-                printf_log(log_minimum, "\n");
+                printf_log_prefix(0, log_minimum, "\n");
             }
         }
     }
     relockMutex(Locks);
     if(my_context->signals[sig] && my_context->signals[sig]!=1) {
-        my_sigactionhandler_oldcode(emu, sig, my_context->is_sigaction[sig]?0:1, info, ucntx, &old_code, db);
+        my_sigactionhandler_oldcode(emu, sig, my_context->is_sigaction[sig]?0:1, info, ucntx, &old_code, db, x64pc);
         return;
     }
     // no handler (or double identical segfault)
@@ -1900,28 +2054,27 @@ dynarec_log(/*LOG_DEBUG*/LOG_INFO, "Repeated SIGSEGV with Access error on %p for
 
 void my_sigactionhandler(int32_t sig, siginfo_t* info, void * ucntx)
 {
+    void* pc = NULL;
     #ifdef DYNAREC
     ucontext_t *p = (ucontext_t *)ucntx;
     #ifdef ARM64
-    void * pc = (void*)p->uc_mcontext.pc;
+    pc = (void*)p->uc_mcontext.pc;
     #elif defined(LA64)
-    void * pc = (void*)p->uc_mcontext.__pc;
+    pc = (void*)p->uc_mcontext.__pc;
     #elif defined(RV64)
-    void * pc = (void*)p->uc_mcontext.__gregs[0];
+    pc = (void*)p->uc_mcontext.__gregs[0];
     #else
     #error Unsupported architecture
     #endif
-    dynablock_t* db = FindDynablockFromNativeAddress(pc);
-    #else
-    void* db = NULL;
     #endif
-
-    my_sigactionhandler_oldcode(NULL, sig, 0, info, ucntx, NULL, db);
+    dynablock_t* db = FindDynablockFromNativeAddress(pc);
+    x64emu_t* emu = thread_get_emu();
+    uintptr_t x64pc = R_RIP;
+    if(db)
+        x64pc = getX64Address(db, (uintptr_t)pc);
+    if(BOX64ENV(showsegv)) printf_log(LOG_INFO, "sigaction handler for sig %d, pc=%p, x64pc=%p, db=%p\n", sig, pc, x64pc, db);
+    my_sigactionhandler_oldcode(emu, sig, 0, info, ucntx, NULL, db, x64pc);
 }
-
-#ifndef DYNAREC
-#define box64_dynarec_dump 0
-#endif
 
 void emit_signal(x64emu_t* emu, int sig, void* addr, int code)
 {
@@ -1939,15 +2092,15 @@ void emit_signal(x64emu_t* emu, int sig, void* addr, int code)
     info.si_addr = addr;
     const char* x64name = NULL;
     const char* elfname = NULL;
-    if(box64_log>LOG_INFO || box64_dynarec_dump || box64_showsegv) {
+    if(BOX64ENV(log)>LOG_INFO || BOX64ENV(dynarec_dump) || BOX64ENV(showsegv)) {
         x64name = getAddrFunctionName(R_RIP);
         elfheader_t* elf = FindElfAddress(my_context, R_RIP);
         if(elf)
             elfname = ElfName(elf);
         printf_log(LOG_NONE, "Emit Signal %d at IP=%p(%s / %s) / addr=%p, code=0x%x\n", sig, (void*)R_RIP, x64name?x64name:"???", elfname?elfname:"?", addr, code);
-print_cycle_log(LOG_INFO);
+        print_rolling_log(LOG_INFO);
 
-        if((box64_showbt || sig==SIGABRT) && box64_log>=LOG_INFO) {
+        if((BOX64ENV(showbt) || sig==SIGABRT) && BOX64ENV(log)>=LOG_INFO) {
             // show native bt
             #define BT_BUF_SIZE 100
             int nptrs;
@@ -1994,7 +2147,7 @@ printf_log(LOG_NONE, "Emu Stack: %p 0x%lx%s\n", emu->init_stack, emu->size_stack
             printf_log(LOG_NONE, "SIGILL: Opcode at ip is %02hhx %02hhx %02hhx %02hhx %02hhx %02hhx\n", mem[0], mem[1], mem[2], mem[3], mem[4], mem[5]);
         }
     }
-    my_sigactionhandler_oldcode(emu, sig, 0, &info, NULL, NULL, NULL);
+    my_sigactionhandler_oldcode(emu, sig, 0, &info, NULL, NULL, NULL, R_RIP);
 }
 
 void check_exec(x64emu_t* emu, uintptr_t addr)
@@ -2016,14 +2169,14 @@ void emit_interruption(x64emu_t* emu, int num, void* addr)
     info.si_addr = NULL;//addr;
     const char* x64name = NULL;
     const char* elfname = NULL;
-    if(box64_log>LOG_INFO || box64_dynarec_dump || box64_showsegv) {
+    if(BOX64ENV(log)>LOG_INFO || BOX64ENV(dynarec_dump) || BOX64ENV(showsegv)) {
         x64name = getAddrFunctionName(R_RIP);
         elfheader_t* elf = FindElfAddress(my_context, R_RIP);
         if(elf)
             elfname = ElfName(elf);
         printf_log(LOG_NONE, "Emit Interruption 0x%x at IP=%p(%s / %s) / addr=%p\n", num, (void*)R_RIP, x64name?x64name:"???", elfname?elfname:"?", addr);
     }
-    my_sigactionhandler_oldcode(emu, SIGSEGV, 0, &info, NULL, NULL, NULL);
+    my_sigactionhandler_oldcode(emu, SIGSEGV, 0, &info, NULL, NULL, NULL, R_RIP);
 }
 
 void emit_div0(x64emu_t* emu, void* addr, int code)
@@ -2035,14 +2188,14 @@ void emit_div0(x64emu_t* emu, void* addr, int code)
     info.si_addr = addr;
     const char* x64name = NULL;
     const char* elfname = NULL;
-    if(box64_log>LOG_INFO || box64_dynarec_dump || box64_showsegv) {
+    if(BOX64ENV(log)>LOG_INFO || BOX64ENV(dynarec_dump) || BOX64ENV(showsegv)) {
         x64name = getAddrFunctionName(R_RIP);
         elfheader_t* elf = FindElfAddress(my_context, R_RIP);
         if(elf)
             elfname = ElfName(elf);
         printf_log(LOG_NONE, "Emit Divide by 0 at IP=%p(%s / %s) / addr=%p\n", (void*)R_RIP, x64name?x64name:"???", elfname?elfname:"?", addr);
     }
-    my_sigactionhandler_oldcode(emu, SIGSEGV, 0, &info, NULL, NULL, NULL);
+    my_sigactionhandler_oldcode(emu, SIGSEGV, 0, &info, NULL, NULL, NULL, R_RIP);
 }
 
 EXPORT sighandler_t my_signal(x64emu_t* emu, int signum, sighandler_t handler)
@@ -2291,8 +2444,6 @@ EXPORT int my_getcontext(x64emu_t* emu, void* ucp)
 
     // get signal mask
     sigprocmask(SIG_SETMASK, NULL, (sigset_t*)&u->uc_sigmask);
-    // ensure uc_link is properly initialized
-    u->uc_link = (x64_ucontext_t*)emu->uc_link;
 
     return 0;
 }
@@ -2331,11 +2482,19 @@ EXPORT int my_setcontext(x64emu_t* emu, void* ucp)
     emu->mxcsr.x32 = *(uint32_t*)(ucp + 432);
     // set signal mask
     sigprocmask(SIG_SETMASK, (sigset_t*)&u->uc_sigmask, NULL);
-    // set uc_link
-    emu->uc_link = u->uc_link;
     errno = 0;
 
     return R_EAX;
+}
+void vFEv(x64emu_t *emu, uintptr_t fnc);
+EXPORT void my_start_context(x64emu_t* emu)
+{
+    // this is call indirectly by swapcontext from a makecontext, and will link context or just exit
+    x64_ucontext_t *u = *(x64_ucontext_t**)R_RBX;
+    if(u)
+        my_setcontext(emu, u);
+    else
+        emu->quit = 1;
 }
 
 EXPORT void my_makecontext(x64emu_t* emu, void* ucp, void* fnc, int32_t argc, int64_t* argv)
@@ -2346,15 +2505,19 @@ EXPORT void my_makecontext(x64emu_t* emu, void* ucp, void* fnc, int32_t argc, in
     uintptr_t* rsp = (uintptr_t*)(u->uc_stack.ss_sp + u->uc_stack.ss_size - sizeof(uintptr_t));
     // setup the function
     u->uc_mcontext.gregs[X64_RIP] = (intptr_t)fnc;
+    // setup return to private start_context uc_link
+    *rsp = (uintptr_t)u->uc_link;
+    u->uc_mcontext.gregs[X64_RBX] = (uintptr_t)rsp;
+    --rsp;
     // setup args
     int n = 3;
     int j = 0;
     int regs_abi[] = {_DI, _SI, _DX, _CX, _R8, _R9};
     for (int i=0; i<argc; ++i) {
         // get value first
-        uint64_t v;
+        uint32_t v;
         if(n<6)
-            v = emu->regs[regs_abi[n++]].q[0];
+            v = emu->regs[regs_abi[n++]].dword[0];
         else
             v = argv[j++];
         // push value
@@ -2372,9 +2535,43 @@ EXPORT void my_makecontext(x64emu_t* emu, void* ucp, void* fnc, int32_t argc, in
     }
     // push the return value
     --rsp;
-    *rsp = my_context->exit_bridge;
+    *rsp = AddCheckBridge(my_context->system, vFEv, my_start_context, 0, "my_start_context");//my_context->exit_bridge;
     u->uc_mcontext.gregs[X64_RSP] = (uintptr_t)rsp;
 }
+
+void box64_abort() {
+    if(BOX64ENV(showbt) && LOG_INFO<=BOX64ENV(log)) {
+            // show native bt
+            #define BT_BUF_SIZE 100
+            int nptrs;
+            void *buffer[BT_BUF_SIZE];
+            char **strings;
+            x64emu_t* emu = thread_get_emu();
+
+#ifndef ANDROID
+            nptrs = backtrace(buffer, BT_BUF_SIZE);
+            strings = backtrace_symbols(buffer, nptrs);
+            if(strings) {
+                for (int j = 0; j < nptrs; j++)
+                    printf_log(LOG_INFO, "NativeBT: %s\n", strings[j]);
+                free(strings);
+            } else
+                printf_log(LOG_INFO, "NativeBT: none (%d/%s)\n", errno, strerror(errno));
+#endif
+            extern int my_backtrace_ip(x64emu_t* emu, void** buffer, int size);   // in wrappedlibc
+            extern char** my_backtrace_symbols(x64emu_t* emu, uintptr_t* buffer, int size);
+            nptrs = my_backtrace_ip(emu, buffer, BT_BUF_SIZE);
+            strings = my_backtrace_symbols(emu, (uintptr_t*)buffer, nptrs);
+            if(strings) {
+                for (int j = 0; j < nptrs; j++)
+                    printf_log(LOG_INFO, "EmulatedBT: %s\n", strings[j]);
+                free(strings);
+            } else
+                printf_log(LOG_INFO, "EmulatedBT: none\n");
+        }
+    abort();
+}
+
 
 EXPORT int my_swapcontext(x64emu_t* emu, void* ucp1, void* ucp2)
 {

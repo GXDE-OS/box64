@@ -9,12 +9,14 @@
 #define MAYSETFLAGS()   dyn->insts[ninst].x64.may_set = 1
 #define READFLAGS(A)    \
         dyn->insts[ninst].x64.use_flags = A; dyn->f.dfnone = 1;\
+        if(!BOX64ENV(dynarec_df) && (A)&X_PEND) dyn->insts[ninst].x64.use_flags = X_ALL; \
         dyn->f.pending=SF_SET
 #define SETFLAGS(A,B)   \
         dyn->insts[ninst].x64.set_flags = A;    \
         dyn->insts[ninst].x64.state_flags = (B)&~SF_DF;  \
         dyn->f.pending=(B)&SF_SET_PENDING;      \
-        dyn->f.dfnone=((B)&SF_SET)?(((B)==SF_SET_NODF)?0:1):0;
+        dyn->f.dfnone=((B)&SF_SET)?(((B)==SF_SET_NODF)?0:1):0;  \
+        if(!BOX64ENV(dynarec_df)) {dyn->f.dfnone=1; dyn->f.pending=0; if((A)==SF_PENDING){printf_log(LOG_INFO, "Warning, some opcode use SF_PENDING, forcing deferedflags ON\n"); SET_BOX64ENV(dynarec_df, 1); }}
 #define EMIT(A)         dyn->native_size+=4
 #define JUMP(A, C)         add_jump(dyn, ninst); add_next(dyn, (uintptr_t)A); SMEND(); dyn->insts[ninst].x64.jmp = A; dyn->insts[ninst].x64.jmp_cond = C; dyn->insts[ninst].x64.jmp_insts = 0
 #define BARRIER(A)      if(A!=BARRIER_MAYBE) {fpu_purgecache(dyn, ninst, 0, x1, x2, x3); dyn->insts[ninst].x64.barrier = A;} else dyn->insts[ninst].barrier_maybe = 1
@@ -37,7 +39,9 @@
 #define DEFAULT                         \
         --dyn->size;                    \
         *ok = -1;                       \
-        if(box64_dynarec_log>=LOG_INFO || box64_dynarec_dump || box64_dynarec_missing==1) {\
+        if(ninst) {dyn->insts[ninst-1].x64.size = ip - dyn->insts[ninst-1].x64.addr;}   \
+        if(BOX64ENV(dynarec_log)>=LOG_INFO || BOX64ENV(dynarec_dump) || BOX64ENV(dynarec_missing)==1) \
+        if(!dyn->size || BOX64ENV(dynarec_log)>LOG_INFO || BOX64ENV(dynarec_dump)) {\
         dynarec_log(LOG_NONE, "%p: Dynarec stopped because of %sOpcode %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X", \
         (void*)ip, rex.is32bits?"x86 ":"x64 ",\
         PKip(0),                        \
@@ -47,7 +51,7 @@
         PKip(10),PKip(11),PKip(12),     \
         PKip(13),PKip(14));             \
         printFunctionAddr(ip, " => ");  \
-        dynarec_log(LOG_NONE, "\n");    \
+        dynarec_log_prefix(0, LOG_NONE, "\n"); \
         }
 
 #define FEMIT(A)        dyn->insts[ninst].nat_flags_op = dyn->insts[ninst].x64.set_flags?NAT_FLAG_OP_TOUCH:NAT_FLAG_OP_UNUSABLE
@@ -64,3 +68,6 @@
 #define IFNATIVE_BEFORE(A)     if(mark_natflag(dyn, ninst, A, 1))
 #define INVERT_CARRY(A) dyn->insts[ninst].invert_carry = 1
 #define INVERT_CARRY_BEFORE(A) dyn->insts[ninst].invert_carry_before = 1
+// mark opcode as "unaligned" possible only if the current address is not marked as already unaligned
+#define IF_UNALIGNED(A) if((dyn->insts[ninst].unaligned=(is_addr_unaligned(A)?0:1)))
+#define IF_ALIGNED(A)   if((dyn->insts[ninst].unaligned=(is_addr_unaligned(A)?1:0)))

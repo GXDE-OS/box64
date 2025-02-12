@@ -64,7 +64,8 @@
 #include "elfloader.h"
 #include "bridge.h"
 #include "globalsymbols.h"
-#include "rcfile.h"
+#include "env.h"
+#include "wine_tools.h"
 #ifndef LOG_INFO
 #define LOG_INFO 1
 #endif
@@ -465,8 +466,8 @@ void EXPORT my___stack_chk_fail(x64emu_t* emu)
     #else
     sprintf(buff, "%p: Stack is corrupted, aborting\n", (void*)emu->old_ip);
     #endif
-    if(cycle_log) {
-        print_cycle_log(LOG_INFO);
+    if(BOX64ENV(rolling_log)) {
+        print_rolling_log(LOG_INFO);
     }
     StopEmu(emu, buff, emu->segs[_CS]==0x23);
 }
@@ -528,7 +529,7 @@ pid_t EXPORT my_fork(x64emu_t* emu)
     if(type == EMUTYPE_MAIN)
         thread_set_emu(emu);
     if(v<0) {
-        printf_log(LOG_NONE, "BOX64: Warning, fork errored... (%d)\n", v);
+        printf_log(LOG_NONE, "Warning, fork errored... (%d)\n", v);
         // error...
     } else if(v>0) {
         // execute atforks parent functions
@@ -1531,6 +1532,24 @@ EXPORT void* my_tsearch(x64emu_t* emu, void* key, void* root, void* fnc)
     (void)emu;
     return tsearch(key, root, findcompareFct(fnc));
 }
+
+EXPORT int my___sysctl(x64emu_t* emu, int* name, int nlen, void* oldval, size_t* oldlenp, void* newval, size_t newlen)
+{
+    return ENOSYS;
+}
+
+EXPORT int my_sysctl(x64emu_t* emu, int* name, int nlen, void* oldval, size_t* oldlenp, void* newval, size_t newlen)
+{
+    /* Glibc 2.32 Release note.
+      The deprecated <sys/sysctl.h> header and the sysctl function have been
+      removed.  To support old binaries, the sysctl function continues to
+      exist as a compatibility symbol (on those architectures which had it),
+      but always fails with ENOSYS.  This reflects the removal of the system
+      call from all architectures, starting with Linux 5.5.
+    */
+    return ENOSYS;
+}
+
 EXPORT void my_tdestroy(x64emu_t* emu, void* root, void* fnc)
 {
     (void)emu;
@@ -1580,7 +1599,7 @@ struct i386_dirent {
 
 EXPORT void* my_readdir(x64emu_t* emu, void* dirp)
 {
-    if (fix_64bit_inodes)
+    if (BOX64ENV(fix_64bit_inodes))
     {
         struct dirent64 *dp64 = readdir64((DIR *)dirp);
         if (!dp64) return NULL;
@@ -1608,7 +1627,7 @@ EXPORT void* my_readdir(x64emu_t* emu, void* dirp)
 EXPORT int32_t my_readdir_r(x64emu_t* emu, void* dirp, void* entry, void** result)
 {
     struct dirent64 d64, *dp64;
-    if (fix_64bit_inodes && (sizeof(d64.d_name) > 1))
+    if (BOX64ENV(fix_64bit_inodes) && (sizeof(d64.d_name) > 1))
     {
         static iFppp_t f = NULL;
         if(!f) {
@@ -1681,8 +1700,8 @@ static int isProcSelf(const char *path, const char* w)
 
 static int isSysCpuCache(const char *path, const char* w, int* _cpu, int* _index)
 {
-    char tmp[128];
-    int cpu, index;
+    char tmp[128] = {0};
+    int cpu=0, index=0;
     if(sscanf(path, "/sys/devices/system/cpu/cpu%d/cache/index%d/%s", &cpu, &index, tmp)!=3)
         return 0;
     if(strcmp(tmp, w))
@@ -1762,11 +1781,11 @@ void CreateCPUInfoFile(int fd)
         P;
         sprintf(buff, "flags\t\t: fpu cx8 sep ht cmov clflush mmx sse sse2 syscall tsc lahf_lm ssse3 ht tm lm fxsr cpuid pclmulqdq cx16 aes movbe pni "\
                       "sse4_1%s%s%s lzcnt popcnt%s%s%s%s%s%s%s%s%s\n", 
-                      box64_sse42?" sse4_2":"", box64_avx?" avx":"", box64_shaext?"sha_ni":"", 
-                      box64_avx?" bmi1":"", box64_avx2?" avx2":"", box64_avx?" bmi2":"", 
-                      box64_avx2?" vaes":"", box64_avx2?" fma":"",
-                      box64_avx?" xsave":"", box64_avx?" f16c":"", box64_avx2?" randr":"",
-                      box64_avx2?" adx":""
+                      BOX64ENV(sse42)?" sse4_2":"", BOX64ENV(avx)?" avx":"", BOX64ENV(shaext)?"sha_ni":"", 
+                      BOX64ENV(avx)?" bmi1":"", BOX64ENV(avx2)?" avx2":"", BOX64ENV(avx)?" bmi2":"", 
+                      BOX64ENV(avx2)?" vaes":"", BOX64ENV(avx2)?" fma":"",
+                      BOX64ENV(avx)?" xsave":"", BOX64ENV(avx)?" f16c":"", BOX64ENV(avx2)?" randr":"",
+                      BOX64ENV(avx2)?" adx":""
                       );
         P;
         sprintf(buff, "address sizes\t: 48 bits physical, 48 bits virtual\n");
@@ -2003,7 +2022,7 @@ EXPORT int32_t my_open64(x64emu_t* emu, void* pathname, int32_t flags, uint32_t 
         lseek(tmp, 0, SEEK_SET);
         return tmp;
     }
-    if(box64_maxcpu && (!strcmp(pathname, "/sys/devices/system/cpu/present") || !strcmp(pathname, "/sys/devices/system/cpu/online")) && (getNCpu()>=box64_maxcpu)) {
+    if(BOX64ENV(maxcpu) && (!strcmp(pathname, "/sys/devices/system/cpu/present") || !strcmp(pathname, "/sys/devices/system/cpu/online")) && (getNCpu()>=BOX64ENV(maxcpu))) {
         // special case for cpu present (to limit to 64 cores)
         int tmp = shm_open(TMP_CPUPRESENT, O_RDWR | O_CREAT, S_IRWXU);
         if(tmp<0) return open64(pathname, mode); // error fallback
@@ -2074,7 +2093,7 @@ EXPORT FILE* my_fopen64(x64emu_t* emu, const char* path, const char* mode)
         lseek(tmp, 0, SEEK_SET);
         return fdopen(tmp, mode);
     }
-    if(box64_maxcpu && (!strcmp(path, "/sys/devices/system/cpu/present") || !strcmp(path, "/sys/devices/system/cpu/online")) && (getNCpu()>=box64_maxcpu)) {
+    if(BOX64ENV(maxcpu) && (!strcmp(path, "/sys/devices/system/cpu/present") || !strcmp(path, "/sys/devices/system/cpu/online")) && (getNCpu()>=BOX64ENV(maxcpu))) {
         // special case for cpu present (to limit to 64 cores)
         int tmp = shm_open(TMP_CPUPRESENT, O_RDWR | O_CREAT, S_IRWXU);
         if(tmp<0) return fopen64(path, mode); // error fallback
@@ -2092,7 +2111,7 @@ EXPORT FILE* my_fopen64(x64emu_t* emu, const char* path, const char* mode)
         lseek(tmp, 0, SEEK_SET);
         return fdopen(tmp, mode);
     }
-    int cpu, index;
+    int cpu=0, index=0;
     if(isSysCpuCache(path, "ways_of_associativity", &cpu, &index) && !FileExist(path, IS_FILE)) {
         // Create a dummy one
         int tmp = shm_open(TMP_CPUCACHE_ASSOC, O_RDWR | O_CREAT, S_IRWXU);
@@ -2254,14 +2273,7 @@ EXPORT int32_t my_execv(x64emu_t* emu, const char* path, char* const argv[])
         if(my_environ!=my_context->envv) envv = my_environ;
         if(my__environ!=my_context->envv) envv = my__environ;
         if(my___environ!=my_context->envv) envv = my___environ;
-/*if(!envv && n>2 && strstr(newargv[2], "fxc.exe")) {
-setenv("BOX64_LOG", "2", 1);
-setenv("BOX64_TRACE_FILE", "/home/seb/trace-%pid.txt", 1);
-setenv("BOX64_TRACE","server_init_process_done", 1);
-setenv("BOX64_DYNAREC", "0", 1);
-setenv("WINEDEBUG", "+server", 1);
-//setenv("BOX64_DYNAREC", "0", 1);
-}*/
+
         int ret;
         if(envv)
             ret = execve(newargv[0], (char* const*)newargv, envv);
@@ -2963,74 +2975,18 @@ EXPORT int my_readlinkat(x64emu_t* emu, int fd, void* path, void* buf, size_t bu
     }
     return readlinkat(fd, path, buf, bufsize);
 }
-#ifndef MAP_FIXED_NOREPLACE
-#define MAP_FIXED_NOREPLACE 0x200000
-#endif
-#ifndef MAP_32BIT
-#define MAP_32BIT 0x40
-#endif
 extern int have48bits;
+void* last_mmap_addr = NULL;
+size_t last_mmap_len = 0;
 EXPORT void* my_mmap64(x64emu_t* emu, void *addr, size_t length, int prot, int flags, int fd, ssize_t offset)
 {
     (void)emu;
-    if(prot&PROT_WRITE)
-        prot|=PROT_READ;    // PROT_READ is implicit with PROT_WRITE on i386
-    if((emu || box64_is32bits) && (box64_log>=LOG_DEBUG || box64_dynarec_log>=LOG_DEBUG)) {printf_log(LOG_NONE, "mmap64(%p, 0x%lx, 0x%x, 0x%x, %d, %ld) => ", addr, length, prot, flags, fd, offset);}
-    int new_flags = flags;
-    void* old_addr = addr;
-    #ifndef NOALIGN
-    new_flags&=~MAP_32BIT;   // remove MAP_32BIT
-    if((flags&MAP_32BIT) && !(flags&MAP_FIXED)) {
-        // MAP_32BIT only exist on x86_64!
-        addr = find31bitBlockNearHint(old_addr, length, 0);
-    } else if (box64_wine || 1) {   // other mmap should be restricted to 47bits
-        if (!(flags&MAP_FIXED) && !addr)
-            addr = find47bitBlock(length);
-    }
-    #endif
-    void* ret = internal_mmap(addr, length, prot, new_flags, fd, offset);
-    #if !defined(NOALIGN)
-    if((ret!=MAP_FAILED) && (flags&MAP_32BIT) &&
-      (((uintptr_t)ret>0xffffffffLL) || ((box64_wine) && ((uintptr_t)ret&0xffff) && (ret!=addr)))) {
-        int olderr = errno;
-        if((emu || box64_is32bits) && (box64_log>=LOG_DEBUG || box64_dynarec_log>=LOG_DEBUG)) printf_log(LOG_NONE, "Warning, mmap on 32bits didn't worked, ask %p, got %p ", addr, ret);
-        internal_munmap(ret, length);
-        loadProtectionFromMap();    // reload map, because something went wrong previously
-        addr = find31bitBlockNearHint(old_addr, length, 0); // is this the best way?
-        new_flags = (addr && isBlockFree(addr, length) )? (new_flags|MAP_FIXED) : new_flags;
-        if((new_flags&(MAP_FIXED|MAP_FIXED_NOREPLACE))==(MAP_FIXED|MAP_FIXED_NOREPLACE)) new_flags&=~MAP_FIXED_NOREPLACE;
-        ret = internal_mmap(addr, length, prot, new_flags, fd, offset);
-        if((emu || box64_is32bits) && (box64_log>=LOG_DEBUG || box64_dynarec_log>=LOG_DEBUG)) printf_log(LOG_NONE, " tried again with %p, got %p\n", addr, ret);
-        if(old_addr && ret!=old_addr && ret!=MAP_FAILED)
-            errno = olderr;
-    } else if((ret!=MAP_FAILED) && !(flags&MAP_FIXED) && ((box64_wine)) && (addr && (addr!=ret)) &&
-             (((uintptr_t)ret>0x7fffffffffffLL) || ((uintptr_t)ret&~0xffff))) {
-        int olderr = errno;
-        if((emu || box64_is32bits) && (box64_log>=LOG_DEBUG || box64_dynarec_log>=LOG_DEBUG)) printf_log(LOG_NONE, "Warning, mmap on 47bits didn't worked, ask %p, got %p ", addr, ret);
-        internal_munmap(ret, length);
-        loadProtectionFromMap();    // reload map, because something went wrong previously
-        addr = find47bitBlockNearHint(old_addr, length, 0); // is this the best way?
-        new_flags = (addr && isBlockFree(addr, length)) ? (new_flags|MAP_FIXED) : new_flags;
-        if((new_flags&(MAP_FIXED|MAP_FIXED_NOREPLACE))==(MAP_FIXED|MAP_FIXED_NOREPLACE)) new_flags&=~MAP_FIXED_NOREPLACE;
-        ret = internal_mmap(addr, length, prot, new_flags, fd, offset);
-        if((emu || box64_is32bits) && (box64_log>=LOG_DEBUG || box64_dynarec_log>=LOG_DEBUG)) printf_log(LOG_NONE, " tried again with %p, got %p\n", addr, ret);
-        if(old_addr && ret!=old_addr && ret!=MAP_FAILED) {
-            errno = olderr;
-            if(old_addr>(void*)0x7fffffffff && !have48bits)
-                errno = EEXIST;
-        }
-    }
-    #endif
-    if((ret!=MAP_FAILED) && (flags&MAP_FIXED_NOREPLACE) && (ret!=addr)) {
-        internal_munmap(ret, length);
-        errno = EEXIST;
-        return MAP_FAILED;
-    }
+    void* ret = box_mmap(addr, length, prot, flags, fd, offset);
     int e = errno;
-    if((ret==MAP_FAILED && (emu || box64_is32bits)) && (box64_log>=LOG_DEBUG || box64_dynarec_log>=LOG_DEBUG)) {printf_log(LOG_NONE, "%s (%d)\n", strerror(errno), errno);}
-    if(((ret!=MAP_FAILED) && (emu || box64_is32bits)) && (box64_log>=LOG_DEBUG || box64_dynarec_log>=LOG_DEBUG)) {printf_log(LOG_NONE, "%p\n", ret);}
+    if((ret==MAP_FAILED && (emu || box64_is32bits)) && (BOX64ENV(log)>=LOG_DEBUG || BOX64ENV(dynarec_log)>=LOG_DEBUG)) {printf_log(LOG_NONE, "%s (%d)\n", strerror(errno), errno);}
+    if(((ret!=MAP_FAILED) && (emu || box64_is32bits)) && (BOX64ENV(log)>=LOG_DEBUG || BOX64ENV(dynarec_log)>=LOG_DEBUG)) {printf_log(LOG_NONE, "%p\n", ret);}
     #ifdef DYNAREC
-    if(box64_dynarec && ret!=MAP_FAILED) {
+    if(BOX64ENV(dynarec) && ret!=MAP_FAILED) {
         /*if(flags&0x100000 && addr!=ret)
         {
             // program used MAP_FIXED_NOREPLACE but the host linux didn't support it
@@ -3047,31 +3003,31 @@ EXPORT void* my_mmap64(x64emu_t* emu, void *addr, size_t length, int prot, int f
         if((flags&MAP_SHARED) && (fd>0)) {
             uint32_t flags = fcntl(fd, F_GETFL);
             if((flags&O_ACCMODE)==O_RDWR) {
-                if((box64_log>=LOG_DEBUG || box64_dynarec_log>=LOG_DEBUG)) {printf_log(LOG_NONE, "Note: Marking the region (%p-%p prot=%x) as NEVERCLEAN because fd have O_RDWR attribute\n", ret, ret+length, prot);}
+                if((BOX64ENV(log)>=LOG_DEBUG || BOX64ENV(dynarec_log)>=LOG_DEBUG)) {printf_log(LOG_NONE, "Note: Marking the region (%p-%p prot=%x) as NEVERCLEAN because fd have O_RDWR attribute\n", ret, ret+length, prot);}
                 prot |= PROT_NEVERCLEAN;
             }
         }
-        static int unityplayer_detected = 0;
-        if(fd>0 && box64_unityplayer && !unityplayer_detected) {
-            char filename[4096];
-            char buf[128];
-            sprintf(buf, "/proc/self/fd/%d", fd);
-            ssize_t r = readlink(buf, filename, sizeof(filename)-1);
-            if(r!=-1) filename[r]=0;
-            if(r>0 && strlen(filename)>strlen("UnityPlayer.dll") && !strcasecmp(filename+strlen(filename)-strlen("UnityPlayer.dll"), "UnityPlayer.dll")) {
-                printf_log(LOG_INFO, "BOX64: Detected UnityPlayer.dll\n");
-                #ifdef DYNAREC
-                if(!box64_dynarec_strongmem)
-                    box64_dynarec_strongmem = 1;
-                #endif
-                unityplayer_detected = 1;
-            }
+        if(emu && !(flags&MAP_ANONYMOUS) && (fd>0)) {
+            DetectUnityPlayer(fd);
+            // the last_mmap will allow mmap created by wine, even those that have hole, to be fully tracked as one single mmap
+            if((ret>=last_mmap_addr) && ret+length<(last_mmap_addr+last_mmap_len))
+                RecordEnvMappings((uintptr_t)last_mmap_addr, last_mmap_len, fd);
+            else
+                RecordEnvMappings((uintptr_t)ret, length, fd);
+        }
+        // hack to capture full size of the mmap done by wine
+        if(emu && (fd==-1) && (flags==(MAP_PRIVATE|MAP_ANON))) {
+            last_mmap_addr = ret;
+            last_mmap_len = length;
+        } else {
+            last_mmap_addr = NULL;
+            last_mmap_len = 0;
         }
         if(emu)
             setProtection_mmap((uintptr_t)ret, length, prot);
         else
             setProtection((uintptr_t)ret, length, prot);
-        if(old_addr && ret!=old_addr)
+        if(addr && ret!=addr)
             e = EEXIST;
     }
     errno = e;  // preserve errno
@@ -3082,28 +3038,28 @@ EXPORT void* my_mmap(x64emu_t* emu, void *addr, size_t length, int prot, int fla
 EXPORT void* my_mremap(x64emu_t* emu, void* old_addr, size_t old_size, size_t new_size, int flags, void* new_addr)
 {
     (void)emu;
-    if((emu || box64_is32bits) && (box64_log>=LOG_DEBUG || box64_dynarec_log>=LOG_DEBUG)) {printf_log(LOG_NONE, "mremap(%p, %lu, %lu, %d, %p)=>", old_addr, old_size, new_size, flags, new_addr);}
+    if((emu || box64_is32bits) && (BOX64ENV(log)>=LOG_DEBUG || BOX64ENV(dynarec_log)>=LOG_DEBUG)) {printf_log(LOG_NONE, "mremap(%p, %lu, %lu, %d, %p)=>", old_addr, old_size, new_size, flags, new_addr);}
     void* ret = mremap(old_addr, old_size, new_size, flags, new_addr);
-    if((emu || box64_is32bits) && (box64_log>=LOG_DEBUG || box64_dynarec_log>=LOG_DEBUG)) {printf_log(LOG_NONE, "%p\n", ret);}
+    if((emu || box64_is32bits) && (BOX64ENV(log)>=LOG_DEBUG || BOX64ENV(dynarec_log)>=LOG_DEBUG)) {printf_log(LOG_NONE, "%p\n", ret);}
     if(ret!=(void*)-1) {
         uint32_t prot = getProtection((uintptr_t)old_addr)&~PROT_CUSTOM;
         if(ret==old_addr) {
             if(old_size && old_size<new_size) {
                 setProtection_mmap((uintptr_t)ret+old_size, new_size-old_size, prot);
                 #ifdef DYNAREC
-                if(box64_dynarec)
+                if(BOX64ENV(dynarec))
                     addDBFromAddressRange((uintptr_t)ret+old_size, new_size-old_size);
                 #endif
             } else if(old_size && new_size<old_size) {
                 freeProtection((uintptr_t)ret+new_size, old_size-new_size);
                 #ifdef DYNAREC
-                if(box64_dynarec)
+                if(BOX64ENV(dynarec))
                     cleanDBFromAddressRange((uintptr_t)ret+new_size, old_size-new_size, 1);
                 #endif
             } else if(!old_size) {
                 setProtection_mmap((uintptr_t)ret, new_size, prot);
                 #ifdef DYNAREC
-                if(box64_dynarec)
+                if(BOX64ENV(dynarec))
                     addDBFromAddressRange((uintptr_t)ret, new_size);
                 #endif
             }
@@ -3115,13 +3071,13 @@ EXPORT void* my_mremap(x64emu_t* emu, void* old_addr, size_t old_size, size_t ne
             ) {
                 freeProtection((uintptr_t)old_addr, old_size);
                 #ifdef DYNAREC
-                if(box64_dynarec)
+                if(BOX64ENV(dynarec))
                     cleanDBFromAddressRange((uintptr_t)old_addr, old_size, 1);
                 #endif
             }
             setProtection_mmap((uintptr_t)ret, new_size, prot); // should copy the protection from old block
             #ifdef DYNAREC
-            if(box64_dynarec)
+            if(BOX64ENV(dynarec))
                 addDBFromAddressRange((uintptr_t)ret, new_size);
             #endif
         }
@@ -3132,16 +3088,19 @@ EXPORT void* my_mremap(x64emu_t* emu, void* old_addr, size_t old_size, size_t ne
 EXPORT int my_munmap(x64emu_t* emu, void* addr, size_t length)
 {
     (void)emu;
-    if((emu || box64_is32bits) && (box64_log>=LOG_DEBUG || box64_dynarec_log>=LOG_DEBUG)) {printf_log(LOG_NONE, "munmap(%p, 0x%lx)\n", addr, length);}
-    int ret = internal_munmap(addr, length);
+    if((emu || box64_is32bits) && (BOX64ENV(log)>=LOG_DEBUG || BOX64ENV(dynarec_log)>=LOG_DEBUG)) {printf_log(LOG_NONE, "munmap(%p, 0x%lx)\n", addr, length);}
+    int ret = box_munmap(addr, length);
     int e = errno;
     #ifdef DYNAREC
-    if(!ret && box64_dynarec && length) {
+    if(!ret && BOX64ENV(dynarec) && length) {
         cleanDBFromAddressRange((uintptr_t)addr, length, 1);
     }
     #endif
     if(!ret) {
+        last_mmap_addr = NULL;
+        last_mmap_len = 0;
         freeProtection((uintptr_t)addr, length);
+        RemoveMapping((uintptr_t)addr, length);
     }
     errno = e;  // preseve errno
     return ret;
@@ -3150,12 +3109,12 @@ EXPORT int my_munmap(x64emu_t* emu, void* addr, size_t length)
 EXPORT int my_mprotect(x64emu_t* emu, void *addr, unsigned long len, int prot)
 {
     (void)emu;
-    if(emu && (box64_log>=LOG_DEBUG || box64_dynarec_log>=LOG_DEBUG)) {printf_log(LOG_NONE, "mprotect(%p, 0x%lx, 0x%x)\n", addr, len, prot);}
+    if(emu && (BOX64ENV(log)>=LOG_DEBUG || BOX64ENV(dynarec_log)>=LOG_DEBUG)) {printf_log(LOG_NONE, "mprotect(%p, 0x%lx, 0x%x)\n", addr, len, prot);}
     if(prot&PROT_WRITE)
         prot|=PROT_READ;    // PROT_READ is implicit with PROT_WRITE on x86_64
     int ret = mprotect(addr, len, prot);
     #ifdef DYNAREC
-    if(box64_dynarec && !ret && len) {
+    if(BOX64ENV(dynarec) && !ret && len) {
         if(prot& PROT_EXEC)
             addDBFromAddressRange((uintptr_t)addr, len);
         else
@@ -3462,7 +3421,7 @@ EXPORT int my_semctl(int semid, int semnum, int cmd, union semun b)
 }
 
 EXPORT int64_t userdata_sign = 0x1234598765ABCEF0;
-EXPORT uint32_t userdata[1024]; 
+EXPORT uint32_t userdata[1024];
 
 EXPORT long my_ptrace(x64emu_t* emu, int request, pid_t pid, void* addr, uint32_t* data)
 {
@@ -3824,16 +3783,16 @@ EXPORT void my__exit(x64emu_t* emu, int code) __attribute__((alias("my_exit")));
 EXPORT int my_prctl(x64emu_t* emu, int option, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
 {
     if(option==PR_SET_NAME) {
-        printf_log(LOG_DEBUG, "BOX64: set process name to \"%s\"\n", (char*)arg2);
-        ApplyParams((char*)arg2);
+        printf_log(LOG_DEBUG, "set process name to \"%s\"\n", (char*)arg2);
+        ApplyEnvFileEntry((char*)arg2);
         size_t l = strlen((char*)arg2);
         if(l>4 && !strcasecmp((char*)arg2+l-4, ".exe")) {
-            printf_log(LOG_DEBUG, "BOX64: hacking orig command line to \"%s\"\n", (char*)arg2);
+            printf_log(LOG_DEBUG, "hacking orig command line to \"%s\"\n", (char*)arg2);
             strcpy(my_context->orig_argv[0], (char*)arg2);
         }
     }
     if(option==PR_SET_SECCOMP) {
-        printf_log(LOG_INFO, "BOX64: ignoring prctl(PR_SET_SECCOMP, ...)\n");
+        printf_log(LOG_INFO, "ignoring prctl(PR_SET_SECCOMP, ...)\n");
         return 0;
     }
     return prctl(option, arg2, arg3, arg4, arg5);
@@ -3841,10 +3800,10 @@ EXPORT int my_prctl(x64emu_t* emu, int option, unsigned long arg2, unsigned long
 
 #ifndef _SC_NPROCESSORS_ONLN
 #define _SC_NPROCESSORS_ONLN    84
-#endif 
+#endif
 #ifndef _SC_NPROCESSORS_CONF
 #define _SC_NPROCESSORS_CONF    83
-#endif 
+#endif
 EXPORT long my_sysconf(x64emu_t* emu, int what) {
     if(what==_SC_NPROCESSORS_ONLN) {
         return getNCpu();

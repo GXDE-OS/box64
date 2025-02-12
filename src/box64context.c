@@ -19,7 +19,6 @@
 #include "wrapper.h"
 #include "x64emu.h"
 #include "signals.h"
-#include "rcfile.h"
 #include "gltools.h"
 #include "rbtree.h"
 #include "dynarec.h"
@@ -49,7 +48,6 @@ void finiAllHelpers(box64context_t* context)
     static int finied = 0;
     if(finied)
         return;
-    DeleteParams();
     fini_pthread_helper(context);
     fini_signal_helper();
     fini_bridge_helper();
@@ -77,8 +75,8 @@ void free_tlsdatasize(void* p)
     if(!p)
         return;
     tlsdatasize_t *data = (tlsdatasize_t*)p;
-    box_free(data->ptr);
-    box_free(p);
+    actual_free(data->ptr);
+    actual_free(p);
     if(my_context)
         pthread_setspecific(my_context->tlskey, NULL);
 }
@@ -181,8 +179,8 @@ static void atfork_child_box64context(void)
 
 void freeCycleLog(box64context_t* ctx)
 {
-    if(cycle_log) {
-        for(int i=0; i<cycle_log; ++i) {
+    if(BOX64ENV(rolling_log)) {
+        for(int i=0; i<BOX64ENV(rolling_log); ++i) {
             box_free(ctx->log_call[i]);
             box_free(ctx->log_ret[i]);
         }
@@ -194,10 +192,10 @@ void freeCycleLog(box64context_t* ctx)
 }
 void initCycleLog(box64context_t* context)
 {
-    if(cycle_log) {
-        context->log_call = (char**)box_calloc(cycle_log, sizeof(char*));
-        context->log_ret = (char**)box_calloc(cycle_log, sizeof(char*));
-        for(int i=0; i<cycle_log; ++i) {
+    if(BOX64ENV(rolling_log)) {
+        context->log_call = (char**)box_calloc(BOX64ENV(rolling_log), sizeof(char*));
+        context->log_ret = (char**)box_calloc(BOX64ENV(rolling_log), sizeof(char*));
+        for(int i=0; i<BOX64ENV(rolling_log); ++i) {
             context->log_call[i] = (char*)box_calloc(256, 1);
             context->log_ret[i] = (char*)box_calloc(128, 1);
         }
@@ -303,7 +301,7 @@ void FreeBox64Context(box64context_t** context)
     if(--(*context)->forked >= 0)
         return;
 
-    box64context_t* ctx = *context;   // local copy to do the cleanning
+    box64context_t* ctx = *context;   // local copy to do the cleaning
 
     //clean_current_emuthread();    // cleaning main thread seems a bad idea
     if(ctx->local_maplib)

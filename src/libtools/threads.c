@@ -81,8 +81,10 @@ void CleanStackSize(box64context_t* context)
 	mutex_unlock(&context->mutex_thread);
 }
 
-void FreeStackSize(kh_threadstack_t* map, uintptr_t attr)
+void FreeStackSize(uintptr_t attr)
 {
+	kh_threadstack_t* map = my_context->stacksizes;
+	if(!map) return;
 	mutex_lock(&my_context->mutex_thread);
 	khint_t k = kh_get(threadstack, map, attr);
 	if(k!=kh_end(map)) {
@@ -92,26 +94,30 @@ void FreeStackSize(kh_threadstack_t* map, uintptr_t attr)
 	mutex_unlock(&my_context->mutex_thread);
 }
 
-void AddStackSize(kh_threadstack_t* map, uintptr_t attr, void* stack, size_t stacksize)
+void AddStackSize(uintptr_t attr, void* stack, size_t stacksize)
 {
+	if(!my_context->stacksizes)
+		my_context->stacksizes = kh_init(threadstack);
+	kh_threadstack_t* map = my_context->stacksizes;
 	khint_t k;
 	int ret;
 	mutex_lock(&my_context->mutex_thread);
 	k = kh_put(threadstack, map, attr, &ret);
-	threadstack_t* ts = kh_value(map, k) = (threadstack_t*)box_calloc(1, sizeof(threadstack_t));
+	if(ret) kh_value(map, k) = (threadstack_t*)box_calloc(1, sizeof(threadstack_t));
+	threadstack_t* ts = kh_value(map, k);
 	ts->stack = stack;
 	ts->stacksize = stacksize;
 	mutex_unlock(&my_context->mutex_thread);
 }
 
 // return stack from attr (or from current emu if attr is not found..., wich is wrong but approximate enough?)
-int GetStackSize(x64emu_t* emu, uintptr_t attr, void** stack, size_t* stacksize)
+int GetStackSize(uintptr_t attr, void** stack, size_t* stacksize)
 {
-	if(emu->context->stacksizes && attr) {
+	if(my_context->stacksizes && attr) {
 		mutex_lock(&my_context->mutex_thread);
-		khint_t k = kh_get(threadstack, emu->context->stacksizes, attr);
-		if(k!=kh_end(emu->context->stacksizes)) {
-			threadstack_t* ts = kh_value(emu->context->stacksizes, k);
+		khint_t k = kh_get(threadstack, my_context->stacksizes, attr);
+		if(k!=kh_end(my_context->stacksizes)) {
+			threadstack_t* ts = kh_value(my_context->stacksizes, k);
 			*stack = ts->stack;
 			*stacksize = ts->stacksize;
 			mutex_unlock(&my_context->mutex_thread);
@@ -119,9 +125,6 @@ int GetStackSize(x64emu_t* emu, uintptr_t attr, void** stack, size_t* stacksize)
 		}
 		mutex_unlock(&my_context->mutex_thread);
 	}
-	// should a Warning be emitted?
-	*stack = emu->init_stack;
-	*stacksize = emu->size_stack;
 	return 0;
 }
 
@@ -195,18 +198,13 @@ x64emu_t* thread_get_emu()
 {
 	emuthread_t *et = (emuthread_t*)pthread_getspecific(thread_key);
 	if(!et) {
-		int stacksize = 2*1024*1024;
-		// try to get stack size of the thread
-		pthread_attr_t attr;
-		if(!pthread_getattr_np(pthread_self(), &attr)) {
-			size_t stack_size;
-        	void *stack_addr;
-			if(!pthread_attr_getstack(&attr, &stack_addr, &stack_size))
-				if(stack_size)
-					stacksize = stack_size;
-			pthread_attr_destroy(&attr);
-		}
-		void* stack = internal_mmap(NULL, stacksize, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_GROWSDOWN, -1, 0);
+		// this should not happens. So if it happens, use a small stack
+		int stacksize = 256*1024;
+		void* stack = NULL;
+		if(box64_is32bits)
+			stack = mmap64(NULL, stacksize, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_32BIT, -1, 0);
+		else
+			stack = internal_mmap(NULL, stacksize, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_GROWSDOWN, -1, 0);
 		if(stack!=MAP_FAILED)
 			setProtection((uintptr_t)stack, stacksize, PROT_READ|PROT_WRITE);
 		x64emu_t *emu = NewX64Emu(my_context, 0, (uintptr_t)stack, stacksize, 1);
@@ -274,7 +272,7 @@ static void* pthread_routine(void* p)
 EXPORT int my_pthread_attr_destroy(x64emu_t* emu, void* attr)
 {
 	if(emu->context->stacksizes)
-		FreeStackSize(emu->context->stacksizes, (uintptr_t)attr);
+		FreeStackSize((uintptr_t)attr);
 	PTHREAD_ATTR_ALIGN(attr);
 	int ret = pthread_attr_destroy(PTHREAD_ATTR(attr));
 	// no unaligned, it's destroyed
@@ -285,7 +283,7 @@ EXPORT int my_pthread_attr_getstack(x64emu_t* emu, void* attr, void** stackaddr,
 {
 	PTHREAD_ATTR_ALIGN(attr);
 	int ret = 0;
-	if(!GetStackSize(emu, (uintptr_t)attr, stackaddr, stacksize))
+	if(!GetStackSize((uintptr_t)attr, stackaddr, stacksize))
 		ret = pthread_attr_getstack(PTHREAD_ATTR(attr), stackaddr, stacksize);
 //printf_log(LOG_INFO, "pthread_attr_getstack gives (%d) %p 0x%zx\n", ret, *stackaddr, *stacksize);
 	return ret;
@@ -293,10 +291,7 @@ EXPORT int my_pthread_attr_getstack(x64emu_t* emu, void* attr, void** stackaddr,
 
 EXPORT int my_pthread_attr_setstack(x64emu_t* emu, void* attr, void* stackaddr, size_t stacksize)
 {
-	if(!my_context->stacksizes) {
-		my_context->stacksizes = kh_init(threadstack);
-	}
-	AddStackSize(my_context->stacksizes, (uintptr_t)attr, stackaddr, stacksize);
+	AddStackSize((uintptr_t)attr, stackaddr, stacksize);
 	//Don't call actual setstack...
 	//return pthread_attr_setstack(attr, stackaddr, stacksize);
 	PTHREAD_ATTR_ALIGN(attr);
@@ -362,7 +357,7 @@ EXPORT int my_pthread_attr_getstackaddr(x64emu_t* emu, pthread_attr_t* attr, voi
 	size_t size;
 	PTHREAD_ATTR_ALIGN(attr);
 	int ret = 0;
-	if(!GetStackSize(emu, (uintptr_t)attr, addr, &size ))
+	if(!GetStackSize((uintptr_t)attr, addr, &size ))
 		ret = pthread_attr_getstack(PTHREAD_ATTR(attr), addr, &size);
 //printf_log(LOG_INFO, "pthread_attr_getstackaddr gives %p\n", *addr);
 	return ret;
@@ -373,7 +368,7 @@ EXPORT int my_pthread_attr_getstacksize(x64emu_t* emu, pthread_attr_t* attr, siz
 	void* addr;
 	PTHREAD_ATTR_ALIGN(attr);
 	int ret = 0;
-	if(!GetStackSize(emu, (uintptr_t)attr, &addr, size ))
+	if(!GetStackSize((uintptr_t)attr, &addr, size ))
 		ret = pthread_attr_getstack(PTHREAD_ATTR(attr), &addr, size);
 	if(!*size)
 		*size = 2*1024*1024;
@@ -455,11 +450,10 @@ EXPORT int my_pthread_attr_setscope(x64emu_t* emu, pthread_attr_t* attr, int sco
 EXPORT int my_pthread_attr_setstackaddr(x64emu_t* emu, pthread_attr_t* attr, void* addr)
 {
 	size_t size = 2*1024*1024;
-	my_pthread_attr_getstacksize(emu, attr, &size);
-	PTHREAD_ATTR_ALIGN(attr);
-	int ret = pthread_attr_setstack(PTHREAD_ATTR(attr), addr, size);
-	PTHREAD_ATTR_UNALIGN(attr);
-	return ret;
+	void* pp = NULL;
+	GetStackSize((uintptr_t)attr, &pp, &size);
+	AddStackSize((uintptr_t)attr, addr, size);
+	return 0;
 	//return pthread_attr_setstackaddr(getAlignedAttr(attr), addr);
 }
 #ifndef ANDROID
@@ -484,7 +478,7 @@ EXPORT int my_pthread_getattr_np(x64emu_t* emu, pthread_t thread_id, pthread_att
 			pthread_attr_destroy(&attr);
 			// should stack be adjusted?
 		}
-		AddStackSize(emu->context->stacksizes, (uintptr_t)attr, stack, sz);
+		AddStackSize((uintptr_t)attr, stack, sz);
 	}
 	return ret;
 }
@@ -521,7 +515,7 @@ EXPORT int my_pthread_create(x64emu_t *emu, void* t, void* attr, void* start_rou
 		if(pthread_attr_getstacksize(PTHREAD_ATTR(attr), &stsize)==0)
 			stacksize = stsize;
 	}
-	if(GetStackSize(emu, (uintptr_t)attr, &attr_stack, &attr_stacksize))
+	if(GetStackSize((uintptr_t)attr, &attr_stack, &attr_stacksize))
 	{
 		stack = attr_stack;
 		stacksize = attr_stacksize;
@@ -541,7 +535,7 @@ EXPORT int my_pthread_create(x64emu_t *emu, void* t, void* attr, void* start_rou
 	et->fnc = (uintptr_t)start_routine;
 	et->arg = arg;
 	#ifdef DYNAREC
-	if(box64_dynarec) {
+	if(BOX64ENV(dynarec)) {
 		// pre-creation of the JIT code for the entry point of the thread
 		DBGetBlock(emu, (uintptr_t)start_routine, 1, 0);	// function wrapping are 64bits only on box64
 	}
@@ -567,7 +561,7 @@ void* my_prepare_thread(x64emu_t *emu, void* f, void* arg, int ssize, void** pet
 	et->fnc = (uintptr_t)f;
 	et->arg = arg;
 	#ifdef DYNAREC
-	if(box64_dynarec) {
+	if(BOX64ENV(dynarec)) {
 		// pre-creation of the JIT code for the entry point of the thread
 		DBGetBlock(emu, (uintptr_t)f, 1, 0);	// function wrapping are 64bits only on box64
 	}
@@ -662,10 +656,10 @@ static void* findcleanup_routineFct(void* fct)
 
 // key_dtor
 #define GO(A)   \
-static uintptr_t my_key_dtor_fct_##A = 0;  \
-static void my_key_dtor_##A(void* a)    			\
+static uintptr_t my_key_dtor_fct_##A = 0;  		\
+static void my_key_dtor_##A(void* a)    		\
 {                                       		\
-    RunFunction(my_key_dtor_fct_##A, 1, a);\
+    RunFunction(my_key_dtor_fct_##A, 1, a);		\
 }
 SUPER()
 #undef GO

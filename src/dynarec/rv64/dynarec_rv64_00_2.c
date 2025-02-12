@@ -118,7 +118,7 @@ uintptr_t dynarec64_00_2(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int 
                     u8 = F8;
                     if (u8) {
                         ADDI(x2, xZR, u8);
-                        emit_cmp8(dyn, ninst, x1, x2, x9, x4, x5, x6);
+                        emit_cmp8(dyn, ninst, x1, x2, x7, x4, x5, x6);
                     } else {
                         emit_cmp8_0(dyn, ninst, x1, x3, x4);
                     }
@@ -175,7 +175,7 @@ uintptr_t dynarec64_00_2(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int 
                     else
                         i64 = F8S;
                     MOV64xw(x5, i64);
-                    emit_adc32(dyn, ninst, rex, ed, x5, x3, x4, x6, x9);
+                    emit_adc32(dyn, ninst, rex, ed, x5, x3, x4, x6, x7);
                     WBACK;
                     break;
                 case 3: // SBB
@@ -257,7 +257,7 @@ uintptr_t dynarec64_00_2(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int 
                         emit_cmp32(dyn, ninst, rex, ed, x2, x3, x4, x5, x6);
                     } else {
                         if (!rex.w && MODREG) {
-                            AND(x1, ed, xMASK);
+                            ZEXTW2(x1, ed);
                             ed = x1;
                         }
                         emit_cmp32_0(dyn, ninst, rex, ed, x3, x4);
@@ -308,13 +308,13 @@ uintptr_t dynarec64_00_2(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int 
                 ADDI(x4, xZR, 0xff);
                 SLL(x4, x4, x1);
                 NOT(x4, x4);
-                SLL(x9, gd, x1);
+                SLL(x7, gd, x1);
 
                 // do aligned ll/sc sequence, reusing x2 (ed might be x2 but is no longer needed)
                 MARKLOCK;
                 LR_W(x2, x6, 1, 1);
                 AND(x5, x2, x4);
-                OR(x5, x5, x9);
+                OR(x5, x5, x7);
                 SC_W(x5, x5, x6, 1, 1);
                 BNEZ_MARKLOCK(x5);
 
@@ -345,10 +345,9 @@ uintptr_t dynarec64_00_2(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int 
                 B_NEXT_nocond;
                 MARK;
                 // Unaligned
-                ANDI(x5, EDEADLK, -(1 << (rex.w + 2)));
-                LDxw(x1, ed, 0);
+                ANDI(x5, ed, -(1 << (rex.w + 2)));
                 MARKLOCK;
-                LDxw(x1, wback, 0);
+                LDxw(x1, ed, 0);
                 LRxw(x3, x5, 1, 1);
                 SCxw(x4, x3, x5, 1, 1);
                 BNEZ_MARKLOCK(x4);
@@ -405,8 +404,20 @@ uintptr_t dynarec64_00_2(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int 
             if (MODREG) { // reg <= reg
                 MVxw(TO_NAT((nextop & 7) + (rex.b << 3)), gd);
             } else { // mem <= reg
-                addr = geted(dyn, addr, ninst, nextop, &ed, x2, x1, &fixedaddress, rex, &lock, 1, 0);
-                SDxw(gd, ed, fixedaddress);
+                IF_UNALIGNED(ip) {
+                    addr = geted(dyn, addr, ninst, nextop, &ed, x2, x1, &fixedaddress, rex, &lock, (1 << (2 + rex.w)) - 1, 0);
+                    for (int i = 0; i < (1 << (2 + rex.w)); i++) {
+                        if (i == 0) {
+                            SB(gd, ed, fixedaddress);
+                        } else {
+                            SRLI(x3, gd, i * 8);
+                            SB(x3, ed, fixedaddress + i);
+                        }
+                    }
+                } else {
+                    addr = geted(dyn, addr, ninst, nextop, &ed, x2, x1, &fixedaddress, rex, &lock, 1, 0);
+                    SDxw(gd, ed, fixedaddress);
+                }
                 SMWRITELOCK(lock);
             }
             break;
@@ -466,9 +477,9 @@ uintptr_t dynarec64_00_2(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int 
         case 0x8C:
             INST_NAME("MOV Ed, Seg");
             nextop = F8;
-            if ((nextop & 0xC0) == 0xC0) { // reg <= seg
+            if (MODREG) {
                 LHU(TO_NAT((nextop & 7) + (rex.b << 3)), xEmu, offsetof(x64emu_t, segs[(nextop & 0x38) >> 3]));
-            } else { // mem <= seg
+            } else {
                 addr = geted(dyn, addr, ninst, nextop, &ed, x2, x1, &fixedaddress, rex, NULL, 1, 0);
                 LHU(x3, xEmu, offsetof(x64emu_t, segs[(nextop & 0x38) >> 3]));
                 SH(x3, ed, fixedaddress);
@@ -492,11 +503,11 @@ uintptr_t dynarec64_00_2(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int 
         case 0x8E:
             INST_NAME("MOV Seg,Ew");
             nextop = F8;
-            if ((nextop & 0xC0) == 0xC0) {
+            if (MODREG) {
                 ed = TO_NAT((nextop & 7) + (rex.b << 3));
             } else {
                 SMREAD();
-                addr = geted(dyn, addr, ninst, nextop, &ed, x2, x1, &fixedaddress, rex, &lock, 1, 0);
+                addr = geted(dyn, addr, ninst, nextop, &ed, x2, x1, &fixedaddress, rex, NULL, 1, 0);
                 LHU(x1, ed, fixedaddress);
                 ed = x1;
             }
@@ -510,7 +521,7 @@ uintptr_t dynarec64_00_2(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int 
                 POP1z(TO_NAT((nextop & 7) + (rex.b << 3)));
             } else {
                 POP1z(x2); // so this can handle POP [ESP] and maybe some variant too
-                addr = geted(dyn, addr, ninst, nextop, &ed, x3, x1, &fixedaddress, rex, &lock, 1, 0);
+                addr = geted(dyn, addr, ninst, nextop, &ed, x3, x1, &fixedaddress, rex, NULL, 1, 0);
                 if (ed == xRSP) {
                     SDz(x2, ed, fixedaddress);
                 } else {
@@ -651,6 +662,19 @@ uintptr_t dynarec64_00_2(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int 
                 CBZ_NEXT(xRCX);
                 ANDI(x1, xFlags, 1 << F_DF);
                 BNEZ_MARK2(x1);
+                IF_ALIGNED (ip) {
+                    // special optim for large RCX value on forward case only
+                    MARK3;
+                    ADDI(x1, xZR, 8);
+                    BLT_MARK(xRCX, x1);
+                    LD(x1, xRSI, 0);
+                    SD(x1, xRDI, 0);
+                    ADDI(xRSI, xRSI, 8);
+                    ADDI(xRDI, xRDI, 8);
+                    SUBI(xRCX, xRCX, 8);
+                    BNEZ_MARK3(xRCX);
+                    BEQZ_MARKLOCK(xRCX);
+                }
                 MARK; // Part with DF==0
                 LBU(x1, xRSI, 0);
                 SB(x1, xRDI, 0);
@@ -666,6 +690,7 @@ uintptr_t dynarec64_00_2(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int 
                 SUBI(xRDI, xRDI, 1);
                 SUBI(xRCX, xRCX, 1);
                 BNEZ_MARK2(xRCX);
+                MARKLOCK;
                 // done
             } else {
                 INST_NAME("MOVSB");
@@ -967,7 +992,7 @@ uintptr_t dynarec64_00_2(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int 
                     if (rex.w) {
                         MV(x1, xRAX);
                     } else {
-                        AND(x1, xRAX, xMASK);
+                        ZEXTW2(x1, xRAX);
                     }
                     ANDI(x2, xFlags, 1 << F_DF);
                     BNEZ_MARK2(x2);

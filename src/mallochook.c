@@ -6,6 +6,7 @@
 #include <sys/param.h>
 #include <sys/mman.h>
 #include <dlfcn.h>
+#include <malloc.h>
 
 #include "box64context.h"
 #include "debug.h"
@@ -190,6 +191,7 @@ void* box32_calloc(size_t n, size_t s)
     void* ret = box_calloc(n, s);
     if(ret<SPACE32) return ret;
     box_free(ret);
+    malloc_trim(0);
     return customCalloc32(n, s);
 }
 void* box32_malloc(size_t s)
@@ -197,6 +199,7 @@ void* box32_malloc(size_t s)
     void* ret = box_malloc(s);
     if(ret<SPACE32) return ret;
     box_free(ret);
+    malloc_trim(0);
     return customMalloc32(s);
 }
 void* box32_realloc(void* p, size_t s)
@@ -205,6 +208,7 @@ void* box32_realloc(void* p, size_t s)
         return customRealloc32(p, s);
     void* ret = box_realloc(p, s);
     if(ret<SPACE32) return ret;
+    malloc_trim(0);
     void* newret = customMalloc32(s);
     memcpy(newret, ret, s);
     box_free(ret);
@@ -222,6 +226,7 @@ void* box32_memalign(size_t align, size_t s)
     void* ret = box_memalign(align, s);
     if(ret<SPACE32) return ret;
     box_free(ret);
+    malloc_trim(0);
     return customMemAligned32(align, s);
 }
 size_t box32_malloc_usable_size(void* p)
@@ -231,6 +236,13 @@ size_t box32_malloc_usable_size(void* p)
     else
         return box_malloc_usable_size(p);
 }
+
+char* box32_strdup(const char* s) {
+    char* ret = box32_calloc(1, strlen(s)+1);
+    memcpy(ret, s, strlen(s));
+    return ret;
+}
+
 #endif
 
 // redefining all libc memory allocation routines
@@ -832,7 +844,7 @@ void checkHookedSymbols(elfheader_t* h)
 {
     int hooked = 0;
     int hooked_symtab = 0;
-    if(box64_malloc_hack==1)
+    if(BOX64ENV(malloc_hack)==1)
         return;
     if(box64_is32bits) {
         /* TODO? */
@@ -887,7 +899,7 @@ void checkHookedSymbols(elfheader_t* h)
                 #undef GO
                 #undef GO2
                 #define GO(A, B) if(!strcmp(symname, #A)) {uintptr_t alt = AddCheckBridge(my_context->system, B, A, 0, #A); printf_log(LOG_DEBUG, "Redirecting %s function from %p (%s)\n", symname, (void*)offs, ElfName(h)); addRelocJmp((void*)offs, (void*)alt, sz, #A, h, &real_##A);}
-                #define GO2(A, B) if(!strcmp(symname, #A) && (box64_malloc_hack>1)) {uintptr_t alt = AddCheckBridge(my_context->system, B, my_##A, 0, "my_" #A); printf_log(LOG_DEBUG, "Redirecting %s function from %p (%s)\n", symname, (void*)offs, ElfName(h)); addRelocJmp((void*)offs, (void*)alt, sz, "my_" #A, h, &real_##A);}
+                #define GO2(A, B) if(!strcmp(symname, #A) && (BOX64ENV(malloc_hack)>1)) {uintptr_t alt = AddCheckBridge(my_context->system, B, my_##A, 0, "my_" #A); printf_log(LOG_DEBUG, "Redirecting %s function from %p (%s)\n", symname, (void*)offs, ElfName(h)); addRelocJmp((void*)offs, (void*)alt, sz, "my_" #A, h, &real_##A);}
                 SUPER()
                 #undef GO
                 #undef GO2
@@ -910,7 +922,7 @@ void checkHookedSymbols(elfheader_t* h)
                     #undef GO
                     #undef GO2
                     #define GO(A, B) if(!strcmp(symname, #A)) {uintptr_t alt = AddCheckBridge(my_context->system, B, A, 0, #A); printf_log(LOG_DEBUG, "Redirecting %s function from %p (%s)\n", symname, (void*)offs, ElfName(h)); addRelocJmp((void*)offs, (void*)alt, sz, #A, h, &real_##A);}
-                    #define GO2(A, B) if(!strcmp(symname, #A) && (box64_malloc_hack>1)) {uintptr_t alt = AddCheckBridge(my_context->system, B, my_##A, 0, "my_" #A); printf_log(LOG_DEBUG, "Redirecting %s function from %p (%s)\n", symname, (void*)offs, ElfName(h)); addRelocJmp((void*)offs, (void*)alt, sz, "my_" #A, h, &real_##A);}
+                    #define GO2(A, B) if(!strcmp(symname, #A) && (BOX64ENV(malloc_hack)>1)) {uintptr_t alt = AddCheckBridge(my_context->system, B, my_##A, 0, "my_" #A); printf_log(LOG_DEBUG, "Redirecting %s function from %p (%s)\n", symname, (void*)offs, ElfName(h)); addRelocJmp((void*)offs, (void*)alt, sz, "my_" #A, h, &real_##A);}
                     SUPER()
                     #undef GO
                     #undef GO2
@@ -918,7 +930,7 @@ void checkHookedSymbols(elfheader_t* h)
             }
         }
     }
-    if(box64_malloc_hack==2)
+    if(BOX64ENV(malloc_hack)==2)
         h->malloc_hook_2 = 1;
 }
 

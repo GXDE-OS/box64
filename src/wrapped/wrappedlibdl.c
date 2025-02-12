@@ -174,7 +174,7 @@ void* my_dlopen(x64emu_t* emu, void *filename, int flag)
             box_free(tmp);
             box_free(platform);
         }
-        // check if alread dlopenned...
+        // check if already dlopened...
         for (size_t i=MIN_NLIB; i<dl->lib_sz; ++i) {
             if(dl->dllibs[i].full && IsSameLib(dl->dllibs[i].lib, rfilename)) {
                 if(flag&0x4) {   // don't re-open in RTLD_NOLOAD mode
@@ -254,7 +254,7 @@ void* my_dlopen(x64emu_t* emu, void *filename, int flag)
         my_context->deferredInitSz = old_deferredInitSz;
         my_context->deferredInitCap = old_deferredInitCap;
     } else {
-        // check if already dlopenned...
+        // check if already dlopened...
         for (size_t i=MIN_NLIB; i<dl->lib_sz; ++i) {
             if(dl->dllibs[i].is_self) {
                 ++dl->dllibs[i].count;
@@ -354,7 +354,7 @@ void* my_dlsym(x64emu_t* emu, void *handle, void *symbol)
     if(box64_is32bits && handle==(void*)0xffffffff)
         handle = (void*)~0LL;
     CLEARERR
-    printf_dlsym(LOG_DEBUG, "%04d|Call to dlsym(%p, \"%s\")%s", GetTID(), handle, rsymbol, dlsym_error?"":"\n");
+    printf_dlsym(LOG_DEBUG, "%04d|Call to dlsym(%p, \"%s\")%s", GetTID(), handle, rsymbol, BOX64ENV(dlsym_error)?"":"\n");
     if(handle==NULL) {
         // special case, look globably
         if(GetGlobalSymbolStartEnd(my_context->maplib, rsymbol, &start, &end, NULL, -1, NULL, 0, NULL)) {
@@ -370,7 +370,7 @@ void* my_dlsym(x64emu_t* emu, void *handle, void *symbol)
         return NULL;
     }
     if(handle==(void*)~0LL) {
-        // special case, look globably but no self (RTLD_NEXT)
+        // special case, look globably after self in the lm chain (RTLD_NEXT)
         uintptr_t ret_addr = 0;
         #ifdef BOX32
         if(box64_is32bits)
@@ -379,7 +379,7 @@ void* my_dlsym(x64emu_t* emu, void *handle, void *symbol)
         #endif
             ret_addr = *(uintptr_t*)R_RSP;
         elfheader_t *elf = FindElfAddress(my_context, ret_addr); // use return address to guess "self"
-        if(GetNoSelfSymbolStartEnd(my_context->maplib, rsymbol, &start, &end, elf, 0, -1, NULL, 0, NULL)) {
+        if(GetNextSymbolStartEnd(my_context->maplib, rsymbol, &start, &end, elf, 0, -1, NULL, 0, NULL)) {
             printf_dlsym(LOG_NEVER, "%p\n", (void*)start);
             pthread_mutex_unlock(&mutex);
             return (void*)start;
@@ -522,7 +522,7 @@ void* my_dlvsym(x64emu_t* emu, void *handle, void *symbol, const char *vername)
     if(box64_is32bits && handle==(void*)0xffffffff)
         handle = (void*)~0LL;
     CLEARERR
-    printf_dlsym(LOG_DEBUG, "Call to dlvsym(%p, \"%s\", %s)%s", handle, rsymbol, vername?vername:"(nil)", dlsym_error?"":"\n");
+    printf_dlsym(LOG_DEBUG, "Call to dlvsym(%p, \"%s\", %s)%s", handle, rsymbol, vername?vername:"(nil)", BOX64ENV(dlsym_error)?"":"\n");
     if(handle==NULL) {
         // special case, look globably
         if(GetGlobalSymbolStartEnd(my_context->maplib, rsymbol, &start, &end, NULL, version, vername, 0, NULL)) {
@@ -667,7 +667,7 @@ EXPORT int my__dl_find_object(x64emu_t* emu, void* addr, my_dl_find_object_t* re
     return -1;
 }
 
-void closeAllDLOpenned()
+void closeAllDLOpened()
 {
     dlprivate_t *dl = my_context->dlprivate;
     actualy_closing = 1;
@@ -691,7 +691,7 @@ void closeAllDLOpenned()
     else
 
 #define CUSTOM_FINI \
-    closeAllDLOpenned();
+    closeAllDLOpened();
 
 // define all standard library functions
 #include "wrappedlib_init.h"

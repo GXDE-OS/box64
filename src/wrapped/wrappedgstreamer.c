@@ -362,6 +362,27 @@ static void* findGstIteratorFoldFunctionFct(void* fct)
     printf_log(LOG_NONE, "Warning, no more slot for gstreamer GstIteratorFoldFunction callback\n");
     return NULL;
 }
+//GCompareFunc
+#define GO(A)   \
+static uintptr_t my_GCompareFunc_fct_##A = 0;                           \
+static int my_GCompareFunc_##A(void* a, void* b)                        \
+{                                                                       \
+    return (int)RunFunctionFmt(my_GCompareFunc_fct_##A, "pp", a, b);    \
+}
+SUPER()
+#undef GO
+static void* findGCompareFuncFct(void* fct)
+{
+    if(!fct) return fct;
+    #define GO(A) if(my_GCompareFunc_fct_##A == (uintptr_t)fct) return my_GCompareFunc_##A;
+    SUPER()
+    #undef GO
+    #define GO(A) if(my_GCompareFunc_fct_##A == 0) {my_GCompareFunc_fct_##A = (uintptr_t)fct; return my_GCompareFunc_##A; }
+    SUPER()
+    #undef GO
+    printf_log(LOG_NONE, "Warning, no more slot for gstreamer GCompareFunc callback\n");
+    return NULL;
+}
 //GCompareDataFunc
 #define GO(A)   \
 static uintptr_t my_GCompareDataFunc_fct_##A = 0;                            \
@@ -950,7 +971,7 @@ static void register_plugins_from_folder(x64emu_t* emu, const char* folder)
             }
             void* f_init = handle?(is_native?dlsym(handle, regfunc_name):my_dlsym(emu, handle, regfunc_name)):NULL;
             if(f_init) {
-                printf_log(LOG_DEBUG, "BOX64: Will registering %sgstplugin %s\n", is_native?"native ":"", filename);
+                printf_log(LOG_DEBUG, "Will registering %sgstplugin %s\n", is_native?"native ":"", filename);
                 if(is_native)
                     ((vFv_t)(f_init))();
                 else
@@ -962,7 +983,7 @@ static void register_plugins_from_folder(x64emu_t* emu, const char* folder)
                 my->plugins[my->plugin_cnt].is_native = is_native;
                 my->plugins[my->plugin_cnt++].handle = handle;
             } else {
-                printf_log(LOG_DEBUG, "BOX64: Failled to register %sgstplugin %s, name=%s, handle=%p\n", is_native?"native ":"", filename, name, handle);
+                printf_log(LOG_DEBUG, "Failled to register %sgstplugin %s, name=%s, handle=%p\n", is_native?"native ":"", filename, name, handle);
             }
             if(handle && !f_init) {
                 is_native?dlclose(handle):my_dlclose(emu, handle);
@@ -1228,8 +1249,13 @@ EXPORT void my_gst_mini_object_init(x64emu_t* emu, void* obj, uint32_t flags, si
     my->gst_mini_object_init(obj, flags, type, findGstMiniObjectCopyFunctionFct(copy_f), findGstMiniObjectDisposeFunctionFct(disp_f), findGstMiniObjectFreeFunctionFct(free_f));
 }
 
+EXPORT int my_gst_iterator_find_custom(x64emu_t* emu, void* it, void* f, void* elem, void* data)
+{
+    return my->gst_iterator_find_custom(it, findGCompareFuncFct(f), elem, data);
+}
+
 #define PRE_INIT    \
-    if(box64_nogtk) \
+    if(BOX64ENV(nogtk)) \
         return -1;
 
 #define CUSTOM_INIT \

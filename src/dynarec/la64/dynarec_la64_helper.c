@@ -582,7 +582,7 @@ void ret_to_epilog(dynarec_la64_t* dyn, int ninst, rex_t rex)
     POP1z(xRIP);
     MVz(x1, xRIP);
     SMEND();
-    if (box64_dynarec_callret) {
+    if (BOX64DRENV(dynarec_callret)) {
         // pop the actual return address from RV64 stack
         LD_D(xRA, xSP, 0);     // native addr
         LD_D(x6, xSP, 8);     // x86 addr
@@ -627,7 +627,7 @@ void retn_to_epilog(dynarec_la64_t* dyn, int ninst, rex_t rex, int n)
     }
     MVz(x1, xRIP);
     SMEND();
-    if (box64_dynarec_callret) {
+    if (BOX64DRENV(dynarec_callret)) {
         // pop the actual return address from RV64 stack
         LD_D(xRA, xSP, 0);     // native addr
         LD_D(x6, xSP, 8);     // x86 addr
@@ -654,6 +654,50 @@ void retn_to_epilog(dynarec_la64_t* dyn, int ninst, rex_t rex, int n)
     BSTRPICK_D(x2, xRIP, JMPTABL_START0 + JMPTABL_SHIFT0 - 1, JMPTABL_START0);
     ALSL_D(x3, x2, x3, 3);
     LD_D(x2, x3, 0);
+    BR(x2);
+    CLEARIP();
+}
+
+void iret_to_epilog(dynarec_la64_t* dyn, int ninst, int is64bits)
+{
+    // #warning TODO: is64bits
+    MAYUSE(ninst);
+    MESSAGE(LOG_DUMP, "IRet to epilog\n");
+    NOTEST(x2);
+    if (is64bits) {
+        POP1(xRIP);
+        POP1(x2);
+        POP1(xFlags);
+    } else {
+        POP1_32(xRIP);
+        POP1_32(x2);
+        POP1_32(xFlags);
+    }
+
+    ST_H(x2, xEmu, offsetof(x64emu_t, segs[_CS]));
+    ST_W(xZR, xEmu, offsetof(x64emu_t, segs_serial[_CS]));
+    // clean EFLAGS
+    MOV32w(x1, 0x3F7FD7);
+    AND(xFlags, xFlags, x1);
+    ORI(xFlags, xFlags, 0x2);
+    SPILL_EFLAGS();
+    SET_DFNONE();
+    // POP RSP
+    if (is64bits) {
+        POP1(x3); // rsp
+        POP1(x2); // ss
+    } else {
+        POP1_32(x3); // rsp
+        POP1_32(x2); // ss
+    }
+    // POP SS
+    ST_H(x2, xEmu, offsetof(x64emu_t, segs[_SS]));
+    ST_W(xZR, xEmu, offsetof(x64emu_t, segs_serial[_SS]));
+    // set new RSP
+    MV(xRSP, x3);
+    // Ret....
+    MOV64x(x2, (uintptr_t)la64_epilog); // epilog on purpose, CS might have changed!
+    SMEND();
     BR(x2);
     CLEARIP();
 }
@@ -712,15 +756,16 @@ void call_c(dynarec_la64_t* dyn, int ninst, void* fnc, int reg, int ret, int sav
         LD_D(xFlags, xEmu, offsetof(x64emu_t, eflags));
         SPILL_EFLAGS();
     }
-    SET_NODF();
+    // SET_NODF();
     dyn->last_ip = 0;
 }
 
-void grab_segdata(dynarec_la64_t* dyn, uintptr_t addr, int ninst, int reg, int segment)
+void grab_segdata(dynarec_la64_t* dyn, uintptr_t addr, int ninst, int reg, int segment, int modreg)
 {
     (void)addr;
     int64_t j64;
     MAYUSE(j64);
+    if (modreg) return;
     MESSAGE(LOG_DUMP, "Get %s Offset\n", (segment == _FS) ? "FS" : "GS");
     int t1 = x1, t2 = x4;
     if (reg == t1) ++t1;
@@ -1212,8 +1257,8 @@ static void fpuCacheTransform(dynarec_la64_t* dyn, int ninst, int s1, int s2, in
     lsxcache_t cache = dyn->lsx;
     int s1_val = 0;
     int s2_val = 0;
-    // unload every uneeded cache
-    // check SSE first, than MMX, in order, for optimisation issue
+    // unload every unneeded cache
+    // check SSE first, than MMX, in order, for optimization issue
     for (int i = 0; i < 16; ++i) {
         int j = findCacheSlot(dyn, ninst, LSX_CACHE_XMMW, i, &cache);
         if (j >= 0 && findCacheSlot(dyn, ninst, LSX_CACHE_XMMW, i, &cache_i2) == -1)

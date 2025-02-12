@@ -37,24 +37,18 @@ typedef struct bridge_s {
     kh_bridgemap_t  *bridgemap;
 } bridge_t;
 
-// from src/wrapped/wrappedlibc.c
-void* my_mmap(x64emu_t* emu, void* addr, unsigned long length, int prot, int flags, int fd, int64_t offset);
-int my_munmap(x64emu_t* emu, void* addr, unsigned long length);
-
 brick_t* NewBrick(void* old)
 {
     brick_t* ret = (brick_t*)box_calloc(1, sizeof(brick_t));
     if(old)
         old = old + NBRICK * sizeof(onebridge_t);
-    void* ptr = my_mmap(NULL, old, NBRICK * sizeof(onebridge_t), PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | 0x40 | MAP_ANONYMOUS, -1, 0); // 0x40 is MAP_32BIT
+    void* ptr = box_mmap(old, NBRICK * sizeof(onebridge_t), PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | ((!box64_is32bits && box64_wine)?0:0x40) | MAP_ANONYMOUS, -1, 0); // 0x40 is MAP_32BIT
     if(ptr == MAP_FAILED)
-        ptr = my_mmap(NULL, NULL, NBRICK * sizeof(onebridge_t), PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | 0x40 | MAP_ANONYMOUS, -1, 0);
+        ptr = box_mmap(NULL, NBRICK * sizeof(onebridge_t), PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | ((!box64_is32bits && box64_wine)?0:0x40) | MAP_ANONYMOUS, -1, 0);
     if(ptr == MAP_FAILED) {
         printf_log(LOG_NONE, "Warning, cannot allocate 0x%lx aligned bytes for bridge, will probably crash later\n", NBRICK*sizeof(onebridge_t));
     }
-    #ifdef DYNAREC
     setProtection((uintptr_t)ptr, NBRICK * sizeof(onebridge_t), PROT_READ | PROT_WRITE | PROT_EXEC | PROT_NOPROT);
-    #endif
     dynarec_log(LOG_INFO, "New Bridge brick at %p (size 0x%zx)\n", ptr, NBRICK*sizeof(onebridge_t));
     ret->b = ptr;
     return ret;
@@ -63,7 +57,14 @@ brick_t* NewBrick(void* old)
 bridge_t *NewBridge()
 {
     bridge_t *b = (bridge_t*)box_calloc(1, sizeof(bridge_t));
-    b->head = NewBrick(NULL);
+    // before enable seccomp and bpf fileter, proton check if "syscall" address (from libc) is > 0x700000000000
+    // it also test if an internal symbol "sc_seccomp" address's is also > 0x700000000000 before enabling seccomp syscall filter.
+    // This hack  allow the test to pass, but only if the system has at least 47bits address space.
+    // it will not work on 39bits address space and will need more hacks there
+    void* load_addr = NULL;
+    if((!box64_is32bits && box64_wine && my_context->exit_bridge))  // a first bridge is create for system use, before box64_is32bits can be computed, so use exit_bridge to detect that
+        load_addr = (void*)0x700000000000LL;
+    b->head = NewBrick(load_addr);
     b->last = b->head;
     b->bridgemap = kh_init(bridgemap);
 
@@ -77,7 +78,8 @@ void FreeBridge(bridge_t** bridge)
     while(b) {
         brick_t *n = b->next;
         dynarec_log(LOG_INFO, "FreeBridge brick at %p (size 0x%zx)\n", b->b, NBRICK*sizeof(onebridge_t));
-        my_munmap(NULL, b->b, NBRICK*sizeof(onebridge_t));
+        box_munmap(b->b, NBRICK*sizeof(onebridge_t));
+        freeProtection((uintptr_t)b->b, NBRICK*sizeof(onebridge_t));
         box_free(b);
         b = n;
     }

@@ -357,29 +357,29 @@ static int loadEmulatedLib(const char* libname, library_t *lib, box64context_t* 
 
         printf_dump(LOG_INFO, "Using emulated %s\n", libname);
         #ifdef DYNAREC
-        if(libname && box64_dynarec_bleeding_edge && strstr(libname, "libmonobdwgc-2.0.so")) {
+        if(libname && BOX64ENV(dynarec_bleeding_edge) && strstr(libname, "libmonobdwgc-2.0.so")) {
             printf_dump(LOG_INFO, "MonoBleedingEdge detected, disable Dynarec BigBlock and enable Dynarec StrongMem\n");
-            box64_dynarec_bigblock = 0;
-            box64_dynarec_strongmem = 1;
+            SET_BOX64ENV(dynarec_bigblock, 0);
+            SET_BOX64ENV(dynarec_strongmem, 1);
         }
-        if(libname && box64_dynarec_tbb && strstr(libname, "libtbb.so")) {
+        if(libname && BOX64ENV(dynarec_tbb) && strstr(libname, "libtbb.so")) {
             printf_dump(LOG_INFO, "libtbb detected, enable Dynarec StrongMem\n");
-            box64_dynarec_strongmem = 1;
+            SET_BOX64ENV(dynarec_strongmem, 1);
         }
         #endif
-        if(libname && box64_jvm && strstr(libname, "libjvm.so")) {
+        if(libname && BOX64ENV(jvm) && strstr(libname, "libjvm.so")) {
             #ifdef DYNAREC
             printf_dump(LOG_INFO, "libjvm detected, disable Dynarec BigBlock and enable Dynarec StrongMem, hide SSE 4.2\n");
-            box64_dynarec_bigblock = 0;
-            box64_dynarec_strongmem = 1;
+            SET_BOX64ENV(dynarec_bigblock, 0);
+            SET_BOX64ENV(dynarec_strongmem, 1);
             #else
             printf_dump(LOG_INFO, "libjvm detected, hide SSE 4.2\n");
             #endif
-            box64_sse42 = 0;
+            SET_BOX64ENV(sse42, 0);
         }
-        if(libname && box64_libcef && strstr(libname, "libcef.so")) {
+        if(libname && BOX64ENV(libcef) && strstr(libname, "libcef.so")) {
             printf_dump(LOG_INFO, "libcef detected, using malloc_hack_2\n");
-            box64_malloc_hack = 2;
+            SET_BOX64ENV(malloc_hack, 2);
         }
         return 1;
     }
@@ -433,7 +433,8 @@ static const char* essential_libs[] = {
     "libxcb-image.so.0", "libxcb-keysyms.so.1", "libxcb-xtest.so.0", "libxcb-glx.so.0", "libxcb-dri2.so.0", "libxcb-dri3.so.0",
     "libXtst.so.6", "libXt.so.6", "libXcomposite.so.1", "libXdamage.so.1", "libXmu.so.6", "libxkbcommon.so.0", 
     "libxkbcommon-x11.so.0", "libpulse-simple.so.0", "libpulse.so.0", "libvulkan.so.1", "libvulkan.so",
-    "ld-linux-x86-64.so.2", "crashhandler.so", "libtcmalloc_minimal.so.0", "libtcmalloc_minimal.so.4", "libanl.so.1"
+    "ld-linux-x86-64.so.2", "crashhandler.so", "libtcmalloc_minimal.so.0", "libtcmalloc_minimal.so.4", "libanl.so.1",
+    "ld-linux.so.2", "ld-linux.so.3"
 };
 static const char* essential_libs_egl[] = {
     "libEGL.so", "libGLESv2.so"
@@ -442,7 +443,7 @@ static int isEssentialLib(const char* name) {
     for (unsigned int i=0; i<sizeof(essential_libs)/sizeof(essential_libs[0]); ++i)
         if(!strcmp(name, essential_libs[i]))
             return 1;
-    if(box64_wrap_egl)
+    if(BOX64ENV(wrap_egl))
         for (unsigned int i=0; i<sizeof(essential_libs_egl)/sizeof(essential_libs_egl[0]); ++i)
             if(!strcmp(name, essential_libs_egl[i]))
                 return 1;
@@ -481,14 +482,14 @@ library_t *NewLibrary(const char* path, box64context_t* context, elfheader_t* ve
     lib->path = box_realpath(path, NULL);
     if(!lib->path)
         lib->path = box_strdup(path);
-    if(box64_libGL && !strcmp(path, box64_libGL))
+    if(BOX64ENV(libgl) && !strcmp(path, BOX64ENV(libgl)))
         lib->name = box_strdup("libGL.so.1");
     else
         lib->name = Path2Name(path);
     lib->nbdot = NbDot(lib->name);
     lib->type = LIB_UNNKNOW;
     printf_dump(LOG_DEBUG, "Simplified name is \"%s\"\n", lib->name);
-    if(box64_nopulse) {
+    if(BOX64ENV(nopulse)) {
         if(strstr(lib->name, "libpulse.so")==lib->name || strstr(lib->name, "libpulse-simple.so")==lib->name) {
             box_free(lib->name);
             box_free(lib->path);
@@ -497,7 +498,7 @@ library_t *NewLibrary(const char* path, box64context_t* context, elfheader_t* ve
             return NULL;
         }
     }
-    if(box64_novulkan) {
+    if(BOX64ENV(novulkan)) {
         if(strstr(lib->name, "libvulkan.so")==lib->name) {
             box_free(lib->name);
             box_free(lib->path);
@@ -508,9 +509,9 @@ library_t *NewLibrary(const char* path, box64context_t* context, elfheader_t* ve
     }
     int notwrapped = FindInCollection(lib->name, &context->box64_emulated_libs);
     int essential = isEssentialLib(lib->name);
-    if(!notwrapped && box64_prefer_emulated && !essential)
+    if(!notwrapped && BOX64ENV(prefer_emulated) && !essential)
         notwrapped = 1;
-    int precise = (!box64_prefer_wrapped && !essential && path && strchr(path, '/'))?1:0;
+    int precise = (!BOX64ENV(prefer_wrapped) && !essential && path && strchr(path, '/'))?1:0;
     if(!notwrapped && precise && strstr(path, "libtcmalloc_minimal.so"))
         precise = 0;    // allow native version for tcmalloc_minimum
     /*
@@ -1136,14 +1137,14 @@ linkmap32_t* getLinkMapElf32(elfheader_t* h)
 linkmap32_t* addLinkMapLib32(library_t* lib)
 {
     if(!my_context->linkmap32) {
-        my_context->linkmap32 = (linkmap32_t*)box_calloc(1, sizeof(linkmap32_t));
+        my_context->linkmap32 = (linkmap32_t*)actual_calloc(1, sizeof(linkmap32_t));
         my_context->linkmap32->l_lib = lib;
         return my_context->linkmap32;
     }
     linkmap32_t* lm = my_context->linkmap32;
     while(lm->l_next)
         lm = (linkmap32_t*)from_ptrv(lm->l_next);
-    lm->l_next = to_ptrv(box_calloc(1, sizeof(linkmap32_t)));
+    lm->l_next = to_ptrv(actual_calloc(1, sizeof(linkmap32_t)));
     linkmap32_t* l_next = (linkmap32_t*)from_ptrv(lm->l_next);
     l_next->l_lib = lib;
     l_next->l_prev = to_ptrv(lm);
@@ -1157,7 +1158,7 @@ void removeLinkMapLib32(library_t* lib)
         ((linkmap32_t*)from_ptrv(lm->l_next))->l_prev = lm->l_prev;
     if(lm->l_prev)
         ((linkmap32_t*)from_ptrv(lm->l_prev))->l_next = lm->l_next;
-    box_free(lm);
+    actual_free(lm);
 }
 
 void AddMainElfToLinkmap32(elfheader_t* elf)
@@ -1165,7 +1166,7 @@ void AddMainElfToLinkmap32(elfheader_t* elf)
     linkmap32_t* lm = addLinkMapLib32(NULL);    // main elf will have a null lib link
 
     lm->l_addr = (Elf32_Addr)to_ptrv(GetElfDelta(elf));
-    lm->l_name = to_ptrv(my_context->fullpath);
+    lm->l_name = to_cstring(my_context->fullpath);
     lm->l_ld = to_ptrv(GetDynamicSection(elf));
 }
 #endif
@@ -1193,14 +1194,14 @@ linkmap_t* getLinkMapElf(elfheader_t* h)
 linkmap_t* addLinkMapLib(library_t* lib)
 {
     if(!my_context->linkmap) {
-        my_context->linkmap = (linkmap_t*)box_calloc(1, sizeof(linkmap_t));
+        my_context->linkmap = (linkmap_t*)actual_calloc(1, sizeof(linkmap_t));
         my_context->linkmap->l_lib = lib;
         return my_context->linkmap;
     }
     linkmap_t* lm = my_context->linkmap;
     while(lm->l_next)
         lm = lm->l_next;
-    lm->l_next = (linkmap_t*)box_calloc(1, sizeof(linkmap_t));
+    lm->l_next = (linkmap_t*)actual_calloc(1, sizeof(linkmap_t));
     lm->l_next->l_lib = lib;
     lm->l_next->l_prev = lm;
     return lm->l_next;
@@ -1213,7 +1214,7 @@ void removeLinkMapLib(library_t* lib)
         lm->l_next->l_prev = lm->l_prev;
     if(lm->l_prev)
         lm->l_prev->l_next = lm->l_next;
-    box_free(lm);
+    actual_free(lm);
 }
 
 void AddMainElfToLinkmap(elfheader_t* elf)

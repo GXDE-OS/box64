@@ -1324,7 +1324,11 @@ GOWD(modfl, DFDp, modf)
 //GOW(modify_ldt, 
 //GOW(moncontrol, 
 //GO(__monstartup, 
-//GOW(monstartup, 
+#ifdef STATICBUILD
+//GOW(monstartup, vFLL)
+#else
+GOW(monstartup, vFLL)
+#endif
 //DATA(__morecore, 
 GOW(mount, iFpppLp)
 GO(mprobe, iFp)
@@ -1509,7 +1513,11 @@ GOWM(prctl, iFEiLLLL)
 GO(pread, lFipLl)
 GOW(__pread64, lFipLI)
 GO(pread64, lFipLI)
-//GO(__pread64_chk, 
+#ifdef LA64
+GO2(__pread64_chk, lFipLlL, __pread_chk)
+#else
+GO(__pread64_chk, lFipLlL)
+#endif
 GO(__pread_chk, lFipLlL)
 GO(preadv, lFipil)
 GO(preadv2, lFipili)
@@ -2148,8 +2156,8 @@ GOM(sysconf, lFEi)
 //DATA(_sys_errlist, 8)
 //DATA(sys_errlist, 8)
 #else
-GO(__sysctl, iFpipppL)
-GOW(sysctl, iFpipppL)
+GOM(__sysctl, iFEpipppL)
+GOWM(sysctl, iFEpipppL)
 DATA(_sys_errlist, 8)
 DATA(sys_errlist, 8)
 #endif
@@ -2551,7 +2559,7 @@ GOM(wscanf, iFEpV)
 //GOM(xdr_double, iFpp)
 //GOM(xdr_enum, iFpp)
 //GOM(xdr_float, iFpp)
-//GOM(xdr_free, vFpp)
+GO(xdr_free, vFpp)
 //GOM(xdr_getcredres, iFpp)
 //GOM(xdr_hyper, iFpp)
 //GOM(xdr_int, iFpp)
@@ -2586,7 +2594,7 @@ GOM(wscanf, iFEpV)
 //GOM(xdr_short, iFpp)
 //GOM(xdr_sizeof, LFpp)
 //GOM(xdrstdio_create, vFpSu)
-//GOM(xdr_string, iFppu)
+GO(xdr_string, iFppu)
 //GOM(xdr_u_char, iFpp)
 //GOM(xdr_u_hyper, iFpp)
 //GOM(xdr_u_int, iFpp)

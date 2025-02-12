@@ -80,22 +80,22 @@ void FreeElfHeader(elfheader_t** head)
     if(my_context)
         RemoveElfHeader(my_context, h);
 
-    box_free(h->PHEntries._64); //_64 or _32 doesn't mater for free, it's the same address
-    box_free(h->SHEntries._64);
-    box_free(h->SHStrTab);
-    box_free(h->StrTab);
-    box_free(h->Dynamic._64);
-    box_free(h->DynStr);
-    box_free(h->SymTab._64);
-    box_free(h->DynSym._64);
+    actual_free(h->PHEntries._64); //_64 or _32 doesn't mater for free, it's the same address
+    actual_free(h->SHEntries._64);
+    actual_free(h->SHStrTab);
+    actual_free(h->StrTab);
+    actual_free(h->Dynamic._64);
+    actual_free(h->DynStr);
+    actual_free(h->SymTab._64);
+    actual_free(h->DynSym._64);
 
     FreeElfMemory(h);
 
-    box_free(h->name);
-    box_free(h->path);
+    actual_free(h->name);
+    actual_free(h->path);
     if(h->file)
         fclose(h->file);
-    box_free(h);
+    actual_free(h);
 
     *head = NULL;
 }
@@ -214,7 +214,7 @@ int AllocLoadElfMemory(box64context_t* context, elfheader_t* head, int mainbin)
         return AllocLoadElfMemory32(context, head, mainbin);
     uintptr_t offs = 0;
     loadProtectionFromMap();
-    int log_level = box64_load_addr?LOG_INFO:LOG_DEBUG;
+    int log_level = BOX64ENV(load_addr)?LOG_INFO:LOG_DEBUG;
 
     head->multiblock_n = 0; // count PHEntrie with LOAD
     uintptr_t max_align = head->align-1;
@@ -223,10 +223,10 @@ int AllocLoadElfMemory(box64context_t* context, elfheader_t* head, int mainbin)
             ++head->multiblock_n;
         }
 
-    if(!head->vaddr && box64_load_addr) {
-        offs = (uintptr_t)find47bitBlockNearHint((void*)((box64_load_addr+max_align)&~max_align), head->memsz+head->align, max_align);
-        box64_load_addr = offs + head->memsz;
-        box64_load_addr = (box64_load_addr+0x10ffffffLL)&~0xffffffLL;
+    if(!head->vaddr && BOX64ENV(load_addr)) {
+        offs = (uintptr_t)find47bitBlockNearHint((void*)((BOX64ENV(load_addr)+max_align)&~max_align), head->memsz+head->align, max_align);
+        BOX64ENV(load_addr) = offs + head->memsz;
+        BOX64ENV(load_addr) = (BOX64ENV(load_addr)+0x10ffffffLL)&~0xffffffLL;
     }
     if(!offs && !head->vaddr)
         offs = (uintptr_t)find47bitBlockElf(head->memsz+head->align, mainbin, max_align); // limit to 47bits...
@@ -393,7 +393,7 @@ int AllocLoadElfMemory(box64context_t* context, elfheader_t* head, int mainbin)
                     mprotect((void*)paddr, asize, prot);
             }
 #ifdef DYNAREC
-            if(box64_dynarec && (e->p_flags & PF_X)) {
+            if(BOX64ENV(dynarec) && (e->p_flags & PF_X)) {
                 dynarec_log(LOG_DEBUG, "Add ELF eXecutable Memory %p:%p\n", head->multiblocks[n].p, (void*)head->multiblocks[n].asize);
                 addDBFromAddressRange((uintptr_t)head->multiblocks[n].p, head->multiblocks[n].asize);
             }
@@ -418,7 +418,8 @@ int AllocLoadElfMemory(box64context_t* context, elfheader_t* head, int mainbin)
                 memset(dest+e->p_filesz, 0, e->p_memsz - e->p_filesz);
         }
     }
-
+    // record map
+    RecordEnvMappings((uintptr_t)head->image, head->memsz, head->fileno);
     // can close the elf file now!
     fclose(head->file);
     head->file = NULL;
@@ -433,7 +434,7 @@ void FreeElfMemory(elfheader_t* head)
 #ifdef DYNAREC
         for(int i=0; i<head->multiblock_n; ++i) {
             dynarec_log(LOG_INFO, "Free DynaBlocks %p-%p for %s\n", head->multiblocks[i].p, head->multiblocks[i].p+head->multiblocks[i].asize, head->path);
-            if(box64_dynarec)
+            if(BOX64ENV(dynarec))
                 cleanDBFromAddressRange((uintptr_t)head->multiblocks[i].p, head->multiblocks[i].asize, 1);
             freeProtection((uintptr_t)head->multiblocks[i].p, head->multiblocks[i].asize);
         }
@@ -948,7 +949,7 @@ uintptr_t GetEntryPoint(lib_t* maplib, elfheader_t* h)
     (void)maplib;
     uintptr_t ep = h->entrypoint + h->delta;
     printf_log(LOG_DEBUG, "Entry Point is %p\n", (void*)ep);
-    if(box64_dump) {
+    if (BOX64ENV(dump)) {
         printf_dump(LOG_NEVER, "(short) Dump of Entry point\n");
         int sz = 64;
         uintptr_t lastbyte = GetLastByte(h);
@@ -980,10 +981,10 @@ void AddSymbols(lib_t *maplib, elfheader_t* h)
     if(box64_is32bits) {
         AddSymbols32(maplib, h);
     } else {
-        //if(box64_dump && h->hash)   old_elf_hash_dump(h);
-        //if(box64_dump && h->gnu_hash)   new_elf_hash_dump(h);
-        if(box64_dump && h->DynSym._64) DumpDynSym64(h);
-        if(h==my_context->elfs[0]) 
+        // if(BOX64ENV(dump) && h->hash)   old_elf_hash_dump(h);
+        // if(BOX64ENV(dump) && h->gnu_hash)   new_elf_hash_dump(h);
+        if (BOX64ENV(dump) && h->DynSym._64) DumpDynSym64(h);
+        if (h==my_context->elfs[0])
             GrabX64CopyMainElfReloc(h);
     }
     #ifndef STATICBUILD
@@ -1059,7 +1060,7 @@ int LoadNeededLibs(elfheader_t* h, lib_t *maplib, int local, int bindnow, int de
                 box_free(platform);
             }
             if(strchr(rpath, '$')) {
-                printf_log(LOG_INFO, "BOX64: Warning, RPATH with $ variable not supported yet (%s)\n", rpath);
+                printf_log(LOG_INFO, "Warning, RPATH with $ variable not supported yet (%s)\n", rpath);
             } else {
                 printf_log(LOG_DEBUG, "Prepending path \"%s\" to BOX64_LD_LIBRARY_PATH\n", rpath);
                 PrependList(&box64->box64_ld_lib, rpath, 1);
@@ -1102,7 +1103,7 @@ int LoadNeededLibs(elfheader_t* h, lib_t *maplib, int local, int bindnow, int de
     // TODO: Add LD_LIBRARY_PATH and RPATH handling
     if(AddNeededLib(maplib, local, bindnow, deepbind, h->needed, h, box64, emu)) {
         printf_log(LOG_INFO, "Error loading one of needed lib\n");
-        if(!allow_missing_libs)
+        if(!BOX64ENV(allow_missing_libs))
             return 1;   //error...
     }
     return 0;
@@ -1340,6 +1341,15 @@ const char* FindNearestSymbolName(elfheader_t* h, void* p, uintptr_t* start, uin
                 }
             }
         }
+        if(!ret) {
+            const char* filename = NULL;
+            uintptr_t start_map = 0;
+            if(IsAddrFileMapped(addr, &filename, &start_map)) {
+                if(start) *start = start_map;
+                if(sz) *sz = SizeFileMapped(addr);
+                ret = filename;
+            }
+        }
         return ret;
     }
     if(!h || h->fini_done)
@@ -1451,30 +1461,6 @@ void* GetDynamicSection(elfheader_t* h)
     return box64_is32bits?((void*)h->Dynamic._32):((void*)h->Dynamic._64);
 }
 
-#ifdef DYNAREC
-dynablock_t* GetDynablocksFromAddress(box64context_t *context, uintptr_t addr)
-{
-    (void)context;
-    // if we are here, the there is not block in standard "space"
-    /*dynablocklist_t* ret = getDBFromAddress(addr);
-    if(ret) {
-        return ret;
-    }*/
-    if(box64_dynarec_forced) {
-        addDBFromAddressRange(addr, 1);
-        return getDB(addr);
-    }
-    //check if address is in an elf... if yes, grant a block (should I warn)
-    Dl_info info;
-    if(dladdr((void*)addr, &info)) {
-        dynarec_log(LOG_INFO, "Address %p is in a native Elf memory space (function \"%s\" in %s)\n", (void*)addr, info.dli_sname, info.dli_fname);
-        return NULL;
-    }
-    dynarec_log(LOG_INFO, "Address %p not found in Elf memory and is not a native call wrapper\n", (void*)addr);
-    return NULL;
-}
-#endif
-
 typedef struct my_dl_phdr_info_s {
     void*           dlpi_addr;
     const char*     dlpi_name;
@@ -1574,32 +1560,32 @@ void ResetSpecialCaseMainElf(elfheader_t* h)
             if(strcmp(symname, "_IO_2_1_stderr_")==0 && ((void*)sym->st_value+h->delta)) {
                 memcpy((void*)sym->st_value+h->delta, stderr, sym->st_size);
                 my__IO_2_1_stderr_ = (void*)sym->st_value+h->delta;
-                printf_log(LOG_DEBUG, "BOX64: Set @_IO_2_1_stderr_ to %p\n", my__IO_2_1_stderr_);
+                printf_log(LOG_DEBUG, "Set @_IO_2_1_stderr_ to %p\n", my__IO_2_1_stderr_);
             } else
             if(strcmp(symname, "_IO_2_1_stdin_")==0 && ((void*)sym->st_value+h->delta)) {
                 memcpy((void*)sym->st_value+h->delta, stdin, sym->st_size);
                 my__IO_2_1_stdin_ = (void*)sym->st_value+h->delta;
-                printf_log(LOG_DEBUG, "BOX64: Set @_IO_2_1_stdin_ to %p\n", my__IO_2_1_stdin_);
+                printf_log(LOG_DEBUG, "Set @_IO_2_1_stdin_ to %p\n", my__IO_2_1_stdin_);
             } else
             if(strcmp(symname, "_IO_2_1_stdout_")==0 && ((void*)sym->st_value+h->delta)) {
                 memcpy((void*)sym->st_value+h->delta, stdout, sym->st_size);
                 my__IO_2_1_stdout_ = (void*)sym->st_value+h->delta;
-                printf_log(LOG_DEBUG, "BOX64: Set @_IO_2_1_stdout_ to %p\n", my__IO_2_1_stdout_);
+                printf_log(LOG_DEBUG, "Set @_IO_2_1_stdout_ to %p\n", my__IO_2_1_stdout_);
             } else
             if(strcmp(symname, "_IO_stderr_")==0 && ((void*)sym->st_value+h->delta)) {
                 memcpy((void*)sym->st_value+h->delta, stderr, sym->st_size);
                 my__IO_2_1_stderr_ = (void*)sym->st_value+h->delta;
-                printf_log(LOG_DEBUG, "BOX64: Set @_IO_stderr_ to %p\n", my__IO_2_1_stderr_);
+                printf_log(LOG_DEBUG, "Set @_IO_stderr_ to %p\n", my__IO_2_1_stderr_);
             } else
             if(strcmp(symname, "_IO_stdin_")==0 && ((void*)sym->st_value+h->delta)) {
                 memcpy((void*)sym->st_value+h->delta, stdin, sym->st_size);
                 my__IO_2_1_stdin_ = (void*)sym->st_value+h->delta;
-                printf_log(LOG_DEBUG, "BOX64: Set @_IO_stdin_ to %p\n", my__IO_2_1_stdin_);
+                printf_log(LOG_DEBUG, "Set @_IO_stdin_ to %p\n", my__IO_2_1_stdin_);
             } else
             if(strcmp(symname, "_IO_stdout_")==0 && ((void*)sym->st_value+h->delta)) {
                 memcpy((void*)sym->st_value+h->delta, stdout, sym->st_size);
                 my__IO_2_1_stdout_ = (void*)sym->st_value+h->delta;
-                printf_log(LOG_DEBUG, "BOX64: Set @_IO_stdout_ to %p\n", my__IO_2_1_stdout_);
+                printf_log(LOG_DEBUG, "Set @_IO_stdout_ to %p\n", my__IO_2_1_stdout_);
             }
         }
     }

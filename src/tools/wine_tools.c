@@ -40,7 +40,7 @@ static int get_prereserve(const char* reserve, void** addr, size_t* size)
         else if(*reserve>='A' && *reserve<='F')  r=r*16+(*reserve)-'A'+10;
         else if(*reserve>='a' && *reserve<='f')  r=r*16+(*reserve)-'a'+10;
         else if(*reserve=='-') {if(first) {*addr=(void*)(r&~(box64_pagesize-1)); r=0; first=0;} else {printf_log(LOG_NONE, "Warning, Wine prereserve badly formatted\n"); return 0;}}
-        else {printf_log(LOG_NONE, "Warning, Wine prereserve badly formatted\n"); return 0;}
+        else {printf_log(LOG_INFO, "Warning, Wine prereserve badly formatted\n"); return 0;}
         ++reserve;
     }
     *size = r;
@@ -90,7 +90,7 @@ void wine_prereserve(const char* reserve)
         if(isfree) ret=mmap(my_wine_reserve[idx].addr, my_wine_reserve[idx].size, 0, MAP_FIXED|MAP_PRIVATE|MAP_ANON|MAP_NORESERVE, -1, 0); else ret = NULL;
         if(!isfree || (ret!=my_wine_reserve[idx].addr)) {
             if(addr>=(void*)0x10000LL)
-                printf_log(LOG_NONE, "Warning, prereserve of %p:0x%lx is not free\n", my_wine_reserve[idx].addr, my_wine_reserve[idx].size);
+                printf_log(LOG_INFO, "Warning, prereserve of %p:0x%lx is not free\n", my_wine_reserve[idx].addr, my_wine_reserve[idx].size);
             if(ret)
                 munmap(ret, my_wine_reserve[idx].size);
             remove_prereserve(idx);
@@ -149,3 +149,25 @@ void dynarec_wine_prereserve()
     #endif
 }
 #endif
+
+void DetectUnityPlayer(int fd)
+{
+    static int unityplayer_detected = 0;
+    if (fd > 0 && BOX64ENV(unityplayer) && !unityplayer_detected) {
+        char filename[4096];
+        char buf[128];
+        sprintf(buf, "/proc/self/fd/%d", fd);
+        ssize_t r = readlink(buf, filename, sizeof(filename) - 1);
+        if (r != -1) filename[r] = 0;
+        if (r > 0 && strlen(filename) > strlen("UnityPlayer.dll") && !strcasecmp(filename + strlen(filename) - strlen("UnityPlayer.dll"), "UnityPlayer.dll")) {
+            printf_log(LOG_NONE, "Detected UnityPlayer.dll\n");
+#ifdef DYNAREC
+            if (!BOX64ENV(dynarec_strongmem)) {
+                SET_BOX64ENV(dynarec_strongmem, 1);
+                PrintEnvVariables(&box64env, LOG_INFO);
+            }
+#endif
+            unityplayer_detected = 1;
+        }
+    }
+}
