@@ -172,6 +172,8 @@ uintptr_t dynarec64_660F(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int 
             VSTELM_D(v0, ed, 0, 1);
             SMWRITE2();
             break;
+        case 0x18:
+        case 0x19:
         case 0x1F:
             INST_NAME("NOP (multibyte)");
             nextop = F8;
@@ -412,7 +414,7 @@ uintptr_t dynarec64_660F(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int 
                         BCEQZ_MARK(fcc0);
                         if (la64_lbt) {
                             ADDI_D(x3, xZR, 1 << F_ZF);
-                            X64_SET_EFLAGS(x3, X_ALL);
+                            X64_SET_EFLAGS(x3, X_ZF);
                         } else {
                             ORI(xFlags, xFlags, 1 << F_ZF);
                         }
@@ -424,7 +426,7 @@ uintptr_t dynarec64_660F(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int 
                         BCEQZ_MARK2(fcc0);
                         if (la64_lbt) {
                             ADDI_D(x3, xZR, 1 << F_CF);
-                            X64_SET_EFLAGS(x3, X_ALL);
+                            X64_SET_EFLAGS(x3, X_ZF);
                         } else {
                             ORI(xFlags, xFlags, 1 << F_CF);
                         }
@@ -456,12 +458,58 @@ uintptr_t dynarec64_660F(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int 
                     GETGX_empty(q0);
                     VSIGNCOV_W(q0, q1, q1);
                     break;
+                case 0x20:
+                    INST_NAME("PMOVSXBW Gx, Ex"); // SSE4 opcode!
+                    nextop = F8;
+                    GETEX64(q1, 0, 0);
+                    GETGX_empty(q0);
+                    VSLLWIL_H_B(q0, q1, 0);
+                    break;
+                case 0x21:
+                    INST_NAME("PMOVSXBD Gx, Ex"); // SSE4 opcode!
+                    nextop = F8;
+                    GETEX32(q1, 0, 0);
+                    GETGX_empty(q0);
+                    VSLLWIL_H_B(q0, q1, 0);
+                    VSLLWIL_W_H(q0, q0, 0);
+                    break;
+                case 0x22:
+                    INST_NAME("PMOVSXBQ Gx, Ex"); // SSE4 opcode!
+                    nextop = F8;
+                    GETEX16(q1, 0, 0);
+                    GETGX_empty(q0);
+                    VSLLWIL_H_B(q0, q1, 0);
+                    VSLLWIL_W_H(q0, q0, 0);
+                    VSLLWIL_D_W(q0, q0, 0);
+                    break;
                 case 0x23:
                     INST_NAME("PMOVSXWD Gx, Ex"); // SSE4 opcode!
                     nextop = F8;
                     GETEX64(q1, 0, 0);
                     GETGX_empty(q0);
                     VSLLWIL_W_H(q0, q1, 0);
+                    break;
+                case 0x24:
+                    INST_NAME("PMOVSXWQ Gx, Ex"); // SSE4 opcode!
+                    nextop = F8;
+                    GETEX32(q1, 0, 0);
+                    GETGX_empty(q0);
+                    VSLLWIL_W_H(q0, q1, 0);
+                    VSLLWIL_D_W(q0, q0, 0);
+                    break;
+                case 0x25:
+                    INST_NAME("PMOVSXDQ Gx, Ex"); // SSE4 opcode!
+                    nextop = F8;
+                    GETEX64(q1, 0, 0);
+                    GETGX_empty(q0);
+                    VSLLWIL_D_W(q0, q1, 0);
+                    break;                    
+                case 0x29:
+                    INST_NAME("PCMPEQQ Gx, Ex"); // SSE4 opcode!
+                    nextop = F8;
+                    GETEX(q1, 0, 0);
+                    GETGX_empty(q0);
+                    VSEQ_D(q0, q0, q1);
                     break;
                 case 0x2B:
                     INST_NAME("PACKUSDW Gx, Ex"); // SSE4 opcode!
@@ -483,11 +531,57 @@ uintptr_t dynarec64_660F(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int 
                     }
                     break;
                 case 0x30:
-                    INST_NAME("PMOVZXBW Gx, Ex");
+                    INST_NAME("PMOVZXBW Gx, Ex"); // SSE4 opcode!
                     nextop = F8;
                     GETEX(q1, 0, 0);
                     GETGX_empty(q0);
                     VEXT2XV_HU_BU(q0, q1);
+                    break;
+                case 0x31:
+                    INST_NAME("PMOVZXBD Gx, Ex"); // SSE4 opcode!
+                    nextop = F8;
+                    GETEX32(q1, 0, 0);
+                    GETGX_empty(q0);
+                    VSLLWIL_HU_BU(q0, q1, 0);
+                    VSLLWIL_WU_HU(q0, q0, 0);
+                    break;
+                case 0x32:
+                    INST_NAME("PMOVZXBQ Gx, Ex"); // SSE4 opcode!
+                    nextop = F8;
+                    GETEX16(q1, 0, 0);
+                    GETGX_empty(q0);
+                    VSLLWIL_HU_BU(q0, q1, 0);
+                    VSLLWIL_WU_HU(q0, q0, 0);
+                    VSLLWIL_DU_WU(q0, q0, 0);
+                    break;
+                case 0x33:
+                    INST_NAME("PMOVZXWD Gx, Ex"); // SSE4 opcode!
+                    nextop = F8;
+                    GETEX64(q1, 0, 0);
+                    GETGX_empty(q0);
+                    VSLLWIL_WU_HU(q0, q1, 0);
+                    break;
+                case 0x34:
+                    INST_NAME("PMOVZXWQ Gx, Ex"); // SSE4 opcode!
+                    nextop = F8;
+                    GETEX32(q1, 0, 0);
+                    GETGX_empty(q0);
+                    VSLLWIL_WU_HU(q0, q1, 0);
+                    VSLLWIL_DU_WU(q0, q0, 0);
+                    break;
+                case 0x35:
+                    INST_NAME("PMOVZXDQ Gx, Ex"); // SSE4 opcode!
+                    nextop = F8;
+                    GETEX64(q1, 0, 0);
+                    GETGX_empty(q0);
+                    VSLLWIL_DU_WU(q0, q1, 0);
+                    break;
+                case 0x39:
+                    INST_NAME("PMINSD Gx, Ex"); // SSE4 opcode!
+                    nextop = F8;
+                    GETEX(q1, 0, 0);
+                    GETGX(q0, 1);
+                    VMIN_W(q0, q0, q1);
                     break;
                 case 0x3A:
                     INST_NAME("PMINUW Gx, Ex");  // SSE4 opcode!
@@ -502,6 +596,13 @@ uintptr_t dynarec64_660F(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int 
                     GETEX(q1, 0, 0);
                     GETGX(q0, 1);
                     VMAX_W(q0, q0, q1);
+                    break;
+                case 0x3E:
+                    INST_NAME("PMAXUW Gx, Ex");  // SSE4 opcode!
+                    nextop = F8;
+                    GETEX(q1, 0, 0);
+                    GETGX(q0, 1);
+                    VMAX_HU(q0, q0, q1);
                     break;
                 case 0x40:
                     INST_NAME("PMULLD Gx, Ex");  // SSE4 opcode!
@@ -1559,6 +1660,28 @@ uintptr_t dynarec64_660F(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int 
             GETEX(v1, 0, 1);
             u8 = F8;
             VSHUF4I_D(v0, v1, 0x8 | (u8 & 1) | ((u8 & 2) << 1));
+            break;
+        case 0xC8:
+        case 0xC9:
+        case 0xCA:
+        case 0xCB:
+        case 0xCC:
+        case 0xCD:
+        case 0xCE:
+        case 0xCF:
+            INST_NAME("BSWAP Reg");
+            gd = TO_NAT((opcode & 7) + (rex.b << 3));
+            REVBxw(gd, gd);
+            break;
+        case 0xD0:
+            INST_NAME("ADDSUBPD Gx,Ex");
+            nextop = F8;
+            GETGX(q0, 1);
+            GETEX(q1, 0, 0);
+            v0 = fpu_get_scratch(dyn);
+            VFSUB_D(v0, q0, q1);
+            VFADD_D(q0, q0, q1);
+            VEXTRINS_D(q0, v0, 0);
             break;
         case 0xD1:
             INST_NAME("PSRLW Gx,Ex");

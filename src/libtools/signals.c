@@ -1241,6 +1241,10 @@ void my_sigactionhandler_oldcode_64(x64emu_t* emu, int32_t sig, int simple, sigi
                 sigcontext->uc_mcontext.gregs[X64_TRAPNO] = 14;
                 if(!mmapped) info2->si_code = 1;
                 info2->si_errno = 0;
+            } else if (info->si_errno==0xb09d) {
+                sigcontext->uc_mcontext.gregs[X64_ERR] = 0;
+                sigcontext->uc_mcontext.gregs[X64_TRAPNO] = 5;
+                info2->si_errno = 0;
             }else {
                 sigcontext->uc_mcontext.gregs[X64_ERR] = 0x14|((sysmapped && !(real_prot&PROT_READ))?0:1);
                 sigcontext->uc_mcontext.gregs[X64_TRAPNO] = 14;
@@ -1690,6 +1694,7 @@ void my_box64signalhandler(int32_t sig, siginfo_t* info, void * ucntx)
         // done
         if((prot&PROT_WRITE)/*|| (prot&PROT_DYNAREC)*/) {
             unlock_signal();
+            dynarec_log(LOG_INFO, "Writting from %p(%s) to %p!\n", (void*)R_RIP, getAddrFunctionName(R_RIP), (void*)addr);
             // if there is no write permission, don't return and continue to program signal handling
             relockMutex(Locks);
             return;
@@ -1805,13 +1810,13 @@ dynarec_log(/*LOG_DEBUG*/LOG_INFO, "%04d|Repeated SIGSEGV with Access error on %
         if((sig==SIGSEGV) && (info->si_code == SEGV_ACCERR) && ((prot&~PROT_CUSTOM)==(PROT_READ|PROT_WRITE) || (prot&~PROT_CUSTOM)==(PROT_READ|PROT_WRITE|PROT_EXEC))) {
             static uintptr_t old_addr = 0;
             #ifdef DYNAREC
-            if((prot==(PROT_READ|PROT_WRITE|PROT_EXEC)) && isDBFromAddressRange(((uintptr_t)addr)&~(box64_pagesize-1), box64_pagesize)) {
-                printf_log(/*LOG_DEBUG*/LOG_INFO, "%04d| Strange SIGSEGV with Access error on %p for %p with DynaBlock(s) in range, db=%p, Lock=0x%x)\n", tid, pc, addr, db, Locks);
-                cleanDBFromAddressRange(((uintptr_t)addr)&~(box64_pagesize-1), box64_pagesize, 0);
-                refreshProtection((uintptr_t)addr);
-                relockMutex(Locks);
-                return;
-            }
+            if(prot==(PROT_READ|PROT_WRITE|PROT_EXEC))
+                if(cleanDBFromAddressRange(((uintptr_t)addr)&~(box64_pagesize-1), box64_pagesize, 0)) {
+                    printf_log(/*LOG_DEBUG*/LOG_INFO, "%04d| Strange SIGSEGV with Access error on %p for %p with DynaBlock(s) in range, db=%p, Lock=0x%x)\n", tid, pc, addr, db, Locks);
+                    refreshProtection((uintptr_t)addr);
+                    relockMutex(Locks);
+                    return;
+                }
             #endif
             printf_log(/*LOG_DEBUG*/LOG_INFO, "%04d| Strange SIGSEGV with Access error on %p for %p%s, db=%p, prot=0x%x (old_addr=%p, Lock=0x%x)\n", tid, pc, addr, mapped?" mapped":"", db, prot, (void*)old_addr, Locks);
             if(!(old_addr==(uintptr_t)addr && old_prot==prot) || mapped) {
@@ -2088,6 +2093,9 @@ void emit_signal(x64emu_t* emu, int sig, void* addr, int code)
     } else if(sig==SIGSEGV && code==0xecec) {
         info.si_errno = 0xecec;
         info.si_code = SEGV_ACCERR;
+    } else if (sig==SIGSEGV && code==0xb09d) {
+        info.si_errno = 0xb09d;
+        info.si_code = 0;
     }
     info.si_addr = addr;
     const char* x64name = NULL;
@@ -2154,7 +2162,7 @@ void check_exec(x64emu_t* emu, uintptr_t addr)
 {
     if(box64_pagesize!=4096)
         return; //disabling the test, 4K pagesize simlation isn't good enough for this
-    while((getProtection(addr)&(PROT_EXEC|PROT_READ))!=(PROT_EXEC|PROT_READ)) {
+    while((getProtection_fast(addr)&(PROT_EXEC|PROT_READ))!=(PROT_EXEC|PROT_READ)) {
         R_RIP = addr;   // incase there is a slight difference
         emit_signal(emu, SIGSEGV, (void*)addr, 0xecec);
     }

@@ -381,6 +381,21 @@
         FLD_S(a, ed, fixedaddress);                                                          \
     }
 
+// Get Ex as 32bits, not a quad (warning, x1 get used)
+#define GETEX32(a, w, D) GETEXSS(a, w, D)
+
+// Get Ex as 16bits, not a quad (warning, x1 get used)
+#define GETEX16(a, w, D)                                                                     \
+    if (MODREG) {                                                                            \
+        a = sse_get_reg(dyn, ninst, x1, (nextop & 7) + (rex.b << 3), w);                     \
+    } else {                                                                                 \
+        SMREAD();                                                                            \
+        a = fpu_get_scratch(dyn);                                                            \
+        addr = geted(dyn, addr, ninst, nextop, &ed, x1, x2, &fixedaddress, rex, NULL, 1, D); \
+        LD_HU(x2, ed, fixedaddress);                                                         \
+        MOVGR2FR_D(a, x2);                                                                   \
+    }
+
 // Write gb (gd) back to original register / memory, using s1 as scratch
 #define GBBACK() BSTRINS_D(gb1, gd, gb2 + 7, gb2);
 
@@ -602,12 +617,14 @@
 
 #define SET_DFNONE()                                 \
     do {                                             \
-        dyn->f.dfnone_here = 1;                      \
         if (!dyn->f.dfnone) {                        \
             ST_W(xZR, xEmu, offsetof(x64emu_t, df)); \
+        }                                            \
+        if (!dyn->insts[ninst].x64.may_set) {        \
+            dyn->f.dfnone_here = 1;                  \
             dyn->f.dfnone = 1;                       \
         }                                            \
-    } while (0);
+    } while (0)
 
 #define SET_DF(S, N)                                           \
     if ((N) != d_none) {                                       \
@@ -763,7 +780,7 @@
 #define UFLAG_RES(A) \
     if (dyn->insts[ninst].x64.gen_flags) { SDxw(A, xEmu, offsetof(x64emu_t, res)); }
 #define UFLAG_DF(r, A) \
-    if (dyn->insts[ninst].x64.gen_flags) { SET_DF(r, A) }
+    if (dyn->insts[ninst].x64.gen_flags) { SET_DF(r, A); }
 #define UFLAG_IF if (dyn->insts[ninst].x64.gen_flags)
 #ifndef DEFAULT
 #define DEFAULT \
@@ -835,17 +852,18 @@ void* la64_next(x64emu_t* emu, uintptr_t addr);
 
 #define native_pass STEPNAME(native_pass)
 
-#define dynarec64_00   STEPNAME(dynarec64_00)
-#define dynarec64_0F   STEPNAME(dynarec64_0F)
-#define dynarec64_64   STEPNAME(dynarec64_64)
-#define dynarec64_66   STEPNAME(dynarec64_66)
-#define dynarec64_6664 STEPNAME(dynarec64_6664)
-#define dynarec64_67   STEPNAME(dynarec64_67)
-#define dynarec64_F30F STEPNAME(dynarec64_F30F)
-#define dynarec64_660F STEPNAME(dynarec64_660F)
-#define dynarec64_66F0 STEPNAME(dynarec64_66F0)
-#define dynarec64_F0   STEPNAME(dynarec64_F0)
-#define dynarec64_F20F STEPNAME(dynarec64_F20F)
+#define dynarec64_00     STEPNAME(dynarec64_00)
+#define dynarec64_0F     STEPNAME(dynarec64_0F)
+#define dynarec64_64     STEPNAME(dynarec64_64)
+#define dynarec64_66     STEPNAME(dynarec64_66)
+#define dynarec64_6664   STEPNAME(dynarec64_6664)
+#define dynarec64_67     STEPNAME(dynarec64_67)
+#define dynarec64_F30F   STEPNAME(dynarec64_F30F)
+#define dynarec64_660F   STEPNAME(dynarec64_660F)
+#define dynarec64_66F0   STEPNAME(dynarec64_66F0)
+#define dynarec64_66F20F STEPNAME(dynarec64_66F20F)
+#define dynarec64_F0     STEPNAME(dynarec64_F0)
+#define dynarec64_F20F   STEPNAME(dynarec64_F20F)
 
 #define geted               STEPNAME(geted)
 #define geted32             STEPNAME(geted32)
@@ -864,6 +882,7 @@ void* la64_next(x64emu_t* emu, uintptr_t addr);
 #define emit_cmp8           STEPNAME(emit_cmp8)
 #define emit_cmp8_0         STEPNAME(emit_cmp8_0)
 #define emit_test8          STEPNAME(emit_test8)
+#define emit_test8c         STEPNAME(emit_test8c)
 #define emit_test16         STEPNAME(emit_test16)
 #define emit_test32         STEPNAME(emit_test32)
 #define emit_test32c        STEPNAME(emit_test32c)
@@ -973,8 +992,9 @@ void emit_cmp16(dynarec_la64_t* dyn, int ninst, int s1, int s2, int s3, int s4, 
 void emit_cmp32(dynarec_la64_t* dyn, int ninst, rex_t rex, int s1, int s2, int s3, int s4, int s5, int s6);
 void emit_cmp8_0(dynarec_la64_t* dyn, int ninst, int s1, int s3, int s4);
 void emit_cmp16_0(dynarec_la64_t* dyn, int ninst, int s1, int s3, int s4);
-void emit_cmp32_0(dynarec_la64_t* dyn, int ninst, rex_t rex, int s1, int s3, int s4);
+void emit_cmp32_0(dynarec_la64_t* dyn, int ninst, rex_t rex, uint8_t nextop, int s1, int s3, int s4, int s5);
 void emit_test8(dynarec_la64_t* dyn, int ninst, int s1, int s2, int s3, int s4, int s5);
+void emit_test8c(dynarec_la64_t* dyn, int ninst, int s1, uint8_t c, int s3, int s4, int s5);
 void emit_test16(dynarec_la64_t* dyn, int ninst, int s1, int s2, int s3, int s4, int s5);
 void emit_test32(dynarec_la64_t* dyn, int ninst, rex_t rex, int s1, int s2, int s3, int s4, int s5);
 void emit_test32c(dynarec_la64_t* dyn, int ninst, rex_t rex, int s1, int64_t c, int s3, int s4, int s5);
@@ -1093,6 +1113,7 @@ uintptr_t dynarec64_6664(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int 
 uintptr_t dynarec64_67(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ninst, rex_t rex, int rep, int* ok, int* need_epilog);
 uintptr_t dynarec64_660F(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ninst, rex_t rex, int* ok, int* need_epilog);
 uintptr_t dynarec64_66F0(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ninst, rex_t rex, int rep, int* ok, int* need_epilog);
+uintptr_t dynarec64_66F20F(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ninst, rex_t rex, int* ok, int* need_epilog);
 uintptr_t dynarec64_F0(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ninst, rex_t rex, int rep, int* ok, int* need_epilog);
 uintptr_t dynarec64_F20F(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ninst, rex_t rex, int* ok, int* need_epilog);
 

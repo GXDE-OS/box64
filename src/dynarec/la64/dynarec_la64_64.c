@@ -70,6 +70,29 @@ uintptr_t dynarec64_64(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
             GETEDO(x4, 0);
             emit_add32(dyn, ninst, rex, gd, ed, x3, x4, x5);
             break;
+        case 0x0B:
+            INST_NAME("OR Gd, Seg:Ed");
+            SETFLAGS(X_ALL, SF_SET_PENDING, NAT_FLAGS_FUSION);
+            nextop = F8;
+            grab_segdata(dyn, addr, ninst, x4, seg, (MODREG));
+            GETGD;
+            GETEDO(x4, 0);
+            emit_or32(dyn, ninst, rex, gd, ed, x3, x4);
+            break;
+        case 0x0F:
+            opcode = F8;
+            switch (opcode) {
+                case 0x18:
+                case 0x19:
+                case 0x1F:
+                    INST_NAME("NOP (multibyte)");
+                    nextop = F8;
+                    FAKEED;
+                    break;
+                default:
+                    DEFAULT;
+            }
+            break;
         case 0x2B:
             INST_NAME("SUB Gd, Seg:Ed");
             SETFLAGS(X_ALL, SF_SET_PENDING, NAT_FLAGS_FUSION);
@@ -314,10 +337,10 @@ uintptr_t dynarec64_64(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                     else
                         i64 = F8S;
                     if (i64) {
-                        MOV64xw(x2, i64);
+                        MOV64x(x2, i64);
                         emit_cmp32(dyn, ninst, rex, ed, x2, x3, x4, x5, x6);
                     } else
-                        emit_cmp32_0(dyn, ninst, rex, ed, x3, x4);
+                        emit_cmp32_0(dyn, ninst, rex, nextop, ed, x3, x4, x5);
                     break;
             }
             break;

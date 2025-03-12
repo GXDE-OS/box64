@@ -300,10 +300,12 @@ GO(epoll_create1, iFO)
 #ifdef NOALIGN
 GO(epoll_ctl, iFiiip)
 GO(epoll_pwait, iFipiip)
+GO(epoll_pwait2, iFipipp)
 GO(epoll_wait, iFipii)
 #else
 GOM(epoll_ctl, iFEiiip)
 GOM(epoll_pwait, iFEipiip)
+GOM(epoll_pwait2, iFEipipp)
 GOM(epoll_wait, iFEipii)
 #endif
 GO(erand48, dFp)
@@ -2666,10 +2668,12 @@ GOWM(_ITM_memcpyRnWt, vFppL)  //%noE
 #ifdef ANDROID
 GOM(__libc_init, vFEpppp)
 GO(__errno, pFv)
+GO(android_set_abort_message, vFp)
 #else
 // Those symbols don't exist in non-Android builds
 //GOM(__libc_init, 
 //GO(__errno, 
+//GO(android_set_abort_message, vFp)
 #endif
 #ifdef STATICBUILD
 GO(dummy_pFLp, pFLp)

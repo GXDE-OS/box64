@@ -2389,19 +2389,16 @@ static void swapCache(dynarec_rv64_t* dyn, int ninst, int i, int j, extcache_t* 
     MESSAGE(LOG_DUMP, "\t  - Swapping %d <-> %d\n", i, j);
 // There is no swap instruction in RV64 to swap 2 float registers!
 // so use a scratch...
-#define SCRATCH 2
-    if (i_single)
+#define SCRATCH 0 // f0 is not used anywhere else
+    if (i_single) {
         FMVS(SCRATCH, reg_i);
-    else
-        FMVD(SCRATCH, reg_i);
-    if (j_single)
         FMVS(reg_i, reg_j);
-    else
-        FMVD(reg_i, reg_j);
-    if (i_single)
         FMVS(reg_j, SCRATCH);
-    else
+    } else {
+        FMVD(SCRATCH, reg_i);
+        FMVD(reg_i, reg_j);
         FMVD(reg_j, SCRATCH);
+    }
 #undef SCRATCH
     tmp.v = cache->extcache[i].v;
     cache->extcache[i].v = cache->extcache[j].v;
@@ -2892,10 +2889,10 @@ void fpu_reset_cache(dynarec_rv64_t* dyn, int ninst, int reset_n)
 #endif
     extcacheUnwind(&dyn->e);
 #if STEP == 0
-    if (BOX64ENV(dynarec_dump)) dynarec_log(LOG_NONE, "New x87stack=%d\n", dyn->e.x87stack);
+    if (BOX64DRENV(dynarec_dump)) dynarec_log(LOG_NONE, "New x87stack=%d\n", dyn->e.x87stack);
 #endif
 #if defined(HAVE_TRACE) && (STEP > 2)
-    if (BOX64ENV(dynarec_dump))
+    if (BOX64DRENV(dynarec_dump))
         if (memcmp(&dyn->e, &dyn->insts[reset_n].e, sizeof(ext_cache_t))) {
             MESSAGE(LOG_DEBUG, "Warning, difference in extcache: reset=");
             for (int i = 0; i < 24; ++i)

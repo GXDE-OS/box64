@@ -1106,7 +1106,6 @@ void LEppLa_32(x64emu_t *emu, uintptr_t fnc);
 void LFXCii_32(x64emu_t *emu, uintptr_t fnc);
 void LFXLuu_32(x64emu_t *emu, uintptr_t fnc);
 void LFXpLp_32(x64emu_t *emu, uintptr_t fnc);
-void pEEipi_32(x64emu_t *emu, uintptr_t fnc);
 void pFEupi_32(x64emu_t *emu, uintptr_t fnc);
 void pFEupp_32(x64emu_t *emu, uintptr_t fnc);
 void pEEpii_32(x64emu_t *emu, uintptr_t fnc);
@@ -2070,6 +2069,14 @@ void KEKK_32(x64emu_t *emu, uintptr_t fnc);
 void KFKp_32(x64emu_t *emu, uintptr_t fnc);
 void KEKp_32(x64emu_t *emu, uintptr_t fnc);
 void KEpBp_a_32(x64emu_t *emu, uintptr_t fnc);
+#endif
+
+#if defined(WINLATOR_GLIBC)
+void pEipi_32(x64emu_t *emu, uintptr_t fnc);
+#endif
+
+#if !defined(WINLATOR_GLIBC)
+void pEEipi_32(x64emu_t *emu, uintptr_t fnc);
 #endif
 
 void UEsvvs_32(x64emu_t *emu, uintptr_t fnc);

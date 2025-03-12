@@ -728,6 +728,9 @@
 // CALL_S will use x7 for the call address. Return value can be put in ret (unless ret is -1)
 // R0 will not be pushed/popd if ret is -2. Flags are not save/restored
 #define CALL_S(F, ret) call_c(dyn, ninst, F, x7, ret, 0, 0)
+// CALL_ will use x7 for the call address.
+// All regs are saved, including scratch. This is use to call internal function that should not change state
+#define CALL_I(F) call_i(dyn, ninst, F)
 
 #define MARK        dyn->insts[ninst].mark = dyn->native_size
 #define GETMARK     dyn->insts[ninst].mark
@@ -796,6 +799,10 @@
 #define CBNZx_MARK2(reg)                \
     j64 = GETMARK2-(dyn->native_size);  \
     CBNZx(reg, j64)
+// Branch to MARK2 if reg is not 0 (use j64)
+#define CBNZw_MARK2(reg)                \
+    j64 = GETMARK2-(dyn->native_size);  \
+    CBNZw(reg, j64)
 #define CBNZxw_MARK2(reg)               \
     j64 = GETMARK2-(dyn->native_size);  \
     CBNZxw(reg, j64)
@@ -1058,7 +1065,7 @@
 #else
 #define X87_PUSH_OR_FAIL(var, dyn, ninst, scratch, t)   \
     if ((dyn->n.x87stack==8) || (dyn->n.pushed==8)) {   \
-        if(BOX64ENV(dynarec_dump)) dynarec_log(LOG_NONE, " Warning, suspicious x87 Push, stack=%d/%d on inst %d\n", dyn->n.x87stack, dyn->n.pushed, ninst); \
+        if(BOX64DRENV(dynarec_dump)) dynarec_log(LOG_NONE, " Warning, suspicious x87 Push, stack=%d/%d on inst %d\n", dyn->n.x87stack, dyn->n.pushed, ninst); \
         dyn->abort = 1;                                 \
         return addr;                                    \
     }                                                   \
@@ -1066,7 +1073,7 @@
 
 #define X87_PUSH_EMPTY_OR_FAIL(dyn, ninst, scratch)     \
     if ((dyn->n.x87stack==8) || (dyn->n.pushed==8)) {   \
-        if(BOX64ENV(dynarec_dump)) dynarec_log(LOG_NONE, " Warning, suspicious x87 Push, stack=%d/%d on inst %d\n", dyn->n.x87stack, dyn->n.pushed, ninst); \
+        if(BOX64DRENV(dynarec_dump)) dynarec_log(LOG_NONE, " Warning, suspicious x87 Push, stack=%d/%d on inst %d\n", dyn->n.x87stack, dyn->n.pushed, ninst); \
         dyn->abort = 1;                                 \
         return addr;                                    \
     }                                                   \
@@ -1074,41 +1081,41 @@
 
 #define X87_POP_OR_FAIL(dyn, ninst, scratch)            \
     if ((dyn->n.x87stack==-8) || (dyn->n.poped==8)) {   \
-        if(BOX64ENV(dynarec_dump)) dynarec_log(LOG_NONE, " Warning, suspicious x87 Pop, stack=%d/%d on inst %d\n", dyn->n.x87stack, dyn->n.poped, ninst); \
+        if(BOX64DRENV(dynarec_dump)) dynarec_log(LOG_NONE, " Warning, suspicious x87 Pop, stack=%d/%d on inst %d\n", dyn->n.x87stack, dyn->n.poped, ninst); \
         dyn->abort = 1;                                 \
         return addr;                                    \
     }                                                   \
     x87_do_pop(dyn, ninst, scratch)
 #endif
 
-#define SET_DFNONE()                                     \
-    do {                                                 \
-        dyn->f.dfnone_here = 1;                          \
-        if (!dyn->f.dfnone) {                            \
-            STRw_U12(wZR, xEmu, offsetof(x64emu_t, df)); \
-            dyn->f.dfnone = 1;                           \
-        }                                                \
-    } while (0);
+#define SET_DFNONE()                                        \
+    do {                                                    \
+        if (!dyn->f.dfnone) {                               \
+            STRw_U12(wZR, xEmu, offsetof(x64emu_t, df));    \
+        }                                                   \
+        if(!dyn->insts[ninst].x64.may_set) {                \
+            dyn->f.dfnone_here = 1;                         \
+            dyn->f.dfnone = 1;                              \
+        }                                                   \
+    } while(0)
+
 #define SET_DF(S, N)                                                                                                            \
     if ((N) != d_none) {                                                                                                        \
         MOVZw(S, (N));                                                                                                          \
         STRw_U12(S, xEmu, offsetof(x64emu_t, df));                                                                              \
         if (dyn->f.pending == SF_PENDING && dyn->insts[ninst].x64.need_after && !(dyn->insts[ninst].x64.need_after & X_PEND)) { \
-            CALL_(UpdateFlags, -1, 0);                                                                                          \
+            CALL_I(UpdateFlags);                                                                                                \
             dyn->f.pending = SF_SET;                                                                                            \
             SET_NODF();                                                                                                         \
         }                                                                                                                       \
         dyn->f.dfnone = 0;                                                                                                      \
     } else                                                                                                                      \
         SET_DFNONE()
+
 #ifndef SET_NODF
 #define SET_NODF()          dyn->f.dfnone = 0
 #endif
 #define SET_DFOK()          dyn->f.dfnone = 1; dyn->f.dfnone_here=1
-
-#ifndef MAYSETFLAGS
-#define MAYSETFLAGS() do {} while (0)
-#endif
 
 #ifndef READFLAGS
 #define READFLAGS(A) \
@@ -1119,7 +1126,7 @@
             j64 = (GETMARKF)-(dyn->native_size);        \
             CBZw(x3, j64);                              \
         }                                               \
-        CALL_(UpdateFlags, -1, 0);                      \
+        CALL_I(UpdateFlags);                            \
         MARKF;                                          \
         dyn->f.pending = SF_SET;                        \
         SET_DFOK();                                     \
@@ -1133,7 +1140,7 @@
     && (dyn->insts[ninst].x64.gen_flags&(~(A))))                                                \
         READFLAGS(((dyn->insts[ninst].x64.gen_flags&X_PEND)?X_ALL:dyn->insts[ninst].x64.gen_flags)&(~(A)));\
     if(dyn->insts[ninst].x64.gen_flags) switch(B) {                                             \
-        case SF_SUBSET:                                                                         \
+        case SF_SUBSET: SET_DFNONE(); dyn->f.pending = SF_SET; break;                           \
         case SF_SET: dyn->f.pending = SF_SET; break;                                            \
         case SF_SET_DF: dyn->f.pending = SF_SET; dyn->f.dfnone = 1; break;                      \
         case SF_SET_NODF: dyn->f.pending = SF_SET; dyn->f.dfnone = 0; break;                    \
@@ -1157,8 +1164,9 @@
 #define UFLAG_OP2(A) if(dyn->insts[ninst].x64.gen_flags) {STRxw_U12(A, xEmu, offsetof(x64emu_t, op2));}
 #define UFLAG_OP12(A1, A2) if(dyn->insts[ninst].x64.gen_flags) {STRxw_U12(A1, xEmu, offsetof(x64emu_t, op1));STRxw_U12(A2, xEmu, offsetof(x64emu_t, op2));}
 #define UFLAG_RES(A) if(dyn->insts[ninst].x64.gen_flags) {STRxw_U12(A, xEmu, offsetof(x64emu_t, res));}
-#define UFLAG_DF(r, A) if(dyn->insts[ninst].x64.gen_flags) {SET_DF(r, A)}
+#define UFLAG_DF(r, A) if(dyn->insts[ninst].x64.gen_flags) {SET_DF(r, A);}
 #define UFLAG_IF if(dyn->insts[ninst].x64.gen_flags)
+#define UFLAG_IF_DF if(dyn->insts[ninst].x64.gen_flags || (dyn->insts[ninst].f_entry.dfnone && dyn->insts[ninst].f_entry.dfnone_here))
 #define UFLAG_IF2(A) if(dyn->insts[ninst].x64.gen_flags A)
 #ifndef DEFAULT
 #define DEFAULT      *ok = -1; BARRIER(2)
@@ -1274,6 +1282,7 @@ void* arm64_next(x64emu_t* emu, uintptr_t addr);
 #define retn_to_epilog  STEPNAME(retn_to_epilog)
 #define iret_to_epilog  STEPNAME(iret_to_epilog)
 #define call_c          STEPNAME(call_c)
+#define call_i          STEPNAME(call_i)
 #define call_n          STEPNAME(call_n)
 #define grab_segdata    STEPNAME(grab_segdata)
 #define emit_cmp8       STEPNAME(emit_cmp8)
@@ -1444,6 +1453,7 @@ void ret_to_epilog(dynarec_arm_t* dyn, int ninst, rex_t rex);
 void retn_to_epilog(dynarec_arm_t* dyn, int ninst, rex_t rex, int n);
 void iret_to_epilog(dynarec_arm_t* dyn, int ninst, int is32bits, int is64bits);
 void call_c(dynarec_arm_t* dyn, int ninst, void* fnc, int reg, int ret, int saveflags, int save_reg);
+void call_i(dynarec_arm_t* dyn, int ninst, void* fnc);
 void call_n(dynarec_arm_t* dyn, int ninst, void* fnc, int w);
 void grab_segdata(dynarec_arm_t* dyn, uintptr_t addr, int ninst, int reg, int segment, int modreg);
 void emit_cmp8(dynarec_arm_t* dyn, int ninst, int s1, int s2, int s3, int s4, int s5);

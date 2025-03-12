@@ -477,10 +477,10 @@ uintptr_t dynarec64_00(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
             SETFLAGS(X_ALL, SF_SET_PENDING, NAT_FLAGS_FUSION);
             i64 = F32S;
             if (i64) {
-                MOV64xw(x2, i64);
+                MOV64x(x2, i64);
                 emit_cmp32(dyn, ninst, rex, xRAX, x2, x3, x4, x5, x6);
             } else
-                emit_cmp32_0(dyn, ninst, rex, xRAX, x3, x4);
+                emit_cmp32_0(dyn, ninst, rex, nextop, xRAX, x3, x4, x5);
             break;
         case 0x40:
         case 0x41:
@@ -946,15 +946,10 @@ uintptr_t dynarec64_00(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                     else
                         i64 = F8S;
                     if (i64) {
-                        MOV64xw(x2, i64);
+                        MOV64x(x2, i64);
                         emit_cmp32(dyn, ninst, rex, ed, x2, x3, x4, x5, x6);
-                    } else {
-                        if (!rex.w && MODREG) {
-                            ZEROUP2(x1, ed);
-                            ed = x1;
-                        }
-                        emit_cmp32_0(dyn, ninst, rex, ed, x3, x4);
-                    }
+                    } else
+                        emit_cmp32_0(dyn, ninst, rex, nextop, ed, x3, x4, x5);
                     break;
             }
             break;
@@ -1169,6 +1164,21 @@ uintptr_t dynarec64_00(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                     ZEROUP(gd); // truncate the higher 32bits as asked
                 }
             }
+            break;
+        case 0x8E:
+            INST_NAME("MOV Seg, Ew");
+            nextop = F8;
+            u8 = (nextop & 0x38) >> 3;
+            if (MODREG) {
+                ed = TO_NAT((nextop & 7) + (rex.b << 3));
+            } else {
+                SMREAD();
+                addr = geted(dyn, addr, ninst, nextop, &ed, x2, x1, &fixedaddress, rex, NULL, 1, 0);
+                LD_HU(x1, ed, fixedaddress);
+                ed = x1;
+            }
+            ST_H(ed, xEmu, offsetof(x64emu_t, segs[u8]));
+            ST_W(xZR, xEmu, offsetof(x64emu_t, segs_serial[u8]));
             break;
         case 0x8F:
             INST_NAME("POP Ed");
@@ -1478,6 +1488,27 @@ uintptr_t dynarec64_00(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                 GETDIR(x3, x1, rex.w ? 8 : 4);
                 SDxw(xRAX, xRDI, 0);
                 ADD_D(xRDI, xRDI, x3);
+            }
+            break;
+        case 0xAC:
+            if (rep) {
+                DEFAULT;
+            } else {
+                INST_NAME("LODSB");
+                GETDIR(x1, x2, 1);
+                LD_BU(x2, xRSI, 0);
+                ADD_D(xRSI, xRSI, x1);
+                BSTRINS_D(xRAX, x2, 7, 0);
+            }
+            break;
+        case 0xAD:
+            if (rep) {
+                DEFAULT;
+            } else {
+                INST_NAME("LODSD");
+                GETDIR(x1, x2, rex.w ? 8 : 4);
+                LDxw(xRAX, xRSI, 0);
+                ADD_D(xRSI, xRSI, x1);
             }
             break;
         case 0xAE:
@@ -2158,9 +2189,24 @@ uintptr_t dynarec64_00(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                 case 6:
                     INST_NAME("SHL Ed, CL");
                     SETFLAGS(X_ALL, SF_SET_PENDING, NAT_FLAGS_FUSION); // some flags are left undefined
+                    if (!dyn->insts[ninst].x64.gen_flags) {
+                        GETED(0);
+                        if (rex.w)
+                            SLL_D(ed, ed, xRCX);
+                        else
+                            SLL_W(ed, ed, xRCX);
+                        if (dyn->insts[ninst].nat_flags_fusion) {
+                            if (!rex.w) ZEROUP(ed);
+                            NAT_FLAGS_OPS(ed, xZR);
+                        } else if (!rex.w && MODREG) {
+                            ZEROUP(ed);
+                        }
+                        WBACK;
+                        break;
+                    }
                     ANDI(x3, xRCX, rex.w ? 0x3f : 0x1f);
                     GETED(0);
-                    if (!rex.w && MODREG) { ZEROUP(ed); }
+                    if (!rex.w && MODREG) ZEROUP(ed);
                     CBZ_NEXT(x3);
                     emit_shl32(dyn, ninst, rex, ed, x3, x5, x4, x6);
                     WBACK;
@@ -2168,9 +2214,24 @@ uintptr_t dynarec64_00(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                 case 5:
                     INST_NAME("SHR Ed, CL");
                     SETFLAGS(X_ALL, SF_SET_PENDING, NAT_FLAGS_FUSION); // some flags are left undefined
+                    if (!dyn->insts[ninst].x64.gen_flags) {
+                        GETED(0);
+                        if (rex.w)
+                            SRL_D(ed, ed, xRCX);
+                        else
+                            SRL_W(ed, ed, xRCX);
+                        if (dyn->insts[ninst].nat_flags_fusion) {
+                            if (!rex.w) ZEROUP(ed);
+                            NAT_FLAGS_OPS(ed, xZR);
+                        } else if (!rex.w && MODREG) {
+                            ZEROUP(ed);
+                        }
+                        WBACK;
+                        break;
+                    }
                     ANDI(x3, xRCX, rex.w ? 0x3f : 0x1f);
                     GETED(0);
-                    if (!rex.w && MODREG) { ZEROUP(ed); }
+                    if (!rex.w && MODREG) ZEROUP(ed);
                     CBZ_NEXT(x3);
                     emit_shr32(dyn, ninst, rex, ed, x3, x5, x4);
                     WBACK;
@@ -2443,6 +2504,18 @@ uintptr_t dynarec64_00(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
             *need_epilog = 0;
             *ok = 0;
             break;
+        case 0xF5:
+            INST_NAME("CMC");
+            READFLAGS(X_CF);
+            SETFLAGS(X_CF, SF_SUBSET, NAT_FLAGS_NOFUSION);
+            if (la64_lbt) {
+                X64_GET_EFLAGS(x3, X_CF);
+                XORI(x3, x3, 1 << F_CF);
+                X64_SET_EFLAGS(x3, X_CF);
+            } else {
+                XORI(xFlags, xFlags, 1 << F_CF);
+            }
+            break;
         case 0xF6:
             nextop = F8;
             switch ((nextop >> 3) & 7) {
@@ -2450,10 +2523,18 @@ uintptr_t dynarec64_00(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                 case 1:
                     INST_NAME("TEST Eb, Ib");
                     SETFLAGS(X_ALL, SF_SET_PENDING, NAT_FLAGS_FUSION);
-                    GETEB(x1, 1);
+                    if (MODREG && (rex.rex || (((nextop & 7) >> 2) == 0))) {
+                        // quick path for low 8bit registers
+                        if (rex.rex)
+                            ed = TO_NAT((nextop & 7) + (rex.b << 3));
+                        else
+                            ed = TO_NAT(nextop & 3);
+                    } else {
+                        GETEB(x1, 1);
+                        ed = x1;
+                    }
                     u8 = F8;
-                    MOV32w(x2, u8);
-                    emit_test8(dyn, ninst, x1, x2, x3, x4, x5);
+                    emit_test8c(dyn, ninst, ed, u8, x3, x4, x5);
                     break;
                 case 2:
                     INST_NAME("NOT Eb");
@@ -2609,7 +2690,7 @@ uintptr_t dynarec64_00(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                     SETFLAGS(X_ALL, SF_SET, NAT_FLAGS_NOFUSION);
                     // TODO: handle zero divisor
                     if (!rex.w) {
-                        SET_DFNONE()
+                        SET_DFNONE();
                         GETSED(0);
                         SLLI_D(x3, xRDX, 32);
                         ZEROUP2(x2, xRAX);
@@ -2623,7 +2704,7 @@ uintptr_t dynarec64_00(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                             && dyn->insts[ninst - 1].x64.addr
                             && *(uint8_t*)(dyn->insts[ninst - 1].x64.addr) == 0x48
                             && *(uint8_t*)(dyn->insts[ninst - 1].x64.addr + 1) == 0x99) {
-                            SET_DFNONE()
+                            SET_DFNONE();
                             GETED(0);
                             DIV_D(x2, xRAX, ed);
                             MOD_D(xRDX, xRAX, ed);
@@ -2646,7 +2727,7 @@ uintptr_t dynarec64_00(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                             DIV_D(x2, xRAX, ed);
                             MOD_D(xRDX, xRAX, ed);
                             MV(xRAX, x2);
-                            SET_DFNONE()
+                            SET_DFNONE();
                         }
                     }
                     break;
@@ -2662,6 +2743,17 @@ uintptr_t dynarec64_00(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                 X64_SET_EFLAGS(xZR, X_CF);
             else
                 BSTRINS_D(xFlags, xZR, F_CF, F_CF);
+            break;
+        case 0xF9:
+            INST_NAME("STC");
+            SETFLAGS(X_CF, SF_SUBSET, NAT_FLAGS_NOFUSION);
+            SET_DFNONE();
+            if (la64_lbt) {
+                ORI(x3, xZR, 1 << F_CF);
+                X64_SET_EFLAGS(x3, X_CF);
+            } else {
+                ORI(xFlags, xFlags, 1 << F_CF);
+            }
             break;
         case 0xFC:
             INST_NAME("CLD");

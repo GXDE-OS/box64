@@ -200,7 +200,7 @@ GO(vkGetPhysicalDeviceFeatures2, vFpp)
 GO(vkGetPhysicalDeviceFormatProperties2, vFpip)
 GO(vkGetPhysicalDeviceImageFormatProperties2, iFppp)
 GO(vkGetPhysicalDeviceMemoryProperties2, vFpp)
-GO(vkGetPhysicalDeviceProperties2, vFpp)
+GOM(vkGetPhysicalDeviceProperties2, vFEpp)
 GO(vkGetPhysicalDeviceQueueFamilyProperties2, vFppp)    //VkQueueFamilyProperties2 seems OK
 GO(vkGetPhysicalDeviceSparseImageFormatProperties2, vFpppp) //VkSparseImageFormatProperties2 seems OK
 GO(vkGetPhysicalDeviceToolProperties, iFppp)
@@ -457,6 +457,11 @@ GO(vkReleaseProfilingLockKHR, vFp)
 
 // VK_NV_cooperative_matrix
 GO(vkGetPhysicalDeviceCooperativeMatrixPropertiesNV, iFppp)
+
+// VK_NV_cooperative_vector
+GO(vkCmdConvertCooperativeVectorMatrixNV, vFpup)
+GO(vkConvertCooperativeVectorMatrixNV, iFpp)
+GO(vkGetPhysicalDeviceCooperativeVectorPropertiesNV, iFppp)
 
 // VK_KHR_fragment_shading_rate
 GO(vkCmdSetFragmentShadingRateKHR, vFppp)
@@ -995,3 +1000,27 @@ GO(wine_vkReleaseKeyedMutex, iFpUU)
 
 // VK_NV_cooperative_matrix2
 GO(vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV, iFppp)
+
+// VK_AMD_anti_lag
+GO(vkAntiLagUpdateAMD, vFpp)
+
+// VK_EXT_device_generated_commands
+GO(vkCmdExecuteGeneratedCommandsEXT, vFpup)
+GO(vkCmdPreprocessGeneratedCommandsEXT, vFppp)
+GOM(vkCreateIndirectCommandsLayoutEXT, iFEpppp)
+GOM(vkCreateIndirectExecutionSetEXT, iFEpppp)
+GOM(vkDestroyIndirectCommandsLayoutEXT, vFEpUp)
+GOM(vkDestroyIndirectExecutionSetEXT, vFEpUp)
+GO(vkGetGeneratedCommandsMemoryRequirementsEXT, vFppp)
+GO(vkUpdateIndirectExecutionSetPipelineEXT, vFpUup)
+GO(vkUpdateIndirectExecutionSetShaderEXT, vFpUup)
+
+// VK_KHR_pipeline_binary
+GOM(vkCreatePipelineBinariesKHR, iFEpppp)
+GOM(vkDestroyPipelineBinaryKHR, vFEpUp)
+GO(vkGetPipelineBinaryDataKHR, iFppppp)
+GO(vkGetPipelineKeyKHR, iFppp)
+GOM(vkReleaseCapturedPipelineDataKHR, iFEppp)
+
+// VK_EXT_depth_clamp_control
+GO(vkCmdSetDepthClampRangeEXT, vFpup)

@@ -1020,41 +1020,26 @@ void addDBFromAddressRange(uintptr_t addr, size_t size)
     }
 }
 
-void cleanDBFromAddressRange(uintptr_t addr, size_t size, int destroy)
+// Will return 1 if at least 1 db in the address range
+int cleanDBFromAddressRange(uintptr_t addr, size_t size, int destroy)
 {
     uintptr_t start_addr = my_context?((addr<my_context->max_db_size)?0:(addr-my_context->max_db_size)):addr;
     dynarec_log(LOG_DEBUG, "cleanDBFromAddressRange %p/%p -> %p %s\n", (void*)addr, (void*)start_addr, (void*)(addr+size-1), destroy?"destroy":"mark");
     dynablock_t* db = NULL;
     uintptr_t end = addr+size;
+    int ret = 0;
     while (start_addr<end) {
         start_addr = getDBSize(start_addr, end-start_addr, &db);
         if(db) {
+            ret = 1;
             if(destroy)
                 FreeRangeDynablock(db, addr, size);
             else
                 MarkRangeDynablock(db, addr, size);
         }
     }
+    return ret;
 }
-
-// Will return 1 if at least 1 db in the address range
-int isDBFromAddressRange(uintptr_t addr, size_t size)
-{
-    uintptr_t start_addr = my_context?((addr<my_context->max_db_size)?0:(addr-my_context->max_db_size)):addr;
-    dynarec_log(LOG_DEBUG, "isDBFromAddressRange %p/%p -> %p => ", (void*)addr, (void*)start_addr, (void*)(addr+size-1));
-    dynablock_t* db = NULL;
-    uintptr_t end = addr+size;
-    while (start_addr<end) {
-        start_addr = getDBSize(start_addr, end-start_addr, &db);
-        if(db) {
-            dynarec_log_prefix(0, LOG_DEBUG, "1\n");
-            return 1;
-        }
-    }
-    dynarec_log_prefix(0, LOG_DEBUG, "0\n");
-    return 0;
-}
-
 
 #ifdef JMPTABL_SHIFT4
 static uintptr_t *create_jmptbl(uintptr_t idx0, uintptr_t idx1, uintptr_t idx2, uintptr_t idx3, uintptr_t idx4)
@@ -1461,6 +1446,47 @@ void unprotectDB(uintptr_t addr, size_t size, int mark)
     }
     UNLOCK_PROT();
 }
+// Add the NEVERCLEAN flag for an adress range, mark all block as dirty, and lift write protection if needed
+void neverprotectDB(uintptr_t addr, size_t size, int mark)
+{
+    dynarec_log(LOG_DEBUG, "neverprotectDB %p -> %p (mark=%d)\n", (void*)addr, (void*)(addr+size-1), mark);
+
+    uintptr_t cur = addr&~(box64_pagesize-1);
+    uintptr_t end = ALIGN(addr+size);
+
+    LOCK_PROT();
+    while(cur!=end) {
+        uint32_t prot = 0, oprot;
+        uintptr_t bend = 0;
+        if (!rb_get_end(memprot, cur, &prot, &bend)) {
+            if(bend>=end) break;
+            else {
+                cur = bend;
+                continue;
+            }
+        }
+        oprot = prot;
+        if(bend>end)
+            bend = end;
+        if(!(prot&PROT_NEVERPROT)) {
+            if(prot&PROT_DYNAREC) {
+                prot&=~PROT_DYN;
+                if(mark)
+                    cleanDBFromAddressRange(cur, bend-cur, 0);
+                mprotect((void*)cur, bend-cur, prot);
+            } else if(prot&PROT_DYNAREC_R) {
+                if(mark)
+                    cleanDBFromAddressRange(cur, bend-cur, 0);
+                prot &= ~PROT_DYN;
+            }
+            prot |= PROT_NEVERCLEAN;
+        }
+        if (prot != oprot)
+            rb_set(memprot, cur, bend, prot);
+        cur = bend;
+    }
+    UNLOCK_PROT();
+}
 
 int isprotectedDB(uintptr_t addr, size_t size)
 {
@@ -1489,7 +1515,7 @@ static int hotpage_cnt = 0;
 static int repeated_count = 0;
 static uintptr_t repeated_page = 0;
 #define HOTPAGE_MARK 64
-#define HOTPAGE_DIRTY 8
+#define HOTPAGE_DIRTY 2
 void SetHotPage(uintptr_t addr)
 {
     hotpage = addr&~(box64_pagesize-1);
@@ -1499,8 +1525,13 @@ void CheckHotPage(uintptr_t addr)
 {
     uintptr_t page = (uintptr_t)addr&~(box64_pagesize-1);
     if(repeated_count==1 && repeated_page==page) {
-        dynarec_log(LOG_DEBUG, "Detecting a Hotpage at %p (%d)\n", (void*)repeated_page, repeated_count);
-        SetHotPage(repeated_page);
+        if(BOX64ENV(dynarec_dirty)>1) {
+            dynarec_log(LOG_INFO, "Detecting a Hotpage at %p (%d), marking page as NEVERCLEAN\n", (void*)repeated_page, repeated_count);
+            neverprotectDB(repeated_page, box64_pagesize, 1);
+        } else {
+            dynarec_log(LOG_INFO, "Detecting a Hotpage at %p (%d)\n", (void*)repeated_page, repeated_count);
+            SetHotPage(repeated_page);
+        }
         repeated_count = 0;
         repeated_page = 0;
     } else {
@@ -1538,7 +1569,8 @@ void updateProtection(uintptr_t addr, size_t size, uint32_t prot)
         rb_get_end(memprot, cur, &oprot, &bend);
         if(bend>end) bend = end;
         uint32_t dyn=(oprot&PROT_DYN);
-        if(!(dyn&PROT_NEVERPROT)) {
+        uint32_t never = dyn&PROT_NEVERPROT;
+        if(!(never)) {
             if(dyn && (prot&PROT_WRITE)) {   // need to remove the write protection from this block
                 dyn = PROT_DYNAREC;
                 int ret = mprotect((void*)cur, bend-cur, prot&~PROT_WRITE);
@@ -1547,7 +1579,7 @@ void updateProtection(uintptr_t addr, size_t size, uint32_t prot)
                 dyn = PROT_DYNAREC_R;
             }
         }
-        uint32_t new_prot = prot?(prot|dyn):prot;
+        uint32_t new_prot = prot?(prot|dyn):(prot|never);
         if (new_prot != oprot)
             rb_set(memprot, cur, bend, new_prot);
         cur = bend;

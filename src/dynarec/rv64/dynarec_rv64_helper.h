@@ -474,6 +474,17 @@
         ed = 16;                                                                                 \
         addr = geted(dyn, addr, ninst, nextop, &wback, a, x3, &fixedaddress, rex, NULL, I12, D); \
     }
+#define GETEX32(a, D, I12)                                                                         \
+    if (MODREG) {                                                                                  \
+        ed = (nextop & 7) + (rex.b << 3);                                                          \
+        sse_forget_reg(dyn, ninst, x3, ed);                                                        \
+        fixedaddress = offsetof(x64emu_t, xmm[ed]);                                                \
+        wback = xEmu;                                                                              \
+    } else {                                                                                       \
+        SMREAD();                                                                                  \
+        ed = 16;                                                                                   \
+        addr = geted32(dyn, addr, ninst, nextop, &wback, a, x3, &fixedaddress, rex, NULL, I12, D); \
+    }
 
 // Get GX as a quad (might use x1)
 #define GETGX_vector(a, w, sew)                 \
@@ -779,6 +790,8 @@
 // Branch to MARKLOCK if reg1==0 (use j64)
 #define BEQZ_MARKLOCK(reg) BEQ_MARKLOCK(reg, xZR)
 
+// Branch to MARKLOCK instruction unconditionnal (use j64)
+#define B_MARKLOCK_nocond Bxx_gen(__, MARKLOCK, 0, 0)
 
 // Branch to NEXT if reg1==reg2 (use j64)
 #define BEQ_NEXT(reg1, reg2)                                                  \
@@ -858,12 +871,14 @@
 
 #define SET_DFNONE()                               \
     do {                                           \
-        dyn->f.dfnone_here = 1;                    \
         if (!dyn->f.dfnone) {                      \
             SW(xZR, xEmu, offsetof(x64emu_t, df)); \
+        }                                          \
+        if (!dyn->insts[ninst].x64.may_set) {      \
+            dyn->f.dfnone_here = 1;                \
             dyn->f.dfnone = 1;                     \
         }                                          \
-    } while (0);
+    } while (0)
 
 #define SET_DF(S, N)                                                                                                            \
     if ((N) != d_none) {                                                                                                        \
@@ -974,28 +989,28 @@
 #define X87_PUSH_EMPTY_OR_FAIL(dyn, ninst, scratch)   x87_do_push_empty(dyn, ninst, scratch)
 #define X87_POP_OR_FAIL(dyn, ninst, scratch)          x87_do_pop(dyn, ninst, scratch)
 #else
-#define X87_PUSH_OR_FAIL(var, dyn, ninst, scratch, t)                                                                                                    \
-    if ((dyn->e.x87stack == 8) || (dyn->e.pushed == 8)) {                                                                                                \
-        if (BOX64ENV(dynarec_dump)) dynarec_log(LOG_NONE, " Warning, suspicious x87 Push, stack=%d/%d on inst %d\n", dyn->e.x87stack, dyn->e.pushed, ninst); \
-        dyn->abort = 1;                                                                                                                                  \
-        return addr;                                                                                                                                     \
-    }                                                                                                                                                    \
+#define X87_PUSH_OR_FAIL(var, dyn, ninst, scratch, t)                                                                                                          \
+    if ((dyn->e.x87stack == 8) || (dyn->e.pushed == 8)) {                                                                                                      \
+        if (BOX64DRENV(dynarec_dump)) dynarec_log(LOG_NONE, " Warning, suspicious x87 Push, stack=%d/%d on inst %d\n", dyn->e.x87stack, dyn->e.pushed, ninst); \
+        dyn->abort = 1;                                                                                                                                        \
+        return addr;                                                                                                                                           \
+    }                                                                                                                                                          \
     var = x87_do_push(dyn, ninst, scratch, t);
 
-#define X87_PUSH_EMPTY_OR_FAIL(dyn, ninst, scratch)                                                                                                      \
-    if ((dyn->e.x87stack == 8) || (dyn->e.pushed == 8)) {                                                                                                \
-        if (BOX64ENV(dynarec_dump)) dynarec_log(LOG_NONE, " Warning, suspicious x87 Push, stack=%d/%d on inst %d\n", dyn->e.x87stack, dyn->e.pushed, ninst); \
-        dyn->abort = 1;                                                                                                                                  \
-        return addr;                                                                                                                                     \
-    }                                                                                                                                                    \
+#define X87_PUSH_EMPTY_OR_FAIL(dyn, ninst, scratch)                                                                                                            \
+    if ((dyn->e.x87stack == 8) || (dyn->e.pushed == 8)) {                                                                                                      \
+        if (BOX64DRENV(dynarec_dump)) dynarec_log(LOG_NONE, " Warning, suspicious x87 Push, stack=%d/%d on inst %d\n", dyn->e.x87stack, dyn->e.pushed, ninst); \
+        dyn->abort = 1;                                                                                                                                        \
+        return addr;                                                                                                                                           \
+    }                                                                                                                                                          \
     x87_do_push_empty(dyn, ninst, scratch);
 
-#define X87_POP_OR_FAIL(dyn, ninst, scratch)                                                                                                           \
-    if ((dyn->e.x87stack == -8) || (dyn->e.poped == 8)) {                                                                                              \
-        if (BOX64ENV(dynarec_dump)) dynarec_log(LOG_NONE, " Warning, suspicious x87 Pop, stack=%d/%d on inst %d\n", dyn->e.x87stack, dyn->e.poped, ninst); \
-        dyn->abort = 1;                                                                                                                                \
-        return addr;                                                                                                                                   \
-    }                                                                                                                                                  \
+#define X87_POP_OR_FAIL(dyn, ninst, scratch)                                                                                                                 \
+    if ((dyn->e.x87stack == -8) || (dyn->e.poped == 8)) {                                                                                                    \
+        if (BOX64DRENV(dynarec_dump)) dynarec_log(LOG_NONE, " Warning, suspicious x87 Pop, stack=%d/%d on inst %d\n", dyn->e.x87stack, dyn->e.poped, ninst); \
+        dyn->abort = 1;                                                                                                                                      \
+        return addr;                                                                                                                                         \
+    }                                                                                                                                                        \
     x87_do_pop(dyn, ninst, scratch);
 #endif
 
@@ -1090,7 +1105,7 @@
 #define UFLAG_RES(A) \
     if (dyn->insts[ninst].x64.gen_flags) { SDxw(A, xEmu, offsetof(x64emu_t, res)); }
 #define UFLAG_DF(r, A) \
-    if (dyn->insts[ninst].x64.gen_flags) { SET_DF(r, A) }
+    if (dyn->insts[ninst].x64.gen_flags) { SET_DF(r, A); }
 #define UFLAG_IF if (dyn->insts[ninst].x64.gen_flags)
 #ifndef DEFAULT
 #define DEFAULT \
@@ -1240,6 +1255,7 @@ void* rv64_next(void);
 #define emit_cmp16_0        STEPNAME(emit_cmp16_0)
 #define emit_cmp32_0        STEPNAME(emit_cmp32_0)
 #define emit_test8          STEPNAME(emit_test8)
+#define emit_test8c         STEPNAME(emit_test8c)
 #define emit_test16         STEPNAME(emit_test16)
 #define emit_test32         STEPNAME(emit_test32)
 #define emit_test32c        STEPNAME(emit_test32)
@@ -1409,8 +1425,9 @@ void emit_cmp16(dynarec_rv64_t* dyn, int ninst, int s1, int s2, int s3, int s4, 
 void emit_cmp32(dynarec_rv64_t* dyn, int ninst, rex_t rex, int s1, int s2, int s3, int s4, int s5, int s6);
 void emit_cmp8_0(dynarec_rv64_t* dyn, int ninst, int s1, int s3, int s4);
 void emit_cmp16_0(dynarec_rv64_t* dyn, int ninst, int s1, int s3, int s4);
-void emit_cmp32_0(dynarec_rv64_t* dyn, int ninst, rex_t rex, int s1, int s3, int s4);
+void emit_cmp32_0(dynarec_rv64_t* dyn, int ninst, rex_t rex, uint8_t nextop, int s1, int s3, int s4, int s5);
 void emit_test8(dynarec_rv64_t* dyn, int ninst, int s1, int s2, int s3, int s4, int s5);
+void emit_test8c(dynarec_rv64_t* dyn, int ninst, int s1, uint8_t c, int s3, int s4, int s5);
 void emit_test16(dynarec_rv64_t* dyn, int ninst, int s1, int s2, int s3, int s4, int s5);
 void emit_test32(dynarec_rv64_t* dyn, int ninst, rex_t rex, int s1, int s2, int s3, int s4, int s5);
 void emit_test32c(dynarec_rv64_t* dyn, int ninst, rex_t rex, int s1, int64_t c, int s3, int s4, int s5);

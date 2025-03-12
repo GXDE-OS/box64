@@ -2199,6 +2199,26 @@ EXPORT int32_t my_epoll_pwait(x64emu_t* emu, int32_t epfd, void* events, int32_t
         UnalignEpollEvent(events, _events, ret);
     return ret;
 }
+EXPORT int my_epoll_pwait2(int epfd, void* events, int maxevents, struct timespec *timeout, sigset_t * sigmask)
+{
+    struct epoll_event _events[maxevents];
+    //AlignEpollEvent(_events, events, maxevents);
+    int ret = 0;
+    if(!my->epoll_pwait2) {
+        // epoll_pwait2 doesn't exist, to tranforming timeout to int, and from nanosecods to milliseconds...
+        int tout = -1;
+        if(timeout) {
+            int64_t tmp = (timeout->tv_nsec + timeout->tv_sec*1000000000LL)/1000000LL;
+            if(tmp>1<<31) tmp = 1<<31;
+            tout = tmp;
+        }
+        ret = epoll_pwait(epfd, events?_events:NULL, maxevents, tout, sigmask);
+    } else
+        ret = my->epoll_pwait2(epfd, events?_events:NULL, maxevents, timeout, sigmask);
+    if(ret>0)
+        UnalignEpollEvent(events, _events, ret);
+    return ret;
+}
 #endif
 
 #ifndef ANDROID
@@ -2981,6 +3001,7 @@ size_t last_mmap_len = 0;
 EXPORT void* my_mmap64(x64emu_t* emu, void *addr, size_t length, int prot, int flags, int fd, ssize_t offset)
 {
     (void)emu;
+    if(BOX64ENV(dynarec_log)>=LOG_DEBUG) {printf_log(LOG_NONE, "mmap64(%p, 0x%zx, 0x%x, 0x%x, %d, %zd) ", addr, length, prot, flags, fd, offset);}
     void* ret = box_mmap(addr, length, prot, flags, fd, offset);
     int e = errno;
     if((ret==MAP_FAILED && (emu || box64_is32bits)) && (BOX64ENV(log)>=LOG_DEBUG || BOX64ENV(dynarec_log)>=LOG_DEBUG)) {printf_log(LOG_NONE, "%s (%d)\n", strerror(errno), errno);}

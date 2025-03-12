@@ -439,7 +439,7 @@ uintptr_t dynarec64_AVX_F3_0F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, 
             nextop = F8;
             d0 = fpu_get_scratch(dyn, ninst);
             for(int l=0; l<1+vex.l; ++l) {
-                if(!l) { GETEX(v1, 0, 1); GETGX(v0, 1); u8 = F8; } else { GETGY(v0, 1, MODREG?((nextop&7)+(rex.b<<3)):-1, -1, -1); GETEY(v1); }
+                if(!l) { GETEX_Y(v1, 0, 1); GETGX(v0, 1); u8 = F8; } else { GETGY(v0, 1, MODREG?((nextop&7)+(rex.b<<3)):-1, -1, -1); GETEY(v1); }
                 if(u8==0b00000000 || u8==0b01010101 || u8==0b10101010 || u8==0b11111111) {
                     VDUP_16(d0, v1, 4+(u8&3));
                 } else {
@@ -491,11 +491,30 @@ uintptr_t dynarec64_AVX_F3_0F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, 
                     VMOVQ(v1, v0);
                 } // no ymm raz here it seems
             } else {
-                addr = geted(dyn, addr, ninst, nextop, &ed, x1, &fixedaddress, NULL, 0xffe<<4, 15, rex, NULL, 0, 0);
-                VSTR128_U12(v0, ed, fixedaddress);
-                if(vex.l) {
-                    GETGY(v0, 0, -1, -1, -1);
-                    VSTR128_U12(v0, ed, fixedaddress+16);
+                IF_UNALIGNED(ip) {
+                    addr = geted(dyn, addr, ninst, nextop, &wback, x1, &fixedaddress, NULL, 0, 0, rex, NULL, 0, 0);
+                    if(wback!=x1) {
+                        MOVx_REG(x1, wback);
+                        wback = x1;
+                    }
+                    for(int i=0; i<16; ++i) {
+                        VST1_8(v0, i, wback);
+                        ADDx_U12(wback, wback, 1);
+                    }
+                    if(vex.l) {
+                        GETGY(v0, 0, -1, -1, -1);
+                        for(int i=0; i<16; ++i) {
+                            VST1_8(v0, i, wback);
+                            ADDx_U12(wback, wback, 1);
+                        }
+                    }
+                } else {
+                    addr = geted(dyn, addr, ninst, nextop, &ed, x1, &fixedaddress, NULL, 0xffe<<4, 15, rex, NULL, 0, 0);
+                    VSTR128_U12(v0, ed, fixedaddress);
+                    if(vex.l) {
+                        GETGY(v0, 0, -1, -1, -1);
+                        VSTR128_U12(v0, ed, fixedaddress+16);
+                    }
                 }
                 SMWRITE2();
             }

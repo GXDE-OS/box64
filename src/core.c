@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <pwd.h>
 #include <signal.h>
 #include <sys/syscall.h>
 #include <sys/mman.h>
@@ -200,7 +201,12 @@ void printf_ftrace(int prefix, const char* fmt, ...)
     va_list args;
     va_start(args, fmt);
     if (prefix && ftrace == stdout) {
-        fprintf(ftrace, box64_is32bits ? "[BOX32] " : "[BOX64] ");
+        if (prefix > 1) {
+            fprintf(ftrace, "[\033[31m%s\033[0m] ",
+                box64_is32bits ? "BOX32" : "BOX64");
+        } else {
+            fprintf(ftrace, box64_is32bits ? "[BOX32] " : "[BOX64] ");
+        }
     }
     vfprintf(ftrace, fmt, args);
 
@@ -469,6 +475,33 @@ static void displayMiscInfo()
     computeRDTSC();
 }
 
+static void hookMangoHud()
+{
+    const char* config = getenv("MANGOHUD_CONFIG");
+    const char* configfile = getenv("MANGOHUD_CONFIGFILE");
+    if (config || configfile) return;
+    if (FileExist("/etc/MangoHud.conf", IS_FILE)) return;
+    const char* configdir = getenv("XDG_CONFIG_HOME");
+    const char* homedir = getenv("HOME");
+#ifndef ANDROID
+    homedir = homedir ? homedir : getpwuid(getuid())->pw_dir;
+#endif
+    if (!homedir) return;
+
+    static char config_base[256];
+    snprintf(config_base, sizeof(config_base), "%s%s",
+        configdir ? configdir : homedir,
+        configdir ? "" : "/.config");
+
+    const char* files[] = { "MangoHud.conf", "box64.conf" };
+    for (int i = 0; i < 2; i++) {
+        static char path[512];
+        snprintf(path, sizeof(path), "%s/MangoHud/%s", config_base, files[i]);
+        if (FileExist(path, IS_FILE)) return;
+    }
+    setenv("MANGOHUD_CONFIG", "legacy_layout=0,custom_text_center=" BOX64_BUILD_INFO_STRING ",gpu_stats=1,cpu_stats=1,fps=1,frame_timing=1", 0);
+}
+
 static void loadPath(path_collection_t *col, const char* defpath, const char* path)
 {
     if(path) {
@@ -533,11 +566,11 @@ void AddNewLibs(const char* list)
 }
 
 void PrintHelp() {
-    printf("This is Box64, the Linux x86_64 emulator with a twist.\n");
-    printf("\nUsage is 'box64 [options] path/to/software [args]' to launch x86_64 software.\n");
-    printf(" options are:\n");
-    printf("    '-v'|'--version' to print box64 version and quit\n");
-    printf("    '-h'|'--help' to print this and quit\n");
+    printf_ftrace(1, "This is Box64, the Linux x86_64 emulator with a twist.\n");
+    printf_ftrace(1, "Usage is 'box64 [options] path/to/software [args]' to launch x86_64 software.\n");
+    printf_ftrace(1, " options are:\n");
+    printf_ftrace(1, "    '-v'|'--version' to print box64 version and quit\n");
+    printf_ftrace(1, "    '-h'|'--help' to print this and quit\n");
 }
 
 static void addLibPaths(box64context_t* context)
@@ -850,7 +883,6 @@ void pressure_vessel(int argc, const char** argv, int nextarg, const char* prog)
 #endif
 extern char** environ;
 
-
 int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elfheader_t** elfheader, int exec)
 {
     #ifndef STATICBUILD
@@ -885,27 +917,15 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
     LoadEnvVariables();
     InitializeEnvFiles();
 
-    displayMiscInfo();
+    if (!BOX64ENV(nobanner)) PrintBox64Version();
 
-    char* bashpath = NULL;
-    {
-        char* p = BOX64ENV(bash);
-        if(p) {
-            if(FileIsX64ELF(p)) {
-                bashpath = p;
-                printf_log(LOG_INFO, "Using bash \"%s\"\n", bashpath);
-            } else {
-                printf_log(LOG_INFO, "The x86_64 bash \"%s\" is not an x86_64 binary.\n", p);
-            }
-        }
-    }
 
     const char* prog = argv[1];
     int nextarg = 1;
     // check if some options are passed
     while(prog && prog[0]=='-') {
         if(!strcmp(prog, "-v") || !strcmp(prog, "--version")) {
-            PrintBox64Version();
+            if (BOX64ENV(nobanner)) PrintBox64Version();
             exit(0);
         }
         if(!strcmp(prog, "-h") || !strcmp(prog, "--help")) {
@@ -924,7 +944,24 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
         printf("[BOX64] Nothing to run\n");
         exit(0);
     }
-    if (!BOX64ENV(nobanner)) PrintBox64Version();
+
+    displayMiscInfo();
+
+    hookMangoHud();
+
+    char* bashpath = NULL;
+    {
+        char* p = BOX64ENV(bash);
+        if(p) {
+            if(FileIsX64ELF(p)) {
+                bashpath = p;
+                printf_log(LOG_INFO, "Using bash \"%s\"\n", bashpath);
+            } else {
+                printf_log(LOG_INFO, "The x86_64 bash \"%s\" is not an x86_64 binary.\n", p);
+            }
+        }
+    }
+
     // precheck, for win-preload
     const char* prog_ = strrchr(prog, '/');
     if(!prog_) prog_ = prog; else ++prog_;
@@ -986,7 +1023,7 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
             }
         }
         // Try to get the name of the exe being run, to ApplyEnvFileEntry laters
-        if(argv[nextarg+1] && argv[nextarg+1][0]!='-' && strlen(argv[nextarg+1])>4 && !strcasecmp(argv[nextarg+1]+strlen(argv[nextarg+1])-4, ".exe")) {
+        if(argv[nextarg+1] && argv[nextarg+1][0]!='-' && strlen(argv[nextarg+1])>4 /*&& !strcasecmp(argv[nextarg+1]+strlen(argv[nextarg+1])-4, ".exe")*/) {
             const char* pp = strrchr(argv[nextarg+1], '/');
             if(pp)
                 box64_wine_guest_name = pp + 1;
@@ -1072,8 +1109,8 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
         }
     }
     // print PATH and LD_LIB used
-    PrintCollection(&my_context->box64_ld_lib, "BOX64 LIB PATH");
-    PrintCollection(&my_context->box64_path, "BOX64 BIN PATH");
+    PrintCollection(&my_context->box64_ld_lib, "Library search path");
+    PrintCollection(&my_context->box64_path, "Binary search path");
     // lets build argc/argv stuff
     printf_log(LOG_INFO, "Looking for %s\n", prog);
     if(strchr(prog, '/'))

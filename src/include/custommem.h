@@ -36,9 +36,8 @@ uintptr_t AllocDynarecMap(size_t size);
 void FreeDynarecMap(uintptr_t addr);
 
 void addDBFromAddressRange(uintptr_t addr, size_t size);
-void cleanDBFromAddressRange(uintptr_t addr, size_t size, int destroy);
 // Will return 1 if at least 1 db in the address range
-int isDBFromAddressRange(uintptr_t addr, size_t size);
+int cleanDBFromAddressRange(uintptr_t addr, size_t size, int destroy);
 
 dynablock_t* getDB(uintptr_t idx);
 int getNeedTest(uintptr_t idx);
@@ -108,6 +107,7 @@ void loadProtectionFromMap(void);
 void protectDB(uintptr_t addr, size_t size);
 void protectDBJumpTable(uintptr_t addr, size_t size, void* jump, void* ref);
 void unprotectDB(uintptr_t addr, size_t size, int mark);    // if mark==0, the blocks are not marked as potentially dirty
+void neverprotectDB(uintptr_t addr, size_t size, int mark);
 int isprotectedDB(uintptr_t addr, size_t size);
 #endif
 void* find32bitBlock(size_t size);

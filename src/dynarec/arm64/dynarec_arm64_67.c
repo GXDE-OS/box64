@@ -917,7 +917,11 @@ uintptr_t dynarec64_67(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
 
         case 0x6B:
             INST_NAME("IMUL Gd, Ed, Ib");
-            SETFLAGS(X_ALL, SF_SET);
+            if(BOX64ENV(dynarec_safeflags)>1 && BOX64ENV(cputype)) {
+                SETFLAGS(X_OF|X_CF, SF_SET);
+            } else {
+                SETFLAGS(X_ALL, SF_SET);
+            }
             nextop = F8;
             GETGD;
             GETED32(1);
@@ -929,10 +933,6 @@ uintptr_t dynarec64_67(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                     SMULH(x3, ed, x4);
                     MULx(gd, ed, x4);
                     SET_DFNONE();
-                    IFX(X_ZF | X_PF | X_AF | X_SF) {
-                        MOV32w(x1, (1<<F_ZF)|(1<<F_AF)|(1<<F_PF)|(1<<F_SF));
-                        BICw(xFlags, xFlags, x1);
-                    }
                     IFX(X_CF | X_OF) {
                         CMPSx_REG_ASR(x3, gd, 63);
                         CSETw(x1, cNE);
@@ -953,10 +953,6 @@ uintptr_t dynarec64_67(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                     LSRx(x3, gd, 32);
                     MOVw_REG(gd, gd);
                     SET_DFNONE();
-                    IFX(X_ZF | X_PF | X_AF | X_SF) {
-                        MOV32w(x1, (1<<F_ZF)|(1<<F_AF)|(1<<F_PF)|(1<<F_SF));
-                        BICw(xFlags, xFlags, x1);
-                    }
                     IFX(X_CF | X_OF) {
                         CMPSw_REG_ASR(x3, gd, 31);
                         CSETw(x1, cNE);
@@ -971,6 +967,13 @@ uintptr_t dynarec64_67(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                     MULxw(gd, ed, x4);
                 }
             }
+            IFX2(X_AF, && !BOX64ENV(cputype)) {BFCw(xFlags, F_AF, 1);}
+            IFX2(X_ZF, && !BOX64ENV(cputype)) {BFCw(xFlags, F_ZF, 1);}
+            IFX2(X_SF, && !BOX64ENV(cputype)) {
+                LSRxw(x3, gd, rex.w?63:31);
+                BFIw(xFlags, x3, F_SF, 1);
+            }
+            IFX2(X_PF, && !BOX64ENV(cputype)) emit_pf(dyn, ninst, gd, x3);
             break;
 
         case 0x70:
@@ -1463,7 +1466,11 @@ uintptr_t dynarec64_67(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                     break;
                 case 4:
                     INST_NAME("MUL EAX, Ed");
-                    SETFLAGS(X_ALL, SF_SET);
+                    if(BOX64ENV(dynarec_safeflags) && BOX64ENV(cputype)) {
+                        SETFLAGS(X_OF|X_CF, SF_SET);
+                    } else {
+                        SETFLAGS(X_ALL, SF_SET);
+                    }
                     GETED32(0);
                     if(rex.w) {
                         if(ed==xRDX) gd=x3; else gd=xRDX;
@@ -1475,29 +1482,32 @@ uintptr_t dynarec64_67(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                         MOVw_REG(xRAX, xRDX);
                         LSRx(xRDX, xRDX, 32);
                     }
-                    UFLAG_IF {
-                        SET_DFNONE();
-                        IFX(X_CF|X_OF) {
-                            CMPSxw_U12(xRDX, 0);
-                            CSETw(x3, cNE);
-                            IFX(X_CF) {
-                                BFIw(xFlags, x3, F_CF, 1);
-                            }
-                            IFX(X_OF) {
-                                BFIw(xFlags, x3, F_OF, 1);
-                            }
+                    SET_DFNONE();
+                    IFX(X_CF|X_OF) {
+                        CMPSxw_U12(xRDX, 0);
+                        CSETw(x3, cNE);
+                        IFX(X_CF) {
+                            BFIw(xFlags, x3, F_CF, 1);
                         }
-                        IFX(X_AF | X_PF | X_ZF | X_SF)
-                            if (BOX64ENV(dynarec_test)) {
-                                // to avoid noise during test
-                                MOV32w(x3, (1<<F_ZF)|(1<<F_AF)|(1<<F_PF)|(1<<F_SF));
-                                BICw(xFlags, xFlags, x3);
-                            }
+                        IFX(X_OF) {
+                            BFIw(xFlags, x3, F_OF, 1);
+                        }
                     }
+                    IFX2(X_AF, && !BOX64ENV(cputype)) {BFCw(xFlags, F_AF, 1);}
+                    IFX2(X_ZF, && !BOX64ENV(cputype)) {BFCw(xFlags, F_ZF, 1);}
+                    IFX2(X_SF, && !BOX64ENV(cputype)) {
+                        LSRxw(x3, xRAX, rex.w?63:31);
+                        BFIw(xFlags, x3, F_SF, 1);
+                    }
+                    IFX2(X_PF, && !BOX64ENV(cputype)) emit_pf(dyn, ninst, xRAX, x3);
                     break;
                 case 5:
                     INST_NAME("IMUL EAX, Ed");
-                    SETFLAGS(X_ALL, SF_SET);
+                    if(BOX64ENV(dynarec_safeflags) && BOX64ENV(cputype)) {
+                        SETFLAGS(X_OF|X_CF, SF_SET);
+                    } else {
+                        SETFLAGS(X_ALL, SF_SET);
+                    }
                     GETED32(0);
                     if(rex.w) {
                         if(ed==xRDX) gd=x3; else gd=xRDX;
@@ -1509,25 +1519,24 @@ uintptr_t dynarec64_67(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                         MOVw_REG(xRAX, xRDX);
                         LSRx(xRDX, xRDX, 32);
                     }
-                    UFLAG_IF {
-                        SET_DFNONE();
-                        IFX(X_CF|X_OF) {
-                            CMPSxw_REG_ASR(xRDX, xRAX, rex.w?63:31);
-                            CSETw(x3, cNE);
-                            IFX(X_CF) {
-                                BFIw(xFlags, x3, F_CF, 1);
-                            }
-                            IFX(X_OF) {
-                                BFIw(xFlags, x3, F_OF, 1);
-                            }
+                    SET_DFNONE();
+                    IFX(X_CF|X_OF) {
+                        CMPSxw_REG_ASR(xRDX, xRAX, rex.w?63:31);
+                        CSETw(x3, cNE);
+                        IFX(X_CF) {
+                            BFIw(xFlags, x3, F_CF, 1);
                         }
-                        IFX(X_AF | X_PF | X_ZF | X_SF)
-                            if (BOX64ENV(dynarec_test)) {
-                                // to avoid noise during test
-                                MOV32w(x3, (1<<F_ZF)|(1<<F_AF)|(1<<F_PF)|(1<<F_SF));
-                                BICw(xFlags, xFlags, x3);
-                            }
+                        IFX(X_OF) {
+                            BFIw(xFlags, x3, F_OF, 1);
+                        }
                     }
+                    IFX2(X_AF, && !BOX64ENV(cputype)) {BFCw(xFlags, F_AF, 1);}
+                    IFX2(X_ZF, && !BOX64ENV(cputype)) {BFCw(xFlags, F_ZF, 1);}
+                    IFX2(X_SF, && !BOX64ENV(cputype)) {
+                        LSRxw(x3, xRAX, rex.w?63:31);
+                        BFIw(xFlags, x3, F_SF, 1);
+                    }
+                    IFX2(X_PF, && !BOX64ENV(cputype)) emit_pf(dyn, ninst, xRAX, x3);
                     break;
                 case 6:
                     INST_NAME("DIV Ed");
@@ -1566,16 +1575,24 @@ uintptr_t dynarec64_67(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                         }
                     }
                     SET_DFNONE();
-                    IFX(X_AF | X_SF | X_CF | X_PF | X_ZF | X_OF)
-                        if (BOX64ENV(dynarec_test)) {
-                            MOV32w(x1, (1<<F_AF) | (1<<F_SF) | (1<<F_CF) | (1<<F_PF) | (1<<F_ZF) | (1<<F_OF));
-                            BICw(xFlags, xFlags, x1);
-                        }
+                    IFX(X_OF)                         {BFCw(xFlags, F_OF, 1);}
+                    IFX(X_CF)                         {BFCw(xFlags, F_CF, 1);}
+                    IFX2(X_AF, && !BOX64ENV(cputype)) {BFCw(xFlags, F_AF, 1);}
+                    IFX2(X_AF, && BOX64ENV(cputype))  {ORRw_mask(xFlags, xFlags, 28, 0);}   //mask=0x10
+                    IFX2(X_ZF, && !BOX64ENV(cputype)) {ORRw_mask(xFlags, xFlags, 26, 0);}   //mask=0x40
+                    IFX2(X_ZF, && BOX64ENV(cputype))  {BFCw(xFlags, F_ZF, 1);}
+                    IFX(X_SF)                         {BFCw(xFlags, F_SF, 1);}
+                    IFX2(X_PF, && !BOX64ENV(cputype)) {ORRw_mask(xFlags, xFlags, 30, 0);}   //mask=0x04
+                    IFX2(X_PF, && BOX64ENV(cputype))  {BFCw(xFlags, F_PF, 1);}
                     break;
                 case 7:
                     INST_NAME("IDIV Ed");
                     NOTEST(x1);
-                    SETFLAGS(X_ALL, SF_SET);
+                    if(!BOX64ENV(dynarec_safeflags)) {
+                        SETFLAGS(X_ALL, SF_SET);
+                    } else if(BOX64ENV(cputype)) {
+                        SETFLAGS(X_SF|X_PF|X_ZF|X_AF, SF_SET);
+                    }
                     if(!rex.w) {
                         GETSED32w(0);
                         MOVw_REG(x3, xRAX);
@@ -1607,12 +1624,13 @@ uintptr_t dynarec64_67(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                             MOVx_REG(xRAX, x2);
                         }
                     }
-                    SET_DFNONE();
-                    IFX(X_AF | X_SF | X_CF | X_PF | X_ZF | X_OF)
-                        if (BOX64ENV(dynarec_test)) {
-                            MOV32w(x1, (1<<F_AF) | (1<<F_SF) | (1<<F_CF) | (1<<F_PF) | (1<<F_ZF) | (1<<F_OF));
-                            BICw(xFlags, xFlags, x1);
-                        }
+                    if(!BOX64ENV(dynarec_safeflags)) {
+                        SET_DFNONE();
+                    }
+                    IFX2(X_AF, && BOX64ENV(cputype))  {ORRw_mask(xFlags, xFlags, 28, 0);}   //mask=0x10
+                    IFX2(X_ZF, && BOX64ENV(cputype))  {BFCw(xFlags, F_ZF, 1);}
+                    IFX2(X_SF, && BOX64ENV(cputype))  {BFCw(xFlags, F_SF, 1);}
+                    IFX2(X_PF, && BOX64ENV(cputype))  {BFCw(xFlags, F_PF, 1);}
                     break;
             }
             break;
