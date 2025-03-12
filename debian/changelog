@@ -1,3 +1,9 @@
+box64 (0.3.4gxde1) UNRELEASED; urgency=medium
+
+  * 更新版本
+
+ -- gfdgd_xi <3025613752@qq.com>  Wed, 12 Mar 2025 23:03:08 +0800
+
 box64 (0.3.4) unstable; urgency=low
 
 * This version is Faster and more compatible
