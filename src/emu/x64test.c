@@ -12,7 +12,7 @@
 #include "debug.h"
 #include "box64stack.h"
 #include "x64emu.h"
-#include "x64run.h"
+#include "x64test.h"
 #include "x64emu_private.h"
 #include "x64run_private.h"
 #include "x64primop.h"
@@ -20,7 +20,6 @@
 #include "x87emu_private.h"
 #include "box64context.h"
 #include "bridge.h"
-#include "signals.h"
 
 void print_banner(x64emu_t* ref)
 {
@@ -46,6 +45,11 @@ void x64test_check(x64emu_t* ref, uintptr_t ip)
     int banner = 0;
     x64test_t* test = &ref->test;
     x64emu_t* emu = test->emu;
+    if(((uint8_t*)ref->old_ip)[0]==0xf0) {
+        // LOCK opcode creates a lot of false positive, so just ignore it
+        CopyEmu(emu, ref);
+        return;
+    }
     if(memcmp(ref->regs, emu->regs, sizeof(emu->regs))) {
         static const char* regname[] = {"RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RSI", "RDI",
                                         " R8", " R9", "R10", "R11", "R12", "R13", "R14", "R15"};
@@ -84,7 +88,7 @@ void x64test_check(x64emu_t* ref, uintptr_t ip)
         for(int i=0; i<ref->fpu_stack; ++i) {
             if(ref->x87[(ref->top+i)&7].d != emu->x87[(emu->top+i)&7].d) {
                 BANNER;
-                printf_log(LOG_NONE, "ST%d: %g | %g\n", i, ref->x87[(ref->top+i)&7].d, emu->x87[(emu->top+i)&7].d);
+                printf_log(LOG_NONE, "ST%d: %g(0x%lx) | %g(0x%lx)\n", i, ref->x87[(ref->top+i)&7].d, ref->x87[(ref->top+i)&7].q, emu->x87[(emu->top+i)&7].d, emu->x87[(emu->top+i)&7].q);
             }
         }
     }

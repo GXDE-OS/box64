@@ -2,17 +2,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
 #include <fcntl.h>
 #include <string.h>
+#include <inttypes.h>
 
+#include "os.h"
 #include "env.h"
 #include "khash.h"
 #include "debug.h"
 #include "fileutils.h"
 #include "box64context.h"
 #include "rbtree.h"
+#include "wine_tools.h"
+#include "pe_tools.h"
 
 box64env_t box64env = { 0 };
 
@@ -68,9 +70,31 @@ static const char default_rcfile[] =
 "BOX64_EXIT=1\n"
 ;
 
+#ifdef _WIN32
+#define PATHSEP "\\"
+#define HOME    "USERPROFILE"
+#else
+#define PATHSEP "/"
+#define HOME    "HOME"
+#endif
+
+char* LowerCase(const char* s)
+{
+    if (!s)
+        return NULL;
+    char* ret = box_calloc(1, strlen(s) + 1);
+    size_t i = 0;
+    while (*s) {
+        ret[i++] = (*s >= 'A' && *s <= 'Z') ? (*s - 'A' + 'a') : (*s);
+        ++s;
+    }
+
+    return ret;
+}
 
 static void addNewEnvVar(const char* s)
 {
+#ifndef _WIN32
     if (!s) return;
     char* p = box_strdup(s);
     char* e = strchr(p, '=');
@@ -83,7 +107,20 @@ static void addNewEnvVar(const char* s)
     ++e;
     setenv(p, e, 1);
     box_free(p);
+#endif
 }
+
+static void parseRange(const char* s, uintptr_t* start, uintptr_t* end)
+{
+    if (!s) return;
+    if (!strchr(s, '-')) return;
+    if (sscanf(s, "%" PRId64 "-%" PRId64, start, end) == 2) return;
+    if (sscanf(s, "0x%" PRIX64 "-0x%" PRIX64, start, end) == 2) return;
+    if (sscanf(s, "0x%" PRIx64 "-0x%" PRIx64, start, end) == 2) return;
+    sscanf(s, "%" PRIx64 "-%" PRIx64, start, end);
+}
+
+void AddNewLibs(const char* list);
 
 static void applyCustomRules()
 {
@@ -92,6 +129,7 @@ static void applyCustomRules()
         SET_BOX64ENV(dump, 1);
     }
 
+#ifndef _WIN32
     if(box64env.is_cycle_log_overridden) {
         freeCycleLog(my_context);
         box64env.rolling_log = BOX64ENV(cycle_log);
@@ -105,6 +143,24 @@ static void applyCustomRules()
         initCycleLog(my_context);
     }
 
+    if (box64env.is_dynarec_gdbjit_str_overridden) {
+        if (strlen(box64env.dynarec_gdbjit_str) == 1) {
+            if (box64env.dynarec_gdbjit_str[0] >= '0' && box64env.dynarec_gdbjit_str[0] <= '3')
+                box64env.dynarec_gdbjit = box64env.dynarec_gdbjit_str[0] - '0';
+
+            box64env.dynarec_gdbjit_start = 0x0;
+            box64env.dynarec_gdbjit_end = 0x0;
+        } else if (strchr(box64env.dynarec_gdbjit_str, '-')) {
+            parseRange(box64env.dynarec_gdbjit_str, &box64env.dynarec_gdbjit_start, &box64env.dynarec_gdbjit_end);
+            if (box64env.dynarec_gdbjit_end > box64env.dynarec_gdbjit_start) {
+                box64env.dynarec_gdbjit = 2;
+            } else {
+                box64env.dynarec_gdbjit = 0;
+            }
+        }
+    }
+#endif
+
     if (box64env.is_dynarec_test_str_overridden) {
         if (strlen(box64env.dynarec_test_str) == 1) {
             if (box64env.dynarec_test_str[0] >= '0' && box64env.dynarec_test_str[0] <= '1')
@@ -113,12 +169,7 @@ static void applyCustomRules()
             box64env.dynarec_test_start = 0x0;
             box64env.dynarec_test_end = 0x0;
         } else if (strchr(box64env.dynarec_test_str, '-')) {
-            if (sscanf(box64env.dynarec_test_str, "%ld-%ld", &box64env.dynarec_test_start, &box64env.dynarec_test_end) != 2) {
-                if (sscanf(box64env.dynarec_test_str, "0x%lX-0x%lX", &box64env.dynarec_test_start, &box64env.dynarec_test_end) != 2) {
-                    if (sscanf(box64env.dynarec_test_str, "0x%lx-0x%lx", &box64env.dynarec_test_start, &box64env.dynarec_test_end) != 2)
-                        sscanf(box64env.dynarec_test_str, "%lx-%lx", &box64env.dynarec_test_start, &box64env.dynarec_test_end);
-                }
-            }
+            parseRange(box64env.dynarec_test_str, &box64env.dynarec_test_start, &box64env.dynarec_test_end);
             if (box64env.dynarec_test_end > box64env.dynarec_test_start) {
                 box64env.dynarec_test = 1;
             } else {
@@ -127,45 +178,17 @@ static void applyCustomRules()
         }
     }
 
-    if (box64env.is_dynarec_gdbjit_str_overridden) {
-        if (strlen(box64env.dynarec_gdbjit_str) == 1) {
-            if (box64env.dynarec_gdbjit_str[0] >= '0' && box64env.dynarec_gdbjit_str[0] <= '2')
-                box64env.dynarec_gdbjit = box64env.dynarec_gdbjit_str[0] - '0';
+    if (box64env.is_nodynarec_overridden)
+        parseRange(box64env.nodynarec, &box64env.nodynarec_start, &box64env.nodynarec_end);
 
-            box64env.dynarec_gdbjit_start = 0x0;
-            box64env.dynarec_gdbjit_end = 0x0;
-        } else if (strchr(box64env.dynarec_gdbjit_str, '-')) {
-            if (sscanf(box64env.dynarec_gdbjit_str, "%ld-%ld", &box64env.dynarec_gdbjit_start, &box64env.dynarec_gdbjit_end) != 2) {
-                if (sscanf(box64env.dynarec_gdbjit_str, "0x%lX-0x%lX", &box64env.dynarec_gdbjit_start, &box64env.dynarec_gdbjit_end) != 2) {
-                    if (sscanf(box64env.dynarec_gdbjit_str, "0x%lx-0x%lx", &box64env.dynarec_gdbjit_start, &box64env.dynarec_gdbjit_end) != 2)
-                        sscanf(box64env.dynarec_gdbjit_str, "%lx-%lx", &box64env.dynarec_gdbjit_start, &box64env.dynarec_gdbjit_end);
-                }
-            }
-            if (box64env.dynarec_gdbjit_end > box64env.dynarec_gdbjit_start) {
-                box64env.dynarec_gdbjit = 2;
-            } else {
-                box64env.dynarec_gdbjit = 0;
-            }
-        }
-    }
-
-    if (box64env.is_nodynarec_overridden) {
-        if(box64env.nodynarec) {
-            if (strchr(box64env.nodynarec,'-')) {
-                if(sscanf(box64env.nodynarec, "%ld-%ld", &box64env.nodynarec_start, &box64env.nodynarec_end)!=2) {
-                    if(sscanf(box64env.nodynarec, "0x%lX-0x%lX", &box64env.nodynarec_start, &box64env.nodynarec_end)!=2) {
-                            if(sscanf(box64env.nodynarec, "0x%lx-0x%lx", &box64env.nodynarec_start, &box64env.nodynarec_end)!=2)
-                                sscanf(box64env.nodynarec, "%lx-%lx", &box64env.nodynarec_start, &box64env.nodynarec_end);
-                    }
-                }
-            }
-        }
-    }
+    if (box64env.is_dynarec_dump_range_overridden)
+        parseRange(box64env.dynarec_dump_range, &box64env.dynarec_dump_range_start, &box64env.dynarec_dump_range_end);
 
     if (box64env.dynarec_test) {
         SET_BOX64ENV(dynarec_fastnan, 0);
         SET_BOX64ENV(dynarec_fastround, 0);
-        SET_BOX64ENV(dynarec_x87double, 1);
+        if (BOX64ENV(dynarec_x87double) == 0)
+            SET_BOX64ENV(dynarec_x87double, 1);
         SET_BOX64ENV(dynarec_div0, 1);
         SET_BOX64ENV(dynarec_callret, 0);
 #if defined(RV64) || defined(LA64)
@@ -177,21 +200,29 @@ static void applyCustomRules()
         box64env.maxcpu = box64env.new_maxcpu;
     }
 
+#ifndef _WIN32
     if (box64env.dynarec_perf_map) {
         char pathname[32];
         snprintf(pathname, sizeof(pathname), "/tmp/perf-%d.map", getpid());
         SET_BOX64ENV(dynarec_perf_map_fd, open(pathname, O_CREAT | O_RDWR | O_APPEND, S_IRUSR | S_IWUSR));
     }
+    if (box64env.emulated_libs && my_context) {
+        AppendList(&my_context->box64_emulated_libs, box64env.emulated_libs, 0);
+    }
     if (!box64env.libgl) {
         const char *p = getenv("SDL_VIDEO_GL_DRIVER");
         if(p) SET_BOX64ENV(libgl, box_strdup(p));
     }
+#endif
+
     if (box64env.avx == 2) {
         box64env.avx = 1;
         box64env.avx2 = 1;
     }
 
+#ifndef _WIN32
     if (box64env.exit) exit(0);
+#endif
 
     if (box64env.env) addNewEnvVar(box64env.env);
     if (box64env.env1) addNewEnvVar(box64env.env1);
@@ -199,6 +230,10 @@ static void applyCustomRules()
     if (box64env.env3) addNewEnvVar(box64env.env3);
     if (box64env.env4) addNewEnvVar(box64env.env4);
     if (box64env.env5) addNewEnvVar(box64env.env5);
+
+#ifndef _WIN32
+    if (box64env.addlibs) AddNewLibs(box64env.addlibs);
+#endif
 }
 
 static void trimStringInplace(char* s)
@@ -215,11 +250,11 @@ static void trimStringInplace(char* s)
 
 static void freeEnv(box64env_t* env)
 {
-#define INTEGER(NAME, name, default, min, max)
-#define INTEGER64(NAME, name, default)
-#define BOOLEAN(NAME, name, default)
-#define ADDRESS(NAME, name)
-#define STRING(NAME, name) box_free(env->name);
+#define INTEGER(NAME, name, default, min, max, wine)
+#define INTEGER64(NAME, name, default, wine)
+#define BOOLEAN(NAME, name, default, wine)
+#define ADDRESS(NAME, name, wine)
+#define STRING(NAME, name, wine) box_free(env->name);
     ENVSUPER()
 #undef INTEGER
 #undef INTEGER64
@@ -256,11 +291,12 @@ static void initializeEnvFile(const char* filename)
 {
     if (box64env.noenvfiles) return;
 
-    FILE* f = NULL;
-    if (filename) 
-        f = fopen(filename, "r");
+    BOXFILE* f = NULL;
+    if (filename)
+        f = box_fopen(filename, "r");
+#ifndef _WIN32
     else {
-        #define TMP_MEMRCFILE  "/box64_rcfile"
+#define TMP_MEMRCFILE "/box64_rcfile"
         int tmp = shm_open(TMP_MEMRCFILE, O_RDWR | O_CREAT, S_IRWXU);
         if(tmp<0) return; // error, bye bye
         shm_unlink(TMP_MEMRCFILE);    // remove the shm file, but it will still exist because it's currently in use
@@ -269,10 +305,9 @@ static void initializeEnvFile(const char* filename)
         lseek(tmp, 0, SEEK_SET);
         f = fdopen(tmp, "r");
     }
-    if (!f) {
-        printf("Error: Cannot open env file %s\n", filename);
-        return;
-    }
+#endif
+
+    if (!f) return;
 
     if (!box64env_entries)
         box64env_entries = kh_init(box64env_entry);
@@ -281,10 +316,10 @@ static void initializeEnvFile(const char* filename)
 
     box64env_t current_env = { 0 };
     size_t linesize = 0, len = 0;
-    char *line = NULL, *current_name = NULL;
-    int ret;
+    char* current_name = NULL;
     bool is_wildcard_name = false;
-    while ((ret = getline(&line, &linesize, f)) != -1) {
+    char line[1024];
+    while ((box_fgets(line, 1024, f)) != NULL) {
         // remove comments
         char* p = strchr(line, '#');
         if (p) *p = '\0';
@@ -306,18 +341,24 @@ static void initializeEnvFile(const char* filename)
             *strchr(key, '=') = '\0';
             trimStringInplace(key);
             trimStringInplace(val);
-#define INTEGER(NAME, name, default, min, max)      \
-    else if (!strcmp(key, #NAME))                   \
-    {                                               \
-        int v = strtol(val, &p, 0);                 \
-        if (p != val && v >= min && v <= max) {     \
-            current_env.is_##name##_overridden = 1; \
-            current_env.is_any_overridden = 1;      \
-            current_env.name = v;                   \
-        }                                           \
+#ifdef _WIN32
+#define VALID(a) a
+#else
+#define VALID(a) 1
+#endif
+
+#define INTEGER(NAME, name, default, min, max, wine) \
+    else if (!strcmp(key, #NAME) && VALID(wine))     \
+    {                                                \
+        int v = strtol(val, &p, 0);                  \
+        if (p != val && v >= min && v <= max) {      \
+            current_env.is_##name##_overridden = 1;  \
+            current_env.is_any_overridden = 1;       \
+            current_env.name = v;                    \
+        }                                            \
     }
-#define INTEGER64(NAME, name, default)              \
-    else if (!strcmp(key, #NAME))                   \
+#define INTEGER64(NAME, name, default, wine)        \
+    else if (!strcmp(key, #NAME) && VALID(wine))    \
     {                                               \
         int64_t v = strtoll(val, &p, 0);            \
         if (p != val) {                             \
@@ -326,8 +367,8 @@ static void initializeEnvFile(const char* filename)
             current_env.name = v;                   \
         }                                           \
     }
-#define BOOLEAN(NAME, name, default)                \
-    else if (!strcmp(key, #NAME))                   \
+#define BOOLEAN(NAME, name, default, wine)          \
+    else if (!strcmp(key, #NAME) && VALID(wine))    \
     {                                               \
         if (strcmp(val, "0")) {                     \
             current_env.is_##name##_overridden = 1; \
@@ -339,8 +380,8 @@ static void initializeEnvFile(const char* filename)
             current_env.name = 0;                   \
         }                                           \
     }
-#define ADDRESS(NAME, name)                           \
-    else if (!strcmp(key, #NAME))                     \
+#define ADDRESS(NAME, name, wine)                     \
+    else if (!strcmp(key, #NAME) && VALID(wine))      \
     {                                                 \
         uintptr_t v = (uintptr_t)strtoll(val, &p, 0); \
         if (p != val) {                               \
@@ -349,8 +390,8 @@ static void initializeEnvFile(const char* filename)
             current_env.name = v;                     \
         }                                             \
     }
-#define STRING(NAME, name)                                \
-    else if (!strcmp(key, #NAME))                         \
+#define STRING(NAME, name, wine)                          \
+    else if (!strcmp(key, #NAME) && VALID(wine))          \
     {                                                     \
         current_env.is_##name##_overridden = 1;           \
         current_env.is_any_overridden = 1;                \
@@ -369,6 +410,7 @@ static void initializeEnvFile(const char* filename)
 #undef BOOLEAN
 #undef ADDRESS
 #undef STRING
+#undef VALID
         }
     }
     // push the last entry
@@ -376,13 +418,13 @@ static void initializeEnvFile(const char* filename)
         pushNewEntry(current_name, &current_env, is_wildcard_name);
         box_free(current_name);
     }
-    box_free(line);
-    fclose(f);
+    box_fclose(f);
 }
 
 
 void InitializeEnvFiles()
 {
+#ifndef _WIN32 // FIXME: this needs some consideration on Windows, so for now, only do it on Linux
     if (BOX64ENV(envfile) && FileExist(BOX64ENV(envfile), IS_FILE))
         initializeEnvFile(BOX64ENV(envfile));
 #ifndef TERMUX
@@ -396,12 +438,13 @@ void InitializeEnvFiles()
 #endif
     else
         initializeEnvFile(NULL); // load default rcfile
+#endif
 
-    char* p = getenv("HOME");
+    char* p = GetEnv(HOME);
     if (p) {
         static char tmp[4096];
         strncpy(tmp, p, 4095);
-        strncat(tmp, "/.box64rc", 4095);
+        strncat(tmp, PATHSEP ".box64rc", 4095);
         if (FileExist(tmp, IS_FILE)) {
             initializeEnvFile(tmp);
         }
@@ -415,31 +458,31 @@ const char* GetLastApplyEntryName()
 }
 static void internalApplyEnvFileEntry(const char* entryname, const box64env_t* env)
 {
-#define INTEGER(NAME, name, default, min, max) \
-    if (env->is_##name##_overridden) {         \
-        box64env.name = env->name;             \
-        box64env.is_##name##_overridden = 1;   \
-        box64env.is_any_overridden = 1;        \
+#define INTEGER(NAME, name, default, min, max, wine) \
+    if (env->is_##name##_overridden) {               \
+        box64env.name = env->name;                   \
+        box64env.is_##name##_overridden = 1;         \
+        box64env.is_any_overridden = 1;              \
     }
-#define INTEGER64(NAME, name, default)       \
+#define INTEGER64(NAME, name, default, wine) \
     if (env->is_##name##_overridden) {       \
         box64env.name = env->name;           \
         box64env.is_##name##_overridden = 1; \
         box64env.is_any_overridden = 1;      \
     }
-#define BOOLEAN(NAME, name, default)         \
+#define BOOLEAN(NAME, name, default, wine)   \
     if (env->is_##name##_overridden) {       \
         box64env.name = env->name;           \
         box64env.is_##name##_overridden = 1; \
         box64env.is_any_overridden = 1;      \
     }
-#define ADDRESS(NAME, name)                  \
+#define ADDRESS(NAME, name, wine)            \
     if (env->is_##name##_overridden) {       \
         box64env.name = env->name;           \
         box64env.is_##name##_overridden = 1; \
         box64env.is_any_overridden = 1;      \
     }
-#define STRING(NAME, name)                   \
+#define STRING(NAME, name, wine)             \
     if (env->is_##name##_overridden) {       \
         box64env.name = env->name;           \
         box64env.is_##name##_overridden = 1; \
@@ -481,22 +524,42 @@ void ApplyEnvFileEntry(const char* entryname)
 
 void LoadEnvVariables()
 {
-#define INTEGER(NAME, name, default, min, max) box64env.name = default;
-#define INTEGER64(NAME, name, default)         box64env.name = default;
-#define BOOLEAN(NAME, name, default)           box64env.name = default;
-#define ADDRESS(NAME, name)                    box64env.name = 0;
-#define STRING(NAME, name)                     box64env.name = NULL;
+#ifdef _WIN32
+#define INTEGER(NAME, name, default, min, max, wine) box64env.name = wine ? default : 0;
+#define INTEGER64(NAME, name, default, wine)         box64env.name = wine ? default : 0;
+#define BOOLEAN(NAME, name, default, wine)           box64env.name = wine ? default : 0;
+#define ADDRESS(NAME, name, wine)                    box64env.name = 0;
+#define STRING(NAME, name, wine)                     box64env.name = NULL;
     ENVSUPER()
 #undef INTEGER
 #undef INTEGER64
 #undef BOOLEAN
 #undef ADDRESS
 #undef STRING
-
+#else
+#define INTEGER(NAME, name, default, min, max, wine) box64env.name = default;
+#define INTEGER64(NAME, name, default, wine)         box64env.name = default;
+#define BOOLEAN(NAME, name, default, wine)           box64env.name = default;
+#define ADDRESS(NAME, name, wine)                    box64env.name = 0;
+#define STRING(NAME, name, wine)                     box64env.name = NULL;
+    ENVSUPER()
+#undef INTEGER
+#undef INTEGER64
+#undef BOOLEAN
+#undef ADDRESS
+#undef STRING
+#endif
     char* p;
-    // load env vars from getenv()
-#define INTEGER(NAME, name, default, min, max)            \
-    p = getenv(#NAME);                                    \
+    // load env vars from GetEnv()
+
+#ifdef _WIN32
+#define GETENV(name, wine) (wine ? GetEnv(name) : NULL);
+#else
+#define GETENV(name, wine) GetEnv(name)
+#endif
+
+#define INTEGER(NAME, name, default, min, max, wine)      \
+    p = GETENV(#NAME, wine);                              \
     if (p) {                                              \
         box64env.name = atoi(p);                          \
         if (box64env.name < min || box64env.name > max) { \
@@ -506,30 +569,30 @@ void LoadEnvVariables()
             box64env.is_any_overridden = 1;               \
         }                                                 \
     }
-#define INTEGER64(NAME, name, default)       \
-    p = getenv(#NAME);                       \
+#define INTEGER64(NAME, name, default, wine) \
+    p = GETENV(#NAME, wine);                 \
     if (p) {                                 \
         box64env.name = atoll(p);            \
         box64env.is_##name##_overridden = 1; \
         box64env.is_any_overridden = 1;      \
     }
-#define BOOLEAN(NAME, name, default)         \
-    p = getenv(#NAME);                       \
+#define BOOLEAN(NAME, name, default, wine)   \
+    p = GETENV(#NAME, wine);                 \
     if (p) {                                 \
         box64env.name = p[0] != '0';         \
         box64env.is_##name##_overridden = 1; \
         box64env.is_any_overridden = 1;      \
     }
-#define ADDRESS(NAME, name)                                \
-    p = getenv(#NAME);                                     \
+#define ADDRESS(NAME, name, wine)                          \
+    p = GETENV(#NAME, wine);                               \
     if (p) {                                               \
         char* endptr;                                      \
         box64env.name = (uintptr_t)strtoll(p, &endptr, 0); \
         box64env.is_##name##_overridden = 1;               \
         box64env.is_any_overridden = 1;                    \
     }
-#define STRING(NAME, name)                   \
-    p = getenv(#NAME);                       \
+#define STRING(NAME, name, wine)             \
+    p = GETENV(#NAME, wine);                 \
     if (p) {                                 \
         box64env.name = strdup(p);           \
         box64env.is_##name##_overridden = 1; \
@@ -546,21 +609,20 @@ void LoadEnvVariables()
 
 void PrintEnvVariables(box64env_t* env, int level)
 {
-    if (env->is_any_overridden)
-        printf_log(level, "BOX64ENV: Variables overridden via env and/or RC file:\n");
-#define INTEGER(NAME, name, default, min, max) \
-    if (env->is_##name##_overridden)           \
+    if (env->is_any_overridden) printf_log(level, "BOX64ENV: Variables overridden:\n");
+#define INTEGER(NAME, name, default, min, max, wine) \
+    if (env->is_##name##_overridden)                 \
         printf_log_prefix(0, level, "\t%s=%d\n", #NAME, env->name);
-#define INTEGER64(NAME, name, default) \
-    if (env->is_##name##_overridden)   \
+#define INTEGER64(NAME, name, default, wine) \
+    if (env->is_##name##_overridden)         \
         printf_log_prefix(0, level, "\t%s=%lld\n", #NAME, env->name);
-#define BOOLEAN(NAME, name, default) \
-    if (env->is_##name##_overridden) \
+#define BOOLEAN(NAME, name, default, wine) \
+    if (env->is_##name##_overridden)       \
         printf_log_prefix(0, level, "\t%s=%d\n", #NAME, env->name);
-#define ADDRESS(NAME, name)          \
+#define ADDRESS(NAME, name, wine)    \
     if (env->is_##name##_overridden) \
         printf_log_prefix(0, level, "\t%s=%p\n", #NAME, (void*)env->name);
-#define STRING(NAME, name)           \
+#define STRING(NAME, name, wine)     \
     if (env->is_##name##_overridden) \
         printf_log_prefix(0, level, "\t%s=%s\n", #NAME, env->name);
     ENVSUPER()
@@ -592,6 +654,7 @@ static kh_mapping_entry_t* mapping_entries = NULL;
 
 void RecordEnvMappings(uintptr_t addr, size_t length, int fd)
 {
+#ifndef _WIN32
     if (!envmap) { envmap = rbtree_init("envmap"); }
     if(!mapping_entries) mapping_entries = kh_init(mapping_entry);
 
@@ -611,29 +674,38 @@ void RecordEnvMappings(uintptr_t addr, size_t length, int fd)
 
     int ret;
     mapping_t* mapping = NULL;
-    khint_t k = kh_get(mapping_entry, mapping_entries, lowercase_filename);
+    khint_t k = kh_get(mapping_entry, mapping_entries, fullname);
     if(k == kh_end(mapping_entries)) {
+        // First time we see this file
+        if (box64_wine && BOX64ENV(unityplayer)) DetectUnityPlayer(lowercase_filename+1);
+        if (box64_wine && BOX64ENV(dynarec_volatile_metadata)) ParseVolatileMetadata(fullname, (void*)addr);
+
         mapping = box_calloc(1, sizeof(mapping_t));
         mapping->filename = box_strdup(lowercase_filename);
         mapping->fullname = box_strdup(fullname);
         mapping->start = addr;
-        k = kh_put(mapping_entry, mapping_entries, mapping->filename, &ret);
+        k = kh_put(mapping_entry, mapping_entries, mapping->fullname, &ret);
         kh_value(mapping_entries, k) = mapping;
         if (box64env_entries) {
             khint_t k = kh_get(box64env_entry, box64env_entries, mapping->filename);
             if (k != kh_end(box64env_entries))
                 mapping->env = &kh_value(box64env_entries, k);
         }
+        dynarec_log(LOG_INFO, "Mapping %s (%s) in %p-%p\n", fullname, lowercase_filename, (void*)addr, (void*)(addr+length));
     } else
         mapping = kh_value(mapping_entries, k);
 
-    if(mapping && mapping->start>addr) mapping->start = addr;
+    if(mapping && mapping->start>addr) { 
+        dynarec_log(LOG_INFO, "Mapping %s (%s) adjusted start: %p from %p\n", fullname, lowercase_filename, (void*)addr, (void*)(mapping->start)); 
+        mapping->start = addr;
+    }
     rb_set_64(envmap, addr, addr + length, (uint64_t)mapping);
     if(mapping->env) {
         printf_log(LOG_DEBUG, "Applied [%s] of range %p:%p\n", filename, addr, addr + length);
         PrintEnvVariables(mapping->env, LOG_DEBUG);
     }
     box_free(lowercase_filename);
+#endif
 }
 
 void RemoveMapping(uintptr_t addr, size_t length)
@@ -656,7 +728,8 @@ void RemoveMapping(uintptr_t addr, size_t length)
             start = end;
         } while(end!=UINTPTR_MAX);
         // no occurence found, delete mapping
-        khint_t k = kh_get(mapping_entry, mapping_entries, mapping->filename);
+        dynarec_log(LOG_INFO, "Delete Mapping %s (%s) in %p(%p)-%p\n", mapping->fullname, mapping->filename, (void*)addr, (void*)mapping->start, (void*)(addr+length));
+        khint_t k = kh_get(mapping_entry, mapping_entries, mapping->fullname);
         if(k!=kh_end(mapping_entries))
             kh_del(mapping_entry, mapping_entries, k);
         box_free(mapping->filename);

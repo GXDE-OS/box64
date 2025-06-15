@@ -5,10 +5,8 @@
 
 #include "debug.h"
 #include "box64context.h"
-#include "dynarec.h"
+#include "box64cpu.h"
 #include "emu/x64emu_private.h"
-#include "emu/x64run_private.h"
-#include "x64run.h"
 #include "x64emu.h"
 #include "box64stack.h"
 #include "callback.h"
@@ -56,8 +54,9 @@ uintptr_t dynarec64_AVX(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int n
         DEFAULT;
     }
 
-    if ((*ok == -1) && (BOX64ENV(dynarec_log) >= LOG_INFO || BOX64DRENV(dynarec_dump) || BOX64ENV(dynarec_missing) == 1)) {
-        dynarec_log(LOG_NONE, "Dynarec unimplemented AVX opcode size %d prefix %s map %s opcode %02X ", 128 << vex.l, avx_prefix_string(vex.p), avx_map_string(vex.m), opcode);
+    if ((*ok == -1) && (BOX64ENV(dynarec_log) >= LOG_INFO || dyn->need_dump || BOX64ENV(dynarec_missing))) {
+        if (!dyn->size || BOX64ENV(dynarec_log) > LOG_INFO || dyn->need_dump)
+            dynarec_log(LOG_NONE, "  Dynarec unimplemented VEX opcode size %d prefix %s map %s opcode %02X\n", 128 << vex.l, avx_prefix_string(vex.p), avx_map_string(vex.m), opcode);
     }
     return addr;
 }

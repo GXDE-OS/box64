@@ -47,8 +47,10 @@
 
 #include "wrappedlibs.h"
 
+#include "os.h"
 #include "box64stack.h"
 #include "x64emu.h"
+#include "box64cpu.h"
 #include "debug.h"
 #include "wrapper.h"
 #include "bridge.h"
@@ -66,6 +68,8 @@
 #include "globalsymbols.h"
 #include "env.h"
 #include "wine_tools.h"
+#include "pe_tools.h"
+#include "cleanup.h"
 #ifndef LOG_INFO
 #define LOG_INFO 1
 #endif
@@ -578,7 +582,7 @@ int EXPORT my_uname(struct utsname *buf)
 #define X86_O_NONBLOCK     0x800    // octal    04000
 #define X86_O_SYNC         0x101000 // octal 04010000
 #define X86_O_DSYNC        0x1000   // octal   010000
-#define X86_O_RSYNC        O_SYNC
+#define X86_O_RSYNC        X86_O_SYNC
 #define X86_FASYNC         020000
 #define X86_O_DIRECT       040000
 #define X86_O_LARGEFILE    0100000
@@ -647,8 +651,15 @@ int of_unconvert(int a)
     #define GO(A) if((a&(A))==(A)) {a&=~(A); b|=(X86_##A);}
     SUPER();
     #undef GO
-    // flags 0x20000 unknown?!
-    if(a && (a&~0x20000)) {
+    int missing = 0;
+    #ifdef ARM64
+    if(!O_LARGEFILE) {
+        if((a&(0400000))==(0400000)) {a&=~(0400000); b|=(X86_O_LARGEFILE);}
+    }
+    #else
+    if(!O_LARGEFILE) missing |= X86_O_LARGEFILE;
+    #endif
+    if(a && (a&~missing)) {
         printf_log(LOG_NONE, "Warning, of_unconvert(...) left over 0x%x, converted 0x%x\n", a, b);
     }
     return a|b;
@@ -1780,9 +1791,9 @@ void CreateCPUInfoFile(int fd)
         sprintf(buff, "bogomips\t: %g\n", getBogoMips());
         P;
         sprintf(buff, "flags\t\t: fpu cx8 sep ht cmov clflush mmx sse sse2 syscall tsc lahf_lm ssse3 ht tm lm fxsr cpuid pclmulqdq cx16 aes movbe pni "\
-                      "sse4_1%s%s%s lzcnt popcnt%s%s%s%s%s%s%s%s%s\n", 
-                      BOX64ENV(sse42)?" sse4_2":"", BOX64ENV(avx)?" avx":"", BOX64ENV(shaext)?"sha_ni":"", 
-                      BOX64ENV(avx)?" bmi1":"", BOX64ENV(avx2)?" avx2":"", BOX64ENV(avx)?" bmi2":"", 
+                      "sse4_1%s%s%s lzcnt popcnt%s%s%s%s%s%s%s%s%s\n",
+                      BOX64ENV(sse42)?" sse4_2":"", BOX64ENV(avx)?" avx":"", BOX64ENV(shaext)?"sha_ni":"",
+                      BOX64ENV(avx)?" bmi1":"", BOX64ENV(avx2)?" avx2":"", BOX64ENV(avx)?" bmi2":"",
                       BOX64ENV(avx2)?" vaes":"", BOX64ENV(avx2)?" fma":"",
                       BOX64ENV(avx)?" xsave":"", BOX64ENV(avx)?" f16c":"", BOX64ENV(avx2)?" randr":"",
                       BOX64ENV(avx2)?" adx":""
@@ -2199,7 +2210,7 @@ EXPORT int32_t my_epoll_pwait(x64emu_t* emu, int32_t epfd, void* events, int32_t
         UnalignEpollEvent(events, _events, ret);
     return ret;
 }
-EXPORT int my_epoll_pwait2(int epfd, void* events, int maxevents, struct timespec *timeout, sigset_t * sigmask)
+EXPORT int my_epoll_pwait2(x64emu_t* emu, int epfd, void* events, int maxevents, struct timespec *timeout, sigset_t * sigmask)
 {
     struct epoll_event _events[maxevents];
     //AlignEpollEvent(_events, events, maxevents);
@@ -2988,22 +2999,29 @@ EXPORT void* my_realpath(x64emu_t* emu, void* path, void* resolved_path)
 
 EXPORT int my_readlinkat(x64emu_t* emu, int fd, void* path, void* buf, size_t bufsize)
 {
-    if(isProcSelf(path, "exe")) {
-        strncpy(buf, emu->context->fullpath, bufsize);
-        size_t l = strlen(emu->context->fullpath);
+    if((fd==AT_FDCWD) && isProcSelf(path, "exe")) {
+        strncpy(buf, my_context->fullpath, bufsize);
+        size_t l = strlen(my_context->fullpath);
         return (l>bufsize)?bufsize:(l+1);
     }
     return readlinkat(fd, path, buf, bufsize);
 }
 extern int have48bits;
-void* last_mmap_addr = NULL;
-size_t last_mmap_len = 0;
+void* last_mmap_addr[2] = {0};
+size_t last_mmap_len[2] = {0};
+int last_mmap_idx = 0;
 EXPORT void* my_mmap64(x64emu_t* emu, void *addr, size_t length, int prot, int flags, int fd, ssize_t offset)
 {
     (void)emu;
     if(BOX64ENV(dynarec_log)>=LOG_DEBUG) {printf_log(LOG_NONE, "mmap64(%p, 0x%zx, 0x%x, 0x%x, %d, %zd) ", addr, length, prot, flags, fd, offset);}
     void* ret = box_mmap(addr, length, prot, flags, fd, offset);
     int e = errno;
+    if(emu && box64_is32bits && ret!=MAP_FAILED && ((ret>(void*)0xc0000000) || (ret+length>(void*)0xc0000000))) {
+        // do not allow allocating memory that high for 32bits process
+        box_munmap(ret, length);
+        ret = MAP_FAILED;
+        e = EEXIST;
+    }
     if((ret==MAP_FAILED && (emu || box64_is32bits)) && (BOX64ENV(log)>=LOG_DEBUG || BOX64ENV(dynarec_log)>=LOG_DEBUG)) {printf_log(LOG_NONE, "%s (%d)\n", strerror(errno), errno);}
     if(((ret!=MAP_FAILED) && (emu || box64_is32bits)) && (BOX64ENV(log)>=LOG_DEBUG || BOX64ENV(dynarec_log)>=LOG_DEBUG)) {printf_log(LOG_NONE, "%p\n", ret);}
     #ifdef DYNAREC
@@ -3021,6 +3039,15 @@ EXPORT void* my_mmap64(x64emu_t* emu, void *addr, size_t length, int prot, int f
     }
     #endif
     if(ret!=MAP_FAILED) {
+        if (emu && !(flags & MAP_ANONYMOUS) && (fd > 0)) {
+            // the last_mmap will allow mmap created by wine, even those that have hole, to be fully tracked as one single mmap
+            if((ret>=last_mmap_addr[0]) && ret+length<(last_mmap_addr[0]+last_mmap_len[0]))
+                RecordEnvMappings((uintptr_t)last_mmap_addr[0], last_mmap_len[0], fd);
+            else if((ret>=last_mmap_addr[1]) && ret+length<(last_mmap_addr[1]+last_mmap_len[1]))
+                RecordEnvMappings((uintptr_t)last_mmap_addr[1], last_mmap_len[1], fd);
+            else
+                RecordEnvMappings((uintptr_t)ret, length, fd);
+        }
         if((flags&MAP_SHARED) && (fd>0)) {
             uint32_t flags = fcntl(fd, F_GETFL);
             if((flags&O_ACCMODE)==O_RDWR) {
@@ -3028,22 +3055,15 @@ EXPORT void* my_mmap64(x64emu_t* emu, void *addr, size_t length, int prot, int f
                 prot |= PROT_NEVERCLEAN;
             }
         }
-        if(emu && !(flags&MAP_ANONYMOUS) && (fd>0)) {
-            DetectUnityPlayer(fd);
-            // the last_mmap will allow mmap created by wine, even those that have hole, to be fully tracked as one single mmap
-            if((ret>=last_mmap_addr) && ret+length<(last_mmap_addr+last_mmap_len))
-                RecordEnvMappings((uintptr_t)last_mmap_addr, last_mmap_len, fd);
-            else
-                RecordEnvMappings((uintptr_t)ret, length, fd);
-        }
         // hack to capture full size of the mmap done by wine
         if(emu && (fd==-1) && (flags==(MAP_PRIVATE|MAP_ANON))) {
-            last_mmap_addr = ret;
-            last_mmap_len = length;
+            last_mmap_addr[last_mmap_idx] = ret;
+            last_mmap_len[last_mmap_idx] = length;
         } else {
-            last_mmap_addr = NULL;
-            last_mmap_len = 0;
+            last_mmap_addr[last_mmap_idx] = NULL;
+            last_mmap_len[last_mmap_idx] = 0;
         }
+        last_mmap_idx = 1-last_mmap_idx;
         if(emu)
             setProtection_mmap((uintptr_t)ret, length, prot);
         else
@@ -3118,8 +3138,8 @@ EXPORT int my_munmap(x64emu_t* emu, void* addr, size_t length)
     }
     #endif
     if(!ret) {
-        last_mmap_addr = NULL;
-        last_mmap_len = 0;
+        last_mmap_addr[1-last_mmap_idx] = NULL;
+        last_mmap_len[1-last_mmap_idx] = 0;
         freeProtection((uintptr_t)addr, length);
         RemoveMapping((uintptr_t)addr, length);
     }
@@ -3486,6 +3506,10 @@ EXPORT int my_backtrace(x64emu_t* emu, void** buffer, int size)
     dwarf_unwind_t *unwind = init_dwarf_unwind_registers(emu);
     int idx = 0;
     char success = 0;
+    if(!(getProtection_fast(R_RSP)&PROT_READ))
+        return 0;
+    if(!(getProtection_fast((uintptr_t)buffer)&PROT_READ))
+        return 0;
     uintptr_t addr = *(uintptr_t*)R_RSP;
     buffer[0] = (void*)addr;
     while (++idx < size) {
@@ -3496,6 +3520,8 @@ EXPORT int my_backtrace(x64emu_t* emu, void** buffer, int size)
             success = 2;
             // See elfdwarf_private.c for the register mapping
             unwind->regs[7] = unwind->regs[6]; // mov rsp, rbp
+            if(!(getProtection_fast(unwind->regs[7])&PROT_READ))
+                return idx-1;
             unwind->regs[6] = *(uint64_t*)unwind->regs[7]; // pop rbp
             unwind->regs[7] += 8;
             ret_addr = *(uint64_t*)unwind->regs[7]; // ret
@@ -3533,7 +3559,7 @@ EXPORT int my_backtrace_ip(x64emu_t* emu, void** buffer, int size)
             if (++idx < size) buffer[idx] = (void*)ret_addr;
         } else if (!success) {
             if(getProtection((uintptr_t)addr)&(PROT_READ)) {
-                if(getProtection((uintptr_t)addr-19) && *(uint8_t*)(addr-19)==0xCC && *(uint8_t*)(addr-19+1)=='S' && *(uint8_t*)(addr-19+2)=='C') {
+                if (getProtection((uintptr_t)addr - 19) && *(uint8_t*)(addr - 19) == 0xCC && IsBridgeSignature(*(uint8_t*)(addr - 19 + 1), *(uint8_t*)(addr - 19 + 2))) {
                     buffer[idx-1] = (void*)(addr-19);
                     success = 2;
                     if(idx==1)
@@ -3843,6 +3869,13 @@ EXPORT char* my_program_invocation_short_name = NULL;
 
 // ignoring this for now
 EXPORT char my___libc_single_threaded = 0;
+
+EXPORT char* secure_getenv(const char* name)
+{
+    // ignoring the "secure" part for now
+    //TODO: better handling of user and process ID
+    return getenv(name);
+}
 
 #ifdef STATICBUILD
 uint32_t get_random32();

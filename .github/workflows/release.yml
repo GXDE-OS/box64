@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [X64, RISCV, RK3588, ARM64, ANDROID, TERMUX, LARCH64, ANDROID_GLIBC]
+        platform: [X64, RISCV, RK3588, ARM64, ANDROID, TERMUX, LARCH64, ANDROID_GLIBC, WOW64]
         type: [Release, Trace, StaticBuild, Box32]
         os: [ubuntu-latest, ubuntu-22.04-arm]
         exclude:
@@ -57,6 +57,14 @@ jobs:
             os: ubuntu-22.04-arm
           - platform: ANDROID_GLIBC
             os: ubuntu-latest
+          - platform: WOW64
+            os: ubuntu-latest
+          - platform: WOW64
+            type: Trace
+          - platform: WOW64
+            type: StaticBuild
+          - platform: WOW64
+            type: Box32
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -70,8 +78,8 @@ jobs:
             sudo apt-get -y install git cmake make python3 patchelf
             if [[ ${{ matrix.platform }} == 'ANDROID' || ${{ matrix.platform }} == 'TERMUX' ]]; then
               sudo apt-get -y install p7zip
-              wget https://dl.google.com/android/repository/android-ndk-r26b-linux.zip
-              unzip android-ndk-r26b-linux.zip
+              wget -q https://dl.google.com/android/repository/android-ndk-r26b-linux.zip
+              unzip -qq android-ndk-r26b-linux.zip
               echo "BOX64_COMPILER=$PWD/android-ndk-r26b/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android31-clang" >> $GITHUB_ENV
               echo "BOX64_PLATFORM_MARCRO=-DANDROID=1 -DARM_DYNAREC=1 -DBAD_SIGNAL=1" >> $GITHUB_ENV
               git clone https://github.com/termux/termux-docker.git
@@ -82,13 +90,21 @@ jobs:
               sudo apt-get -y install git gcc-aarch64-linux-gnu
               echo "BOX64_PLATFORM_MARCRO=-DARM64=1 -DWINLATOR_GLIBC=1 -DARM_DYNAREC=1 -DBAD_SIGNAL=1" >> $GITHUB_ENV
               echo "BOX64_COMPILER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+            elif [[ ${{ matrix.platform }} == 'WOW64' ]]; then
+              sudo apt-get -y install git gcc-aarch64-linux-gnu
+              echo "BOX64_PLATFORM_MARCRO=-DWOW64=1 -DARM_DYNAREC=1" >> $GITHUB_ENV
+              echo "BOX64_COMPILER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+              export LLVM_MINGW_VERSION=20250430
+              wget -q https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VERSION}/llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-aarch64.tar.xz
+              tar -xf llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-aarch64.tar.xz
+              echo "MINGW_COMPILER_PATH=$PWD/llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-aarch64/bin" >> $GITHUB_ENV
             else
               sudo apt-get -y install git gcc-aarch64-linux-gnu
               echo "BOX64_PLATFORM_MARCRO=-D${{ matrix.platform }}=1" >> $GITHUB_ENV
               echo "BOX64_COMPILER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
             fi
             if [[ ${{ matrix.platform }} == 'TERMUX' ]]; then
-              wget https://mirrors.utermux.dev/termux/termux-main/pool/main/liba/libandroid-sysv-semaphore/libandroid-sysv-semaphore_0.1_aarch64.deb
+              wget https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-sysv-semaphore/libandroid-sysv-semaphore_0.1_aarch64.deb
               7z x libandroid-sysv-semaphore_0.1_aarch64.deb
               tar -xf data.tar.xz
               sudo cp -rf data /
@@ -193,6 +209,7 @@ jobs:
 
       - name: "Build Box64"
         run: |
+          export PATH=$PATH:${{ env.MINGW_COMPILER_PATH }}
           mkdir build
           cd build
           cmake .. -DCMAKE_C_COMPILER=${{ env.BOX64_COMPILER }}\
@@ -257,6 +274,8 @@ jobs:
 
             BOX64_DYNAREC=0 ctest $CTEST_OPTIONS
             ctest $CTEST_OPTIONS
+          elif [[ ${{matrix.type}} == 'Box32' ]]; then
+            ctest $CTEST_OPTIONS
           else
             ctest -j$(nproc)
           fi
@@ -306,12 +325,6 @@ jobs:
 
           7z -tzip -mx=5 a box64-latest.rat files pkg-header
 
-      - name: "Upload Artifact"
-        uses: actions/upload-artifact@v4
-        with:
-          name: box64-${{ matrix.platform }}-${{ matrix.type }}
-          path: build/box64
-
       - name: "Upload WCP file"
         if: matrix.platform == 'ANDROID_GLIBC' && matrix.type != 'StaticBuild'
         uses: actions/upload-artifact@v4
@@ -325,3 +338,10 @@ jobs:
         with:
           name: box64-MiceWine-${{ matrix.type }}
           path: build/box64-latest.rat
+
+      - name: "Upload WowBox64 file"
+        if: matrix.platform == 'WOW64' && matrix.type == 'Release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wowbox64-${{ matrix.type }}
+          path: build/wowbox64-prefix/src/wowbox64-build/wowbox64.dll

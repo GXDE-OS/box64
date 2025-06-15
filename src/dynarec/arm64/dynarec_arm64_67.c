@@ -5,16 +5,15 @@
 
 #include "debug.h"
 #include "box64context.h"
-#include "dynarec.h"
+#include "box64cpu.h"
 #include "emu/x64emu_private.h"
-#include "emu/x64run_private.h"
-#include "x64run.h"
 #include "x64emu.h"
 #include "box64stack.h"
 #include "callback.h"
 #include "emu/x64run_private.h"
 #include "x64trace.h"
 #include "dynarec_native.h"
+#include "../dynablock_private.h"
 #include "custommem.h"
 
 #include "arm64_printer.h"
@@ -30,7 +29,7 @@ uintptr_t dynarec64_67(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
 
     uint8_t opcode = F8;
     uint8_t nextop;
-    uint8_t gd, ed, wback, wb, wb1, wb2, gb1, gb2, eb1, eb2;
+    uint8_t gd, ed, wback, wb, wb1, wb2, gb1, gb2, eb1, eb2, q0, q1;
     int64_t fixedaddress;
     int unscaled;
     int8_t  i8;
@@ -198,6 +197,22 @@ uintptr_t dynarec64_67(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                     }
                     break;
 
+                case 0x29:
+                    INST_NAME("MOVAPS Ex,Gx");
+                    nextop = F8;
+                    GETG;
+                    v0 = sse_get_reg(dyn, ninst, x1, gd, 0);
+                    if(MODREG) {
+                        ed = (nextop&7)+(rex.b<<3);
+                        v1 = sse_get_reg_empty(dyn, ninst, x1, ed);
+                        VMOVQ(v1, v0);
+                    } else {
+                        addr = geted32(dyn, addr, ninst, nextop, &ed, x1, &fixedaddress, &unscaled, 0xfff<<4, 15, rex, NULL, 0, 0);
+                        VST128(v0, ed, fixedaddress);
+                        SMWRITE2();
+                    }
+                    break;
+        
                 case 0x2E:
                     // no special check...
                 case 0x2F:
@@ -748,6 +763,20 @@ uintptr_t dynarec64_67(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                             }
                             break;
 
+                        case 0x76:
+                            INST_NAME("PCMPEQD Gx,Ex");
+                            nextop = F8;
+                            GETGX(v0, 1);
+                            if(MODREG) {
+                                q0 = sse_get_reg(dyn, ninst, x1, (nextop&7)+(rex.b<<3), 0);
+                            } else {
+                                q0 = fpu_get_scratch(dyn, ninst);
+                                addr = geted32(dyn, addr, ninst, nextop, &ed, x1, &fixedaddress, &unscaled, 0xfff<<4, 15, rex, NULL, 0, 0);
+                                VLD128(q0, ed, fixedaddress);
+                            }
+                            VCMEQQ_32(v0, v0, q0);
+                            break;
+
                         case 0x7E:
                             INST_NAME("MOVD Ed,Gx");
                             nextop = F8;
@@ -784,6 +813,27 @@ uintptr_t dynarec64_67(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                                 addr = geted32(dyn, addr, ninst, nextop, &ed, x1, &fixedaddress, &unscaled, 0xfff<<3, 7, rex, NULL, 0, 0);
                                 VST64(v0, ed, fixedaddress);
                                 SMWRITE2();
+                            }
+                            break;
+
+                        case 0xEF:
+                            INST_NAME("PXOR Gx,Ex");
+                            nextop = F8;
+                            GETG;
+                            if(MODREG && ((nextop&7)+(rex.b<<3)==gd)) {
+                                // special case for PXOR Gx, Gx
+                                q0 = sse_get_reg_empty(dyn, ninst, x1, gd);
+                                VEORQ(q0, q0, q0);
+                            } else {
+                                q0 = sse_get_reg(dyn, ninst, x1, gd, 1);
+                                if(MODREG) {
+                                    q1 = sse_get_reg(dyn, ninst, x1, (nextop&7)+(rex.b<<3), 0);
+                                } else {
+                                    q1 = fpu_get_scratch(dyn, ninst);
+                                    addr = geted32(dyn, addr, ninst, nextop, &ed, x1, &fixedaddress, &unscaled, 0xfff<<4, 15, rex, NULL, 0, 0);
+                                    VLD128(q1, ed, fixedaddress);
+                                }
+                                VEORQ(q0, q0, q1);
                             }
                             break;
 
@@ -1675,11 +1725,17 @@ uintptr_t dynarec64_67(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                         // Push actual return address
                         if(addr < (dyn->start+dyn->isize)) {
                             // there is a next...
-                            j64 = (dyn->insts)?(dyn->insts[ninst].epilog-(dyn->native_size)):0;
+                            if(BOX64DRENV(dynarec_callret)>1)
+                                j64 = CALLRET_GETRET();
+                            else
+                                j64 = (dyn->insts)?(dyn->insts[ninst].epilog-(dyn->native_size)):0;
                             ADR_S20(x4, j64);
                             MESSAGE(LOG_NONE, "\tCALLRET set return to +%di\n", j64>>2);
                         } else {
-                            j64 = (dyn->insts)?(GETMARK-(dyn->native_size)):0;
+                            if(BOX64DRENV(dynarec_callret)>1)
+                                j64 = CALLRET_GETRET();
+                            else
+                                j64 = (dyn->insts)?(GETMARK-(dyn->native_size)):0;
                             ADR_S20(x4, j64);
                             MESSAGE(LOG_NONE, "\tCALLRET set return to +%di\n", j64>>2);
                         }
@@ -1687,6 +1743,7 @@ uintptr_t dynarec64_67(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                     }
                     PUSH1z(xRIP);
                     jump_to_next(dyn, 0, ed, ninst, rex.is32bits);
+                    if(BOX64DRENV(dynarec_callret)>1) CALLRET_RET();
                     if(BOX64DRENV(dynarec_callret) && addr >= (dyn->start + dyn->isize)) {
                         // jumps out of current dynablock...
                         MARK;

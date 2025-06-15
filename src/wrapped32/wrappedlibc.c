@@ -40,6 +40,7 @@
 #include <sys/sysinfo.h>
 #include <sys/time.h>
 #include <regex.h>
+#include <sys/prctl.h>
 #ifndef WINLATOR_GLIBC
 #include <sys/ipc.h>
 #include <sys/shm.h>
@@ -50,6 +51,7 @@
 
 #include "box64stack.h"
 #include "x64emu.h"
+#include "box64cpu.h"
 #include "debug.h"
 #include "wrapper32.h"
 #include "bridge.h"
@@ -67,6 +69,7 @@
 #include "globalsymbols.h"
 #include "box32.h"
 #include "converter32.h"
+#include "cleanup.h"
 
 // need to undef all read / read64 stuffs!
 #undef pread
@@ -167,6 +170,84 @@ typedef void* (*pFu_t)(uint32_t);
 
 #include "wrappercallback32.h"
 
+struct i386_stat {
+	uint64_t  st_dev;
+	uint32_t  __pad1;
+	uint32_t  st_ino;
+	uint32_t  st_mode;
+	uint32_t  st_nlink;
+	uint32_t  st_uid;
+	uint32_t  st_gid;
+	uint64_t  st_rdev;
+	uint32_t  __pad2;
+	int32_t   st_size;
+	int32_t   st_blksize;
+	int32_t   st_blocks;
+	int32_t   st_atime_sec;
+	uint32_t  st_atime_nsec;
+	int32_t   st_mtime_sec;
+	uint32_t  st_mtime_nsec;
+	int32_t   st_ctime_sec;
+	uint32_t  st_ctime_nsec;
+	uint32_t  __unused4;
+	uint32_t  __unused5;
+} __attribute__((packed));
+
+static int FillStatFromStat64(int vers, const struct stat64 *st64, void *st32)
+{
+    struct i386_stat *i386st = (struct i386_stat *)st32;
+
+    if (vers != 3)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    i386st->st_dev = st64->st_dev;
+    i386st->__pad1 = 0;
+    if (BOX64ENV(fix_64bit_inodes))
+    {
+        i386st->st_ino = st64->st_ino ^ (st64->st_ino >> 32);
+    }
+    else
+    {
+        i386st->st_ino = st64->st_ino;
+        if ((st64->st_ino >> 32) != 0)
+        {
+            errno = EOVERFLOW;
+            return -1;
+        }
+    }
+    i386st->st_mode = st64->st_mode;
+    i386st->st_nlink = st64->st_nlink;
+    i386st->st_uid = st64->st_uid;
+    i386st->st_gid = st64->st_gid;
+    i386st->st_rdev = st64->st_rdev;
+    i386st->__pad2 = 0;
+    i386st->st_size = st64->st_size;
+    if ((i386st->st_size >> 31) != (int32_t)(st64->st_size >> 32))
+    {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    i386st->st_blksize = st64->st_blksize;
+    i386st->st_blocks = st64->st_blocks;
+    if ((i386st->st_blocks >> 31) != (int32_t)(st64->st_blocks >> 32))
+    {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    i386st->st_atime_sec = st64->st_atim.tv_sec;
+    i386st->st_atime_nsec = st64->st_atim.tv_nsec;
+    i386st->st_mtime_sec = st64->st_mtim.tv_sec;
+    i386st->st_mtime_nsec = st64->st_mtim.tv_nsec;
+    i386st->st_ctime_sec = st64->st_ctim.tv_sec;
+    i386st->st_ctime_nsec = st64->st_ctim.tv_nsec;
+    i386st->__unused4 = 0;
+    i386st->__unused5 = 0;
+    return 0;
+}
+
 // utility functions
 #define SUPER() \
 GO(0)   \
@@ -258,13 +339,14 @@ static void* findftw64Fct(void* fct)
     printf_log(LOG_NONE, "Warning, no more slot for libc ftw64 callback\n");
     return NULL;
 }
-#if 0
 // nftw
 #define GO(A)   \
-static uintptr_t my32_nftw_fct_##A = 0;                                   \
-static int my32_nftw_##A(void* fpath, void* sb, int flag, void* ftwbuff)  \
-{                                                                       \
-    return (int)RunFunction(my_context, my32_nftw_fct_##A, 4, fpath, sb, flag, ftwbuff);   \
+static uintptr_t my32_nftw_fct_##A = 0;                                                     \
+static int my32_nftw_##A(void* fpath, void* sb, int flag, void* ftwbuff)                    \
+{                                                                                           \
+    struct i386_stat i386st;                                                                \
+    FillStatFromStat64(3, sb, &i386st);                                                     \
+    return (int)RunFunctionFmt(my32_nftw_fct_##A, "ppip", fpath, &i386st, flag, ftwbuff);   \
 }
 SUPER()
 #undef GO
@@ -282,7 +364,7 @@ static void* findnftwFct(void* fct)
     printf_log(LOG_NONE, "Warning, no more slot for libc nftw callback\n");
     return NULL;
 }
-#endif
+
 // nftw64
 #define GO(A)   \
 static uintptr_t my32_nftw64_fct_##A = 0;                                                   \
@@ -497,8 +579,8 @@ EXPORT int my32_fstatvfs(x64emu_t* emu, int fd, void* r)
 #ifdef ANDROID
 void my32___libc_init(x64emu_t* emu, void* raw_args , void (*onexit)(void) , int (*main)(int, char**, char**), void const * const structors );
 #else
-int32_t my32___libc_start_main(x64emu_t* emu, int *(main) (int, char * *, char * *), 
-    int argc, char * * ubp_av, void (*init) (void), void (*fini) (void), 
+int32_t my32___libc_start_main(x64emu_t* emu, int *(main) (int, char * *, char * *),
+    int argc, char * * ubp_av, void (*init) (void), void (*fini) (void),
     void (*rtld_fini) (void), void (* stack_end)); // implemented in x64run_private.c
 #endif
 
@@ -585,7 +667,7 @@ pid_t EXPORT my32_fork(x64emu_t* emu)
     if(v<0) {
         printf_log(LOG_NONE, "BOX32: Warning, fork errored... (%d)\n", v);
         // error...
-    } else if(v>0) {  
+    } else if(v>0) {
         // execute atforks parent functions
         for (int i=0; i<my_context->atfork_sz; --i)
             if(my_context->atforks[i].parent)
@@ -631,7 +713,7 @@ int EXPORT my32_uname(struct utsname *buf)
 #define X86_O_NONBLOCK     0x800    // octal    04000
 #define X86_O_SYNC         0x101000 // octal 04010000
 #define X86_O_DSYNC        0x1000   // octal   010000
-#define X86_O_RSYNC        O_SYNC
+#define X86_O_RSYNC        X86_O_SYNC
 #define X86_FASYNC         020000
 #define X86_O_DIRECT       040000
 #define X86_O_LARGEFILE    0100000
@@ -693,7 +775,15 @@ int of_unconvert32(int a)
     #define GO(A) if((a&A)==A) {a&=~A; b|=X86_##A;}
     SUPER();
     #undef GO
-    if(a) {
+    int missing = 0;
+    #ifdef ARM64
+    if(!O_LARGEFILE) {
+        if((a&(0400000))==(0400000)) {a&=~(0400000); b|=(X86_O_LARGEFILE);}
+    }
+    #else
+    if(!O_LARGEFILE) missing |= X86_O_LARGEFILE;
+    #endif
+    if(a && (a&~missing)) {
         printf_log(LOG_NONE, "Warning, of_unconvert32(...) left over 0x%x, converted 0x%x\n", a, b);
     }
     return a|b;
@@ -983,20 +1073,25 @@ EXPORT int my32_vasprintf(x64emu_t* emu, ptr_t* strp, void* fmt, void* b)
     *strp = to_ptrv(res);
     return r;
 }
-EXPORT int my32___vasprintf_chk(x64emu_t* emu, void* strp, int flags, void* fmt, void* b)
+EXPORT int my32___vasprintf_chk(x64emu_t* emu, ptr_t* strp, int flags, void* fmt, void* b)
 {
     // need to align on arm
     myStackAlign32((const char*)fmt, (uint32_t*)b, emu->scratch);
     PREPARE_VALIST_32;
-    int r = vasprintf(strp, fmt, VARARGS_32);
+    char* p = NULL;
+    int r = vasprintf(&p, fmt, VARARGS_32);
+    *strp = to_ptrv(p);
     return r;
 }
 
-EXPORT int my32___asprintf_chk(x64emu_t* emu, void* result_ptr, int flags, void* fmt, void* b)
+EXPORT int my32___asprintf_chk(x64emu_t* emu, ptr_t* result_ptr, int flags, void* fmt, void* b)
 {
     myStackAlign32((const char*)fmt, b, emu->scratch);
+    char* p = NULL;
     PREPARE_VALIST_32;
-    return vasprintf(result_ptr, fmt, VARARGS_32);
+    int ret = vasprintf(&p, fmt, VARARGS_32);
+    *result_ptr = to_ptrv(p);
+    return ret;
 }
 
 EXPORT int my32_vswprintf(x64emu_t* emu, void* buff, size_t s, void * fmt, uint32_t * b) {
@@ -1083,85 +1178,6 @@ EXPORT void my32__ITM_addUserCommitAction(x64emu_t* emu, void* cb, uint32_t b, v
 
 EXPORT void my32__ITM_registerTMCloneTable(x64emu_t* emu, void* p, uint32_t s) {}
 EXPORT void my32__ITM_deregisterTMCloneTable(x64emu_t* emu, void* p) {}
-
-
-struct i386_stat {
-	uint64_t  st_dev;
-	uint32_t  __pad1;
-	uint32_t  st_ino;
-	uint32_t  st_mode;
-	uint32_t  st_nlink;
-	uint32_t  st_uid;
-	uint32_t  st_gid;
-	uint64_t  st_rdev;
-	uint32_t  __pad2;
-	int32_t   st_size;
-	int32_t   st_blksize;
-	int32_t   st_blocks;
-	int32_t   st_atime_sec;
-	uint32_t  st_atime_nsec;
-	int32_t   st_mtime_sec;
-	uint32_t  st_mtime_nsec;
-	int32_t   st_ctime_sec;
-	uint32_t  st_ctime_nsec;
-	uint32_t  __unused4;
-	uint32_t  __unused5;
-} __attribute__((packed));
-
-static int FillStatFromStat64(int vers, const struct stat64 *st64, void *st32)
-{
-    struct i386_stat *i386st = (struct i386_stat *)st32;
-
-    if (vers != 3)
-    {
-        errno = EINVAL;
-        return -1;
-    }
-
-    i386st->st_dev = st64->st_dev;
-    i386st->__pad1 = 0;
-    if (BOX64ENV(fix_64bit_inodes))
-    {
-        i386st->st_ino = st64->st_ino ^ (st64->st_ino >> 32);
-    }
-    else
-    {
-        i386st->st_ino = st64->st_ino;
-        if ((st64->st_ino >> 32) != 0)
-        {
-            errno = EOVERFLOW;
-            return -1;
-        }
-    }
-    i386st->st_mode = st64->st_mode;
-    i386st->st_nlink = st64->st_nlink;
-    i386st->st_uid = st64->st_uid;
-    i386st->st_gid = st64->st_gid;
-    i386st->st_rdev = st64->st_rdev;
-    i386st->__pad2 = 0;
-    i386st->st_size = st64->st_size;
-    if ((i386st->st_size >> 31) != (int32_t)(st64->st_size >> 32))
-    {
-        errno = EOVERFLOW;
-        return -1;
-    }
-    i386st->st_blksize = st64->st_blksize;
-    i386st->st_blocks = st64->st_blocks;
-    if ((i386st->st_blocks >> 31) != (int32_t)(st64->st_blocks >> 32))
-    {
-        errno = EOVERFLOW;
-        return -1;
-    }
-    i386st->st_atime_sec = st64->st_atim.tv_sec;
-    i386st->st_atime_nsec = st64->st_atim.tv_nsec;
-    i386st->st_mtime_sec = st64->st_mtim.tv_sec;
-    i386st->st_mtime_nsec = st64->st_mtim.tv_nsec;
-    i386st->st_ctime_sec = st64->st_ctim.tv_sec;
-    i386st->st_ctime_nsec = st64->st_ctim.tv_nsec;
-    i386st->__unused4 = 0;
-    i386st->__unused5 = 0;
-    return 0;
-}
 
 EXPORT int my32_stat(char* path, void* buf)
 {
@@ -1539,7 +1555,7 @@ EXPORT ssize_t my32_read(int fd, void* buf, size_t count)
             unprotectDB((uintptr_t)p, count-ret, 1);
             int l;
             do {
-                l = read(fd, p, count-ret); 
+                l = read(fd, p, count-ret);
                 if(l>0) {
                     p+=l; ret+=l;
                 }
@@ -1583,19 +1599,11 @@ EXPORT int32_t my32_ftw(x64emu_t* emu, void* pathname, void* B, int32_t nopenfd)
 
     return f(pathname, findftwFct(B), nopenfd);
 }
-
+#endif
 EXPORT int32_t my32_nftw(x64emu_t* emu, void* pathname, void* B, int32_t nopenfd, int32_t flags)
 {
-    static iFppii_t f = NULL;
-    if(!f) {
-        library_t* lib = my_lib;
-        if(!lib) return 0;
-        f = (iFppii_t)dlsym(lib->priv.w.lib, "nftw");
-    }
-
-    return f(pathname, findnftwFct(B), nopenfd, flags);
+    return nftw64(pathname, findnftwFct(B), nopenfd, flags);
 }
-#endif
 
 EXPORT void* my32_ldiv(x64emu_t* emu, void* p, int32_t num, int32_t den)
 {
@@ -2002,7 +2010,7 @@ EXPORT int my32_posix_spawn_file_actions_destroy(x64emu_t* emu, posix_spawn_file
     return ret;
 }
 
-EXPORT int32_t my32_posix_spawn(x64emu_t* emu, pid_t* pid, const char* fullpath, 
+EXPORT int32_t my32_posix_spawn(x64emu_t* emu, pid_t* pid, const char* fullpath,
     posix_spawn_file_actions_32_t *actions_s, const posix_spawnattr_t* attrp,  ptr_t const argv[], ptr_t const envp[])
 {
     posix_spawn_file_actions_t actions_l = {0};
@@ -2051,7 +2059,7 @@ EXPORT int32_t my32_posix_spawn(x64emu_t* emu, pid_t* pid, const char* fullpath,
     return posix_spawn(pid, fullpath, actions, attrp, newargv, newenvp);
 }
 
-EXPORT int32_t my32_posix_spawnp(x64emu_t* emu, pid_t* pid, const char* path, 
+EXPORT int32_t my32_posix_spawnp(x64emu_t* emu, pid_t* pid, const char* path,
     posix_spawn_file_actions_32_t *actions_s, const posix_spawnattr_t* attrp,  ptr_t const argv[], ptr_t const envp[])
 {
     posix_spawn_file_actions_t actions_l = {0};
@@ -2139,6 +2147,13 @@ EXPORT int my32_setrlimit(x64emu_t* emu, int what, uint32_t* pr)
     return setrlimit64(what, &l);
 }
 
+EXPORT void* my32___localtime64(x64emu_t* emu, void* t)
+{
+    static struct tm l = {};
+    l = *localtime(t);
+    return &l;
+}
+
 EXPORT void* my32_localtime(x64emu_t* emu, void* t)
 {
     struct_L_t t_ = {0};
@@ -2182,6 +2197,17 @@ EXPORT void* my32_gmtime(x64emu_t* emu, void* t)
     static struct_iiiiiiiiilt_t res_ = {0};
     if(t) from_struct_L(&t_, to_ptrv(t));
     void* ret = gmtime(t?((void*)&t_):NULL);
+    if(ret) {
+        to_struct_iiiiiiiiilt(to_ptrv(&res_), ret);
+        return &res_;
+    }
+    return NULL;
+}
+
+EXPORT void* my32___gmtime64(x64emu_t* emu, void* t)
+{
+    static struct_iiiiiiiiilt_t res_ = {0};
+    void* ret = gmtime(t);
     if(ret) {
         to_struct_iiiiiiiiilt(to_ptrv(&res_), ret);
         return &res_;
@@ -2408,6 +2434,7 @@ EXPORT int32_t my32_fcntl64(x64emu_t* emu, int32_t a, int32_t b, uint32_t d1, ui
         int ret = fcntl(a, b, &fl);
         UnalignFlock_32(from_ptrv(d1), &fl);
         return ret;
+        //TODO: there might be some time related wells that need wrapping too
     }
     //TODO: check if better to use the syscall or regular fcntl?
     //return syscall(__NR_fcntl64, a, b, d1);   // should be enough
@@ -2449,8 +2476,8 @@ EXPORT int32_t my32_fcntl(x64emu_t* emu, int32_t a, int32_t b, uint32_t d1, uint
     int ret = fcntl(a, b, d1);
     if(b==F_GETFL && ret!=-1)
         ret = of_unconvert32(ret);
-    
-    return ret;    
+
+    return ret;
 }
 EXPORT int32_t my32___fcntl(x64emu_t* emu, int32_t a, int32_t b, uint32_t d1, uint32_t d2, uint32_t d3, uint32_t d4, uint32_t d5, uint32_t d6) __attribute__((alias("my32_fcntl")));
 #if 0
@@ -2677,10 +2704,10 @@ void InitCpuModel()
     my32___cpu_model.__cpu_vendor = VENDOR_INTEL;
     my32___cpu_model.__cpu_type = INTEL_PENTIUM_M;
     my32___cpu_model.__cpu_subtype = 0; // N/A
-    my32___cpu_model.__cpu_features[0] = (1<<FEATURE_CMOV) 
-                                     | (1<<FEATURE_MMX) 
-                                     | (1<<FEATURE_SSE) 
-                                     | (1<<FEATURE_SSE2) 
+    my32___cpu_model.__cpu_features[0] = (1<<FEATURE_CMOV)
+                                     | (1<<FEATURE_MMX)
+                                     | (1<<FEATURE_SSE)
+                                     | (1<<FEATURE_SSE2)
                                      | (1<<FEATURE_SSE3)
                                      | (1<<FEATURE_SSSE3)
                                      | (1<<FEATURE_MOVBE)
@@ -3313,11 +3340,17 @@ EXPORT ptr_t my32_stderr = 0;
 
 EXPORT int __libc_enable_secure = 1;
 
+EXPORT ptr_t my32_tzname[2];
+
 EXPORT long_t my32_timezone = 0;
+EXPORT long_t my32___timezone = 0;
 EXPORT void my32_tzset()
 {
     tzset();
     my32_timezone = to_long(timezone);  // this might not be usefull, and we can probably just redirect to the original symbol
+    my32___timezone = to_long(timezone);
+    my32_tzname[0] = to_cstring(tzname[0]);
+    my32_tzname[1] = to_cstring(tzname[1]);
 }
 
 EXPORT int my32___libc_single_threaded = 0;
@@ -3339,6 +3372,44 @@ EXPORT int my32_waitid(x64emu_t* emu, uint32_t idtype, uint32_t id, void* siginf
     int ret = waitid(idtype, id, siginfo?(&siginfo_l):NULL, options);
     convert_siginfo_to_32(siginfo, &siginfo_l, SIGCHLD);
     return ret;
+}
+
+EXPORT int my32___prctl_time64(x64emu_t* emu, int option, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
+{
+    if(option==PR_SET_NAME) {
+        printf_log(LOG_DEBUG, "set process name to \"%s\"\n", (char*)arg2);
+        ApplyEnvFileEntry((char*)arg2);
+        size_t l = strlen((char*)arg2);
+        if(l>4 && !strcasecmp((char*)arg2+l-4, ".exe")) {
+            printf_log(LOG_DEBUG, "hacking orig command line to \"%s\"\n", (char*)arg2);
+            strcpy(my_context->orig_argv[0], (char*)arg2);
+        }
+    }
+    if(option==PR_SET_SECCOMP) {
+        printf_log(LOG_INFO, "ignoring prctl(PR_SET_SECCOMP, ...)\n");
+        return 0;
+    }
+    return prctl(option, arg2, arg3, arg4, arg5);
+}
+
+EXPORT int my32_prctl(x64emu_t* emu, int option, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
+{
+    // PR_GET_TID_ADDRESS has int** as arg2
+    // is there a call that have a time arg?
+    if(option==PR_SET_NAME) {
+        printf_log(LOG_DEBUG, "set process name to \"%s\"\n", (char*)arg2);
+        ApplyEnvFileEntry((char*)arg2);
+        size_t l = strlen((char*)arg2);
+        if(l>4 && !strcasecmp((char*)arg2+l-4, ".exe")) {
+            printf_log(LOG_DEBUG, "hacking orig command line to \"%s\"\n", (char*)arg2);
+            strcpy(my_context->orig_argv[0], (char*)arg2);
+        }
+    }
+    if(option==PR_SET_SECCOMP) {
+        printf_log(LOG_INFO, "ignoring prctl(PR_SET_SECCOMP, ...)\n");
+        return 0;
+    }
+    return prctl(option, arg2, arg3, arg4, arg5);
 }
 
 #undef HAS_MY
@@ -3373,6 +3444,8 @@ void libc32_net_init();
     my32___progname_full = my32_program_invocation_name = box64->argv[0];   \
     my32___progname = my32_program_invocation_short_name =                  \
         strrchr(box64->argv[0], '/');                                       \
+    my32_tzname[0] = to_cstring(tzname[0]);                                 \
+    my32_tzname[1] = to_cstring(tzname[1]);                                 \
     my32_stdin = to_ptrv(my__IO_2_1_stdin_);                                \
     my32_stdout = to_ptrv(my__IO_2_1_stdout_);                              \
     my32_stderr = to_ptrv(my__IO_2_1_stderr_);

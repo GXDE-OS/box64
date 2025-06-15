@@ -8,10 +8,10 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "os.h"
 #include "debug.h"
 #include "box64stack.h"
 #include "x64emu.h"
-#include "x64run.h"
 #include "x64emu_private.h"
 #include "x64run_private.h"
 #include "x64primop.h"
@@ -19,7 +19,7 @@
 #include "x87emu_private.h"
 #include "box64context.h"
 #include "bridge.h"
-#include "signals.h"
+#include "emit_signals.h"
 #ifdef DYNAREC
 #include "../dynarec/native_lock.h"
 #endif
@@ -189,7 +189,7 @@ uintptr_t Run670F(x64emu_t *emu, rex_t rex, int rep, uintptr_t addr)
                     nextop = F8;
                     FAKEED32(0);
                     #ifndef TEST_INTERPRETER
-                    emit_signal(emu, SIGILL, (void*)R_RIP, 0);
+                    EmitSignal(emu, SIGILL, (void*)R_RIP, 0);
                     #endif
                     break;
                 default:

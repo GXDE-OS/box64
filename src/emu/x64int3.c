@@ -6,7 +6,6 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
-#include <sys/syscall.h>
 #include <sys/types.h>
 #include <pthread.h>
 #include <signal.h>
@@ -14,19 +13,21 @@
 #include <sys/wait.h>
 #include <elf.h>
 
+#include "os.h"
 #include "debug.h"
 #include "box64stack.h"
 #include "x64emu.h"
-#include "x64run.h"
+#include "box64cpu.h"
 #include "x64emu_private.h"
 #include "x64run_private.h"
+#include "x64int_private.h"
 #include "x87emu_private.h"
 #include "x64primop.h"
 #include "x64trace.h"
 #include "wrapper.h"
 #include "box64context.h"
 #include "librarian.h"
-#include "signals.h"
+#include "emit_signals.h"
 #include "tools/bridge_private.h"
 
 #include <elf.h>
@@ -95,8 +96,7 @@ void x64Int3(x64emu_t* emu, uintptr_t* addr)
         return;
     }
     onebridge_t* bridge = (onebridge_t*)(*addr-1);
-    if(bridge->S=='S' && bridge->C=='C') // Signature for "Out of x86 door"
-    {
+    if (IsBridgeSignature(bridge->S, bridge->C)) { // Signature for "Out of x86 door"
         *addr += 2;
         uintptr_t a = F64(addr);
         if(a==0) {
@@ -233,6 +233,10 @@ void x64Int3(x64emu_t* emu, uintptr_t* addr)
                     snprintf(buff, 256, "%04d|%p: Calling %s(\"%s\")", tid, *(void**)(R_RSP), s, (tmp)?tmp:"(nil)");
                 } else if (strstr(s, "setenv")==s) {
                     snprintf(buff, 256, "%04d|%p: Calling %s(\"%s\", \"%s\", %d)", tid, *(void**)(R_RSP), s, (char*)R_RDI, (char*)R_RSI, R_EDX);
+                } else if (strstr(s, "unsetenv")==s) {
+                    snprintf(buff, 256, "%04d|%p: Calling %s(\"%s\")", tid, *(void**)(R_RSP), s, (char*)R_RDI);
+                } else if (strstr(s, "putenv")==s) {
+                    snprintf(buff, 256, "%04d|%p: Calling %s(\"%s\")", tid, *(void**)(R_RSP), s, (char*)R_RDI);
                 } else if (!strcmp(s, "poll")) {
                     struct pollfd* pfd = (struct pollfd*)(R_RDI);
                     snprintf(buff, 256, "%04d|%p: Calling %s(%p[%d/%d/%d, ...], %d, %d)", tid, *(void**)(R_RSP), s, pfd, pfd->fd, pfd->events, pfd->revents, R_ESI, R_EDX);
@@ -299,8 +303,8 @@ void x64Int3(x64emu_t* emu, uintptr_t* addr)
                 } else if (!strcmp(s, "ov_read")) {
                     snprintf(buff, 256, "%04d|%p: Calling %s(%p, %p, %d, %d, %d, %d, %p)", tid, *(void**)(R_RSP), s, (void*)R_RDI, (void*)R_RSI, R_EDX, R_ECX, R_R8d, R_R9d, *(void**)(R_RSP+8));
                 } else if (!strcmp(s, "mmap64") || !strcmp(s, "mmap")) {
-                    snprintf(buff, 256, "%04d|%p: Calling %s(%p, 0x%lx, 0x%x, 0x%x, %d, %ld)", tid, *(void**)(R_RSP), s, 
-                        (void*)R_RDI, R_RSI, (int)(R_RDX), S_RCX, S_R8, R_R9);
+                    snprintf(buff, 256, "%04d|%p: Calling %s(%p, 0x%lx, 0x%x, 0x%x, %d, %ld)", tid, *(void**)(R_RSP), s,
+                        (void*)R_RDI, R_RSI, (int)(R_RDX), (int)(S_RCX), (int)(S_R8), R_R9);
                     perr = 3;
                 } else if (!strcmp(s, "sscanf")) {
                     tmp = (char*)(R_RSI);
@@ -393,17 +397,12 @@ void x64Int3(x64emu_t* emu, uintptr_t* addr)
     }
     if(!BOX64ENV(ignoreint3) && my_context->signals[SIGTRAP]) {
         R_RIP = *addr;  // update RIP
-        emit_signal(emu, SIGTRAP, NULL, 3);
+        EmitSignal(emu, SIGTRAP, NULL, 3);
     } else {
         printf_log(LOG_DEBUG, "%04d|Warning, ignoring unsupported Int 3 call @%p\n", GetTID(), (void*)R_RIP);
         R_RIP = *addr;
     }
     //emu->quit = 1;
-}
-
-int GetTID()
-{
-    return syscall(SYS_gettid);
 }
 
 void print_rolling_log(int loglevel) {

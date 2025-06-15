@@ -10,10 +10,12 @@
 #define F64     *(uint64_t*)(addr+=8, addr-8)
 #define F64S    *(int64_t*)(addr+=8, addr-8)
 #define PK(a)   *(uint8_t*)(addr+a)
+#define PARITY(x)   (((emu->x64emu_parity_tab[(x) / 32] >> ((x) % 32)) & 1) == 0)
+
 #ifdef DYNAREC
-#define STEP  check_exec(emu, addr); if(step && !ACCESS_FLAG(F_TF)) return 0;
-#define STEP2 check_exec(emu, addr); if(step && !ACCESS_FLAG(F_TF)) {R_RIP = addr; return 0;}
-#define STEP3 check_exec(emu, addr); if(*step) (*step)++;
+#define STEP  CheckExec(emu, addr); if(step && !ACCESS_FLAG(F_TF)) return 0;
+#define STEP2 CheckExec(emu, addr); if(step && !ACCESS_FLAG(F_TF)) {R_RIP = addr; return 0;}
+#define STEP3 CheckExec(emu, addr); if(*step) (*step)++;
 #else
 #define STEP
 #define STEP2
@@ -30,6 +32,7 @@
 #define GETE8xw(D)          oped=TestEd8xw(test, rex.w, &addr, rex, nextop, D)
 #define GETED32(D)          oped=TestEd32O(test, &addr, rex, nextop, D, 0)
 #define GETED_OFFS(D, O)    oped=TestEdO(test, &addr, rex, nextop, D, O)
+#define GETED_OFFS_32(D, O) oped=TestEd32O(test, &addr, rex, nextop, D, O)
 #define GETED_OFFS_16(O)    oped=TestEd16off(test, &addr, rex, nextop, O)
 #define GETGD               opgd=GetGd(test->emu, &addr, rex, nextop)
 #define GETEB(D)            oped=TestEb(test, &addr, rex, nextop, D)
@@ -65,6 +68,7 @@
 #define GETE8xw(D)          GETED(D)
 #define GETED32(D)          oped=GetEd32O(emu, &addr, rex, nextop, D, 0)
 #define GETED_OFFS(D, O)    oped=GetEdO(emu, &addr, rex, nextop, D, O)
+#define GETED_OFFS_32(D, O) oped=GetEd32O(emu, &addr, rex, nextop, D, O)
 #define GETED_OFFS_16(O)    oped=GetEd16off(emu, &addr, rex, nextop, O)
 #define GETGD               opgd=GetGd(emu, &addr, rex, nextop)
 #define GETEB(D)            oped=GetEb(emu, &addr, rex, nextop, D)
@@ -130,6 +134,18 @@
 #else
 #define NAN_PROPAGATION(dest, src, break_or_continue)
 #endif
+
+#define MARK_NAN_VF_2(A, B) for(int idx=0; idx<4; ++idx) mask_nan[idx] = isnanf(A->f[idx]) || isnanf(B->f[idx])
+#define CHECK_NAN_VF(A) for(int idx=0; idx<4; ++idx) if(!mask_nan[idx] && isnanf(A->f[idx])) A->f[idx] = -NAN
+
+#define MARK_NAN_VD_2(A, B) for(int idx=0; idx<2; ++idx) mask_nan[idx] = isnan(A->d[idx]) || isnan(B->d[idx])
+#define CHECK_NAN_VD(A) for(int idx=0; idx<2; ++idx) if(!mask_nan[idx] && isnan(A->d[idx])) A->d[idx] = -NAN
+
+#define MARK_NAN_F_2(A, B) is_nan = isnanf(A->f[0]) || isnanf(B->f[0])
+#define CHECK_NAN_F(A) if(!is_nan && isnanf(A->f[0])) A->f[0] = -NAN
+
+#define MARK_NAN_D_2(A, B) is_nan = isnan(A->d[0]) || isnan(B->d[0])
+#define CHECK_NAN_D(A) if(!is_nan && isnan(A->d[0])) A->d[0] = -NAN
 
 #define GOCOND(BASE, PREFIX, COND, NOTCOND, POST)\
     case BASE+0x0:                              \

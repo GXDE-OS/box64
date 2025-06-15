@@ -2,6 +2,8 @@
 #define __MY_ALIGN__H_
 #include <stdint.h>
 
+#include "mysignal.h"
+
 typedef struct x64_va_list_s {
    unsigned int gp_offset;
    unsigned int fp_offset;
@@ -179,7 +181,8 @@ void myStackAlignValist(x64emu_t* emu, const char* fmt, uint64_t* mystack, x64_v
 void myStackAlignWValist(x64emu_t* emu, const char* fmt, uint64_t* mystack, x64_va_list_t va);
 void myStackAlignScanfValist(x64emu_t* emu, const char* fmt, uint64_t* mystack, x64_va_list_t va);
 void myStackAlignScanfWValist(x64emu_t* emu, const char* fmt, uint64_t* mystack, x64_va_list_t va);
-void myStackAlignGVariantNew(x64emu_t* emu, const char* fmt, uint64_t* scratch, x64_va_list_t* b);
+void myStackAlignGVariantNewVa(x64emu_t* emu, const char* fmt, uint64_t* scratch, x64_va_list_t* b);
+void myStackAlignGVariantNew(x64emu_t* emu, const char* fmt, uint64_t* st, uint64_t* mystack, int xmm);
 #endif
 
 struct x64_stat64 {                   /* x86_64       arm64 */
@@ -237,7 +240,10 @@ typedef struct __jmp_buf_tag_s {
     jump_buff_x64_t __jmpbuf;
     int              __mask_was_saved;
     #ifdef ANDROID
-    sigset_t         __saved_mask;
+    union {
+      sigset_t         __saved_mask;
+      sigset64_t         __saved_mask64;
+    };
     #else
     __sigset_t       __saved_mask;
     #endif

@@ -5,10 +5,8 @@
 
 #include "debug.h"
 #include "box64context.h"
-#include "dynarec.h"
+#include "box64cpu.h"
 #include "emu/x64emu_private.h"
-#include "emu/x64run_private.h"
-#include "x64run.h"
 #include "x64emu.h"
 #include "box64stack.h"
 #include "callback.h"
@@ -574,6 +572,24 @@ uintptr_t dynarec64_F20F_vector(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t i
             if (!rv64_xtheadvector) VXOR_VV(v0, v0, v0, VECTOR_UNMASKED);
             VMV_X_S(x4, d0);
             VMV_S_X(v0, x4);
+            break;
+        case 0xF0:
+            INST_NAME("LDDQU Gx, Ex");
+            nextop = F8;
+            GETG;
+            if (MODREG) {
+                SET_ELEMENT_WIDTH(x1, VECTOR_SEWANY, 1);
+                ed = (nextop & 7) + (rex.b << 3);
+                v1 = sse_get_reg_vector(dyn, ninst, x1, ed, 0, dyn->vector_eew);
+                v0 = sse_get_reg_empty_vector(dyn, ninst, x1, gd);
+                VMV_V_V(v0, v1);
+            } else {
+                SET_ELEMENT_WIDTH(x1, VECTOR_SEW8, 1); // unaligned!
+                SMREAD();
+                v0 = sse_get_reg_empty_vector(dyn, ninst, x1, gd);
+                addr = geted(dyn, addr, ninst, nextop, &ed, x2, x3, &fixedaddress, rex, NULL, 0, 0);
+                VLE_V(v0, ed, dyn->vector_eew, VECTOR_UNMASKED, VECTOR_NFIELD1);
+            }
             break;
         default: DEFAULT_VECTOR;
     }

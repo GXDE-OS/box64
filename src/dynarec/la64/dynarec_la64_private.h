@@ -45,11 +45,13 @@ typedef struct lsxcache_s {
     uint8_t         combined2;
     uint8_t         swapped;        // the combined reg were swapped
     uint8_t         barrier;        // is there a barrier at instruction epilog?
+    uint8_t         pushed;         // positive pushed value (to check for overflow)
+    uint8_t         poped;          // positive poped value (to check for underflow)
     uint32_t        news;           // bitmask, wich neoncache are new for this opcode
     // fpu cache
     int8_t          x87cache[8];    // cache status for the 8 x87 register behind the fpu stack
     int8_t          x87reg[8];      // reg used for x87cache entry
-    int8_t          freed[8];       // set when FFREE is used, -1 else
+    int16_t         tags;           // similar to fpu_tags
     int8_t          mmxcache[8];    // cache status for the 8 MMX registers
     sse_cache_t     ssecache[16];   // cache status for the 16 SSE(2) registers
     int8_t          fpuused[24];    // all 0..24 double reg from fpu, used by x87, sse and mmx
@@ -65,6 +67,8 @@ typedef struct flagcache_s {
     uint8_t             dfnone;     // if deferred flags is already set to df_none
     uint8_t             dfnone_here;// defered flags is cleared in this opcode
 } flagcache_t;
+
+typedef struct callret_s callret_t;
 
 typedef struct instruction_la64_s {
     instruction_x64_t   x64;
@@ -89,9 +93,11 @@ typedef struct instruction_la64_s {
     uint16_t            ymm0_out;   // the ymm0 at th end of the opcode
     uint16_t            ymm0_pass2, ymm0_pass3;
     uint8_t             barrier_maybe;
-    uint8_t             will_write;
-    uint8_t             last_write;
-    uint8_t             lock;
+    uint8_t             will_write:2;    // [strongmem] will write to memory
+    uint8_t             will_read:1;     // [strongmem] will read from memory
+    uint8_t             last_write:1;    // [strongmem] the last write in a SEQ
+    uint8_t             lock:1;          // [strongmem] lock semantic
+    uint8_t             lock_prefixed:1; // [strongmem] the opcode is lock prefixed
     uint8_t             df_notneeded;
     uint8_t             nat_flags_fusion:1;
     uint8_t             nat_flags_nofusion:1;
@@ -132,6 +138,8 @@ typedef struct dynarec_la64_s {
     dynablock_t*         dynablock;
     instsize_t*          instsize;
     size_t               insts_size; // size of the instruction size array (calculated)
+    int                  callret_size;   // size of the array
+    callret_t*           callrets;   // arrey of callret return, with NOP / UDF depending if the block is clean or dirty
     uintptr_t            forward;    // address of the last end of code while testing forward
     uintptr_t            forward_to; // address of the next jump to (to check if everything is ok)
     int32_t              forward_size;   // size at the forward point
@@ -141,6 +149,8 @@ typedef struct dynarec_la64_s {
     uint8_t              always_test;
     uint8_t              abort;
     void*               gdbjit_block;
+    uint32_t            need_x87check; // x87 low precision check
+    uint32_t            need_dump;     // need to dump the block
 } dynarec_la64_t;
 
 void add_next(dynarec_la64_t *dyn, uintptr_t addr);

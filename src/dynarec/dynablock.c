@@ -1,14 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
-#include <setjmp.h>
-#include <sys/mman.h>
 
+#include "os.h"
 #include "debug.h"
 #include "box64context.h"
-#include "dynarec.h"
+#include "box64cpu.h"
 #include "emu/x64emu_private.h"
-#include "x64run.h"
 #include "x64emu.h"
 #include "box64stack.h"
 #include "callback.h"
@@ -17,11 +15,10 @@
 #include "dynablock.h"
 #include "dynablock_private.h"
 #include "dynarec_private.h"
-#include "elfloader.h"
-#include "bridge.h"
-#include "signals.h"
+#include "alternate.h"
 
 #include "dynarec_native.h"
+#include "dynarec_arch.h"
 #include "native_lock.h"
 
 #include "custommem.h"
@@ -31,6 +28,9 @@
 uint32_t X31_hash_code(void* addr, int len)
 {
     if(!len) return 0;
+    #ifdef ARCH_CRC
+    ARCH_CRC(addr, len);
+    #endif
     uint8_t* p = (uint8_t*)addr;
     int32_t h = *p;
     for (--len, ++p; len; --len, ++p) h = (h << 5) - h + (int32_t)*p;
@@ -50,13 +50,17 @@ dynablock_t* InvalidDynablock(dynablock_t* db, int need_lock)
         db->done = 0;
         db->gone = 1;
         uintptr_t db_size = db->x64_size;
+        #ifdef ARCH_NOP
+        if(db->callret_size) {
+            // mark all callrets to UDF
+            for(int i=0; i<db->callret_size; ++i)
+                *(uint32_t*)(db->block+db->callrets[i].offs) = ARCH_NOP;
+            ClearCache(db->block, db->size);
+        }
+        #endif
         if(db_size && my_context) {
-            uint32_t n = rb_get(my_context->db_sizes, db_size);
-            if(n>1)
-                rb_set(my_context->db_sizes, db_size, db_size+1, n-1);
-            else
-                rb_unset(my_context->db_sizes, db_size, db_size+1);
-            if(db_size == my_context->max_db_size) {
+            uint32_t n = rb_dec(my_context->db_sizes, db_size, db_size+1);
+            if(!n && (db_size >= my_context->max_db_size)) {
                 my_context->max_db_size = rb_get_righter(my_context->db_sizes);
                 dynarec_log(LOG_INFO, "BOX64 Dynarec: lower max_db=%d\n", my_context->max_db_size);
             }
@@ -97,12 +101,8 @@ void FreeDynablock(dynablock_t* db, int need_lock)
         db->gone = 1;
         uintptr_t db_size = db->x64_size;
         if(db_size && my_context) {
-            uint32_t n = rb_get(my_context->db_sizes, db_size);
-            if(n>1)
-                rb_set(my_context->db_sizes, db_size, db_size+1, n-1);
-            else
-                rb_unset(my_context->db_sizes, db_size, db_size+1);
-            if(db_size == my_context->max_db_size) {
+            uint32_t n = rb_dec(my_context->db_sizes, db_size, db_size+1);
+            if(!n && (db_size >= my_context->max_db_size)) {
                 my_context->max_db_size = rb_get_righter(my_context->db_sizes);
                 dynarec_log(LOG_INFO, "BOX64 Dynarec: lower max_db=%d\n", my_context->max_db_size);
             }
@@ -135,7 +135,14 @@ void MarkDynablock(dynablock_t* db)
                 else
                     db->previous = old;
             }
+        } 
+        #ifdef ARCH_NOP
+        else if(db->callret_size) {
+            // mark all callrets to UDF
+            for(int i=0; i<db->callret_size; ++i)
+                *(uint32_t*)(db->block+db->callrets[i].offs) = ARCH_UDF;
         }
+        #endif
     }
 }
 
@@ -178,17 +185,11 @@ dynablock_t *AddNewDynablock(uintptr_t addr)
     return block;
 }
 
-//TODO: move this to dynrec_arm.c and track allocated structure to avoid memory leak
-static __thread JUMPBUFF dynarec_jmpbuf;
-#ifdef ANDROID
-#define DYN_JMPBUF dynarec_jmpbuf
-#else
-#define DYN_JMPBUF &dynarec_jmpbuf
-#endif
+NEW_JUMPBUFF(dynarec_jmpbuf);
 
 void cancelFillBlock()
 {
-    longjmp(DYN_JMPBUF, 1);
+    LongJmp(GET_JUMPBUFF(dynarec_jmpbuf), 1);
 }
 
 /* 
@@ -197,7 +198,7 @@ void cancelFillBlock()
 */
 static dynablock_t* internalDBGetBlock(x64emu_t* emu, uintptr_t addr, uintptr_t filladdr, int create, int need_lock, int is32bits)
 {
-    if(hasAlternate((void*)addr))
+    if (hasAlternate((void*)filladdr))
         return NULL;
     const uint32_t req_prot = (box64_pagesize==4096)?(PROT_EXEC|PROT_READ):PROT_READ;
     dynablock_t* block = getDB(addr);
@@ -222,23 +223,25 @@ static dynablock_t* internalDBGetBlock(x64emu_t* emu, uintptr_t addr, uintptr_t 
             return block;
         }
     }
+#ifndef _WIN32
     if((getProtection_fast(addr)&req_prot)!=req_prot) {// cannot be run, get out of the Dynarec
         if(need_lock)
             mutex_unlock(&my_context->mutex_dyndump);
         return NULL;
     }
+#endif
     block = AddNewDynablock(addr);
 
     // fill the block
     block->x64_addr = (void*)addr;
-    if(sigsetjmp(DYN_JMPBUF, 1)) {
+    if (SigSetJmp(GET_JUMPBUFF(dynarec_jmpbuf), 1)) {
         printf_log(LOG_INFO, "FillBlock at %p triggered a segfault, canceling\n", (void*)addr);
         FreeDynablock(block, 0);
         if(need_lock)
             mutex_unlock(&my_context->mutex_dyndump);
         return NULL;
     }
-    void* ret = FillBlock64(block, filladdr, (addr==filladdr)?0:1, is32bits);
+    void* ret = FillBlock64(block, filladdr, (addr==filladdr)?0:1, is32bits, MAX_INSTS);
     if(!ret) {
         dynarec_log(LOG_DEBUG, "Fillblock of block %p for %p returned an error\n", block, (void*)addr);
         customFree(block);
@@ -258,27 +261,29 @@ static dynablock_t* internalDBGetBlock(x64emu_t* emu, uintptr_t addr, uintptr_t 
                     dynarec_log(LOG_INFO, "BOX64 Dynarec: higher max_db=%d\n", my_context->max_db_size);
                 }
                 block->done = 1;    // don't validate the block if the size is null, but keep the block
-                rb_set(my_context->db_sizes, block->x64_size, block->x64_size+1, rb_get(my_context->db_sizes, block->x64_size)+1);
+                rb_inc(my_context->db_sizes, block->x64_size, block->x64_size+1);
             }
         }
     }
     if(need_lock)
         mutex_unlock(&my_context->mutex_dyndump);
 
-    dynarec_log(LOG_DEBUG, "%04d| --- DynaRec Block created @%p:%p (%p, 0x%x bytes)\n", GetTID(), (void*)addr, (void*)(addr+((block)?block->x64_size:1)-1), (block)?block->block:0, (block)?block->size:0);
+    dynarec_log(LOG_DEBUG, "%04d| --- DynaRec Block %p created @%p:%p (%p, 0x%x bytes)\n", GetTID(), block, (void*)addr, (void*)(addr+((block)?block->x64_size:1)-1), (block)?block->block:0, (block)?block->size:0);
 
     return block;
 }
 
 dynablock_t* DBGetBlock(x64emu_t* emu, uintptr_t addr, int create, int is32bits)
 {
-    if(isInHotPage(addr))
+    int is_inhotpage = isInHotPage(addr);
+    if(is_inhotpage && !BOX64ENV(dynarec_dirty))
         return NULL;
     dynablock_t *db = internalDBGetBlock(emu, addr, addr, create, 1, is32bits);
     if(db && db->done && db->block && getNeedTest(addr)) {
-        if(db->always_test)
-            sched_yield();  // just calm down...
+        if (db->always_test) SchedYield(); // just calm down...
         uint32_t hash = X31_hash_code(db->x64_addr, db->x64_size);
+        if(is_inhotpage && hash!=db->hash)
+            return NULL;    // will be handle when hotpage is over
         int need_lock = mutex_trylock(&my_context->mutex_dyndump);
         if(hash!=db->hash) {
             db->done = 0;   // invalidating the block
@@ -294,11 +299,24 @@ dynablock_t* DBGetBlock(x64emu_t* emu, uintptr_t addr, int create, int is32bits)
             } else
                 FreeInvalidDynablock(old, need_lock);
         } else {
-            dynarec_log(LOG_DEBUG, "Validating block %p from %p:%p (hash:%X, always_test:%d) for %p\n", db, db->x64_addr, db->x64_addr+db->x64_size-1, db->hash, db->always_test, (void*)addr);
-            if(db->always_test)
-                protectDB((uintptr_t)db->x64_addr, db->x64_size);
-            else
-                protectDBJumpTable((uintptr_t)db->x64_addr, db->x64_size, db->block, db->jmpnext);
+            if(is_inhotpage) {
+                // log?
+            } else {
+                dynarec_log(LOG_DEBUG, "Validating block %p from %p:%p (hash:%X, always_test:%d) for %p\n", db, db->x64_addr, db->x64_addr+db->x64_size-1, db->hash, db->always_test, (void*)addr);
+                if(db->always_test)
+                    protectDB((uintptr_t)db->x64_addr, db->x64_size);
+                else {
+                    #ifdef ARCH_NOP
+                    if(db->callret_size) {
+                        // mark all callrets to UDF
+                        for(int i=0; i<db->callret_size; ++i)
+                            *(uint32_t*)(db->block+db->callrets[i].offs) = ARCH_NOP;
+                        ClearCache(db->block, db->size);
+                    }
+                    #endif
+                    protectDBJumpTable((uintptr_t)db->x64_addr, db->x64_size, db->block, db->jmpnext);
+                }
+            }
         }
         if(!need_lock)
             mutex_unlock(&my_context->mutex_dyndump);
@@ -314,8 +332,7 @@ dynablock_t* DBAlternateBlock(x64emu_t* emu, uintptr_t addr, uintptr_t filladdr,
     int create = 1;
     dynablock_t *db = internalDBGetBlock(emu, addr, filladdr, create, 1, is32bits);
     if(db && db->done && db->block && getNeedTest(filladdr)) {
-        if(db->always_test)
-            sched_yield();  // just calm down...
+        if (db->always_test) SchedYield(); // just calm down...
         int need_lock = mutex_trylock(&my_context->mutex_dyndump);
         uint32_t hash = X31_hash_code(db->x64_addr, db->x64_size);
         if(hash!=db->hash) {
@@ -334,8 +351,17 @@ dynablock_t* DBAlternateBlock(x64emu_t* emu, uintptr_t addr, uintptr_t filladdr,
         } else {
             if(db->always_test)
                 protectDB((uintptr_t)db->x64_addr, db->x64_size);
-            else
+            else {
+                #ifdef ARCH_NOP
+                if(db->callret_size) {
+                    // mark all callrets to UDF
+                    for(int i=0; i<db->callret_size; ++i)
+                        *(uint32_t*)(db->block+db->callrets[i].offs) = ARCH_NOP;
+                    ClearCache(db->block, db->size);
+                }
+                #endif
                 protectDBJumpTable((uintptr_t)db->x64_addr, db->x64_size, db->block, db->jmpnext);
+            }
         }
         if(!need_lock)
             mutex_unlock(&my_context->mutex_dyndump);
@@ -343,4 +369,54 @@ dynablock_t* DBAlternateBlock(x64emu_t* emu, uintptr_t addr, uintptr_t filladdr,
     if(!db || !db->block || !db->done)
         emu->test.test = 0;
     return db;
+}
+
+uintptr_t getX64Address(dynablock_t* db, uintptr_t native_addr)
+{
+    uintptr_t x64addr = (uintptr_t)db->x64_addr;
+    uintptr_t armaddr = (uintptr_t)db->block;
+    if ((native_addr < (uintptr_t)db->block) || (native_addr > (uintptr_t)db->actual_block + db->size))
+        return 0;
+    int i = 0;
+    do {
+        int x64sz = 0;
+        int armsz = 0;
+        do {
+            x64sz += db->instsize[i].x64;
+            armsz += db->instsize[i].nat * 4;
+            ++i;
+        } while ((db->instsize[i - 1].x64 == 15) || (db->instsize[i - 1].nat == 15));
+        // if the opcode is a NOP on ARM side (so armsz==0), it cannot be an address to find
+        if ((native_addr >= armaddr) && (native_addr < (armaddr + armsz)))
+            return x64addr;
+        armaddr += armsz;
+        x64addr += x64sz;
+    } while (db->instsize[i].x64 || db->instsize[i].nat);
+    return x64addr;
+}
+
+int getX64AddressInst(dynablock_t* db, uintptr_t x64pc)
+{
+    uintptr_t x64addr = (uintptr_t)db->x64_addr;
+    uintptr_t armaddr = (uintptr_t)db->block;
+    int ret = 0;
+    if (x64pc < (uintptr_t)db->x64_addr || x64pc > (uintptr_t)db->x64_addr + db->x64_size)
+        return -1;
+    int i = 0;
+    do {
+        int x64sz = 0;
+        int armsz = 0;
+        do {
+            x64sz += db->instsize[i].x64;
+            armsz += db->instsize[i].nat * 4;
+            ++i;
+        } while ((db->instsize[i - 1].x64 == 15) || (db->instsize[i - 1].nat == 15));
+        // if the opcode is a NOP on ARM side (so armsz==0), it cannot be an address to find
+        if ((x64pc >= x64addr) && (x64pc < (x64addr + x64sz)))
+            return ret;
+        armaddr += armsz;
+        x64addr += x64sz;
+        ret++;
+    } while (db->instsize[i].x64 || db->instsize[i].nat);
+    return ret;
 }

@@ -12,7 +12,6 @@
 #include "debug.h"
 #include "box64stack.h"
 #include "x64emu.h"
-#include "x64run.h"
 #include "x64emu_private.h"
 #include "x64run_private.h"
 #include "x64primop.h"
@@ -51,6 +50,7 @@ uintptr_t RunD8(x64emu_t *emu, rex_t rex, uintptr_t addr, uintptr_t offs)
         case 0xC6:
         case 0xC7:  /* FADD */
             ST0.d += ST(nextop&7).d;
+            if(!emu->cw.f.C87_PC) ST0.d = (float)ST0.d;
             break;
         case 0xC8:
         case 0xC9:
@@ -61,6 +61,7 @@ uintptr_t RunD8(x64emu_t *emu, rex_t rex, uintptr_t addr, uintptr_t offs)
         case 0xCE:
         case 0xCF:  /* FMUL */
             ST0.d *= ST(nextop&7).d;
+            if(!emu->cw.f.C87_PC) ST0.d = (float)ST0.d;
             break;
         case 0xD0:
         case 0xD1:
@@ -92,6 +93,7 @@ uintptr_t RunD8(x64emu_t *emu, rex_t rex, uintptr_t addr, uintptr_t offs)
         case 0xE6:
         case 0xE7:  /* FSUB */
             ST0.d -= ST(nextop&7).d;
+            if(!emu->cw.f.C87_PC) ST0.d = (float)ST0.d;
             break;
         case 0xE8:
         case 0xE9:
@@ -102,6 +104,7 @@ uintptr_t RunD8(x64emu_t *emu, rex_t rex, uintptr_t addr, uintptr_t offs)
         case 0xEE:
         case 0xEF:  /* FSUBR */
             ST0.d = ST(nextop&7).d - ST0.d;
+            if(!emu->cw.f.C87_PC) ST0.d = (float)ST0.d;
             break;
         case 0xF0:
         case 0xF1:
@@ -112,6 +115,7 @@ uintptr_t RunD8(x64emu_t *emu, rex_t rex, uintptr_t addr, uintptr_t offs)
         case 0xF6:
         case 0xF7:  /* FDIV */
             ST0.d /= ST(nextop&7).d;
+            if(!emu->cw.f.C87_PC) ST0.d = (float)ST0.d;
             break;
         case 0xF8:
         case 0xF9:
@@ -122,6 +126,7 @@ uintptr_t RunD8(x64emu_t *emu, rex_t rex, uintptr_t addr, uintptr_t offs)
         case 0xFE:
         case 0xFF:  /* FDIVR */
             ST0.d = ST(nextop&7).d / ST0.d;
+            if(!emu->cw.f.C87_PC) ST0.d = (float)ST0.d;
             break;
         default:
             fesetround(oldround);
@@ -135,6 +140,7 @@ uintptr_t RunD8(x64emu_t *emu, rex_t rex, uintptr_t addr, uintptr_t offs)
                     GETE4(0);
                 }
                 ST0.d += *(float*)ED;
+                if(!emu->cw.f.C87_PC) ST0.d = (float)ST0.d;
                 break;
             case 1:         /* FMUL ST0, float */
                 if(offs) {
@@ -143,6 +149,7 @@ uintptr_t RunD8(x64emu_t *emu, rex_t rex, uintptr_t addr, uintptr_t offs)
                     GETE4(0);
                 }
                 ST0.d *= *(float*)ED;
+                if(!emu->cw.f.C87_PC) ST0.d = (float)ST0.d;
                 break;
             case 2:      /* FCOM ST0, float */
                 if(offs) {
@@ -168,6 +175,7 @@ uintptr_t RunD8(x64emu_t *emu, rex_t rex, uintptr_t addr, uintptr_t offs)
                     GETE4(0);
                 }
                 ST0.d -= *(float*)ED;
+                if(!emu->cw.f.C87_PC) ST0.d = (float)ST0.d;
                 break;
             case 5:         /* FSUBR ST0, float */
                 if(offs) {
@@ -176,6 +184,7 @@ uintptr_t RunD8(x64emu_t *emu, rex_t rex, uintptr_t addr, uintptr_t offs)
                     GETE4(0);
                 }
                 ST0.d = *(float*)ED - ST0.d;
+                if(!emu->cw.f.C87_PC) ST0.d = (float)ST0.d;
                 break;
             case 6:         /* FDIV ST0, float */
                 if(offs) {
@@ -184,6 +193,7 @@ uintptr_t RunD8(x64emu_t *emu, rex_t rex, uintptr_t addr, uintptr_t offs)
                     GETE4(0);
                 }
                 ST0.d /= *(float*)ED;
+                if(!emu->cw.f.C87_PC) ST0.d = (float)ST0.d;
                 break;
             case 7:         /* FDIVR ST0, float */
                 if(offs) {
@@ -192,6 +202,7 @@ uintptr_t RunD8(x64emu_t *emu, rex_t rex, uintptr_t addr, uintptr_t offs)
                     GETE4(0);
                 }
                 ST0.d = *(float*)ED / ST0.d;
+                if(!emu->cw.f.C87_PC) ST0.d = (float)ST0.d;
                 break;
             default:
                 fesetround(oldround);

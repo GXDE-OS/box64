@@ -200,6 +200,99 @@
 #define BGTU(rs1, rs2, imm13) BLTU(rs2, rs1, imm13)
 #define BLEU(rs1, rs2, imm13) BGEU(rs2, rs1, imm13)
 
+#define SEQ(rd, rs1, rs2)        \
+    do {                         \
+        if (rs1 == xZR) {        \
+            SEQZ(rd, rs2);       \
+        } else if (rs2 == xZR) { \
+            SEQZ(rd, rs1);       \
+        } else {                 \
+            XOR(rd, rs1, rs2);   \
+            SEQZ(rd, rd);        \
+        }                        \
+    } while (0)
+
+#define SNE(rd, rs1, rs2)        \
+    do {                         \
+        if (rs1 == xZR) {        \
+            SNEZ(rd, rs2);       \
+        } else if (rs2 == xZR) { \
+            SNEZ(rd, rs1);       \
+        } else {                 \
+            XOR(rd, rs1, rs2);   \
+            SNEZ(rd, rd);        \
+        }                        \
+    } while (0)
+
+#define SGE(rd, rs1, rs2)      \
+    do {                       \
+        if (rs1 == xZR) {      \
+            SLTI(rd, rs2, 1);  \
+        } else {               \
+            SLT(rd, rs1, rs2); \
+            XORI(rd, rd, 1);   \
+        }                      \
+    } while (0)
+
+#define SGEU(rd, rs1, rs2)       \
+    do {                         \
+        if (rs1 == xZR) {        \
+            SEQZ(rd, rs2);       \
+        } else if (rs2 == xZR) { \
+            ADDI(rd, xZR, 1);    \
+        } else {                 \
+            SLTU(rd, rs1, rs2);  \
+            XORI(rd, rd, 1);     \
+        }                        \
+    } while (0)
+
+#define SGT(rd, rs1, rs2)  SLT(rd, rs2, rs1);
+#define SLE(rd, rs1, rs2)  SGE(rd, rs2, rs1);
+#define SGTU(rd, rs1, rs2) SLTU(rd, rs2, rs1);
+#define SLEU(rd, rs1, rs2) SGEU(rd, rs2, rs1);
+
+#define MVEQ(rd, rs1, rs2, rs3)                             \
+    if (rv64_xtheadcondmov && (rs2 == xZR || rs3 == xZR)) { \
+        TH_MVEQZ(rd, rs1, ((rs2 == xZR) ? rs3 : rs2));      \
+    } else {                                                \
+        BNE(rs2, rs3, 8);                                   \
+        MV(rd, rs1);                                        \
+    }
+#define MVNE(rd, rs1, rs2, rs3)                             \
+    if (rv64_xtheadcondmov && (rs2 == xZR || rs3 == xZR)) { \
+        TH_MVNEZ(rd, rs1, ((rs2 == xZR) ? rs3 : rs2));      \
+    } else {                                                \
+        BEQ(rs2, rs3, 8);                                   \
+        MV(rd, rs1);                                        \
+    }
+#define MVLT(rd, rs1, rs2, rs3) \
+    BGE(rs2, rs3, 8);           \
+    MV(rd, rs1);
+#define MVGE(rd, rs1, rs2, rs3) \
+    BLT(rs2, rs3, 8);           \
+    MV(rd, rs1);
+#define MVLTU(rd, rs1, rs2, rs3) \
+    BGEU(rs2, rs3, 8);           \
+    MV(rd, rs1);
+#define MVGEU(rd, rs1, rs2, rs3) \
+    BLTU(rs2, rs3, 8);           \
+    MV(rd, rs1);
+#define MVGT(rd, rs1, rs2, rs3) \
+    BGE(rs3, rs2, 8);           \
+    MV(rd, rs1);
+#define MVLE(rd, rs1, rs2, rs3) \
+    BLT(rs3, rs2, 8);           \
+    MV(rd, rs1);
+#define MVGTU(rd, rs1, rs2, rs3) \
+    BGEU(rs3, rs2, 8);           \
+    MV(rd, rs1);
+#define MVLEU(rd, rs1, rs2, rs3) \
+    BLTU(rs3, rs2, 8);           \
+    MV(rd, rs1);
+
+#define MVEQZ(rd, rs1, rs2) MVEQ(rd, rs1, rs2, xZR)
+#define MVNEZ(rd, rs1, rs2) MVNE(rd, rs1, rs2, xZR)
+
 #define BEQ_safe(rs1, rs2, imm)              \
     if ((imm) > -0x1000 && (imm) < 0x1000) { \
         BEQ(rs1, rs2, imm);                  \
@@ -672,11 +765,11 @@
 // Convert from Single to signed 32bits (truncated)
 #define FCVTWS(rd, frs1, rm) EMIT(R_type(0b1100000, 0b00000, frs1, rm, rd, 0b1010011))
 
-#define FADDS(frd, frs1, frs2) EMIT(R_type(0b0000000, frs2, frs1, 0b000, frd, 0b1010011))
-#define FSUBS(frd, frs1, frs2) EMIT(R_type(0b0000100, frs2, frs1, 0b000, frd, 0b1010011))
-#define FMULS(frd, frs1, frs2) EMIT(R_type(0b0001000, frs2, frs1, 0b000, frd, 0b1010011))
-#define FDIVS(frd, frs1, frs2) EMIT(R_type(0b0001100, frs2, frs1, 0b000, frd, 0b1010011))
-#define FSQRTS(frd, frs1)      EMIT(R_type(0b0101100, 0b00000, frs1, 0b000, frd, 0b1010011))
+#define FADDS(frd, frs1, frs2) EMIT(R_type(0b0000000, frs2, frs1, 0b111, frd, 0b1010011))
+#define FSUBS(frd, frs1, frs2) EMIT(R_type(0b0000100, frs2, frs1, 0b111, frd, 0b1010011))
+#define FMULS(frd, frs1, frs2) EMIT(R_type(0b0001000, frs2, frs1, 0b111, frd, 0b1010011))
+#define FDIVS(frd, frs1, frs2) EMIT(R_type(0b0001100, frs2, frs1, 0b111, frd, 0b1010011))
+#define FSQRTS(frd, frs1)      EMIT(R_type(0b0101100, 0b00000, frs1, 0b111, frd, 0b1010011))
 #define FMINS(frd, frs1, frs2) EMIT(R_type(0b0010100, frs2, frs1, 0b000, frd, 0b1010011))
 #define FMAXS(frd, frs1, frs2) EMIT(R_type(0b0010100, frs2, frs1, 0b001, frd, 0b1010011))
 
@@ -703,9 +796,9 @@
 // store double precision frs2 to rs1+imm12
 #define FSD(frs2, rs1, imm12) EMIT(S_type(imm12, frs2, rs1, 0b011, 0b0100111))
 // Convert Double frs1 to Single frd
-#define FCVTSD(frd, frs1) EMIT(R_type(0b0100000, 0b00001, frs1, 0b000, frd, 0b1010011))
+#define FCVTSD(frd, frs1) EMIT(R_type(0b0100000, 0b00001, frs1, 0b111, frd, 0b1010011))
 // Convert Single frs1 to Double frd
-#define FCVTDS(frd, frs1) EMIT(R_type(0b0100001, 0b00000, frs1, 0b000, frd, 0b1010011))
+#define FCVTDS(frd, frs1) EMIT(R_type(0b0100001, 0b00000, frs1, 0b111, frd, 0b1010011))
 // Convert from Double to signed 32bits
 #define FCVTWD(rd, frs1, rm) EMIT(R_type(0b1100001, 0b00000, frs1, rm, rd, 0b1010011))
 // Convert from Double to unsigned 32bits
@@ -729,11 +822,11 @@
 #define FLTD(rd, frs1, frs2) EMIT(R_type(0b1010001, frs2, frs1, 0b001, rd, 0b1010011))
 #define FLED(rd, frs1, frs2) EMIT(R_type(0b1010001, frs2, frs1, 0b000, rd, 0b1010011))
 
-#define FADDD(frd, frs1, frs2) EMIT(R_type(0b0000001, frs2, frs1, 0b000, frd, 0b1010011))
-#define FSUBD(frd, frs1, frs2) EMIT(R_type(0b0000101, frs2, frs1, 0b000, frd, 0b1010011))
-#define FMULD(frd, frs1, frs2) EMIT(R_type(0b0001001, frs2, frs1, 0b000, frd, 0b1010011))
-#define FDIVD(frd, frs1, frs2) EMIT(R_type(0b0001101, frs2, frs1, 0b000, frd, 0b1010011))
-#define FSQRTD(frd, frs1)      EMIT(R_type(0b0101101, 0b00000, frs1, 0b000, frd, 0b1010011))
+#define FADDD(frd, frs1, frs2) EMIT(R_type(0b0000001, frs2, frs1, 0b111, frd, 0b1010011))
+#define FSUBD(frd, frs1, frs2) EMIT(R_type(0b0000101, frs2, frs1, 0b111, frd, 0b1010011))
+#define FMULD(frd, frs1, frs2) EMIT(R_type(0b0001001, frs2, frs1, 0b111, frd, 0b1010011))
+#define FDIVD(frd, frs1, frs2) EMIT(R_type(0b0001101, frs2, frs1, 0b111, frd, 0b1010011))
+#define FSQRTD(frd, frs1)      EMIT(R_type(0b0101101, 0b00000, frs1, 0b111, frd, 0b1010011))
 #define FMIND(frd, frs1, frs2) EMIT(R_type(0b0010101, frs2, frs1, 0b000, frd, 0b1010011))
 #define FMAXD(frd, frs1, frs2) EMIT(R_type(0b0010101, frs2, frs1, 0b001, frd, 0b1010011))
 
@@ -755,6 +848,14 @@
 #define FCVTLDxw(rd, frs1, rm) EMIT(R_type(0b1100001, 0b00000 + (rex.w ? 0b10 : 0b00), frs1, rm, rd, 0b1010011))
 // Convert from Double to unsigned integer
 #define FCVTLUDxw(rd, frs1, rm) EMIT(R_type(0b1100001, 0b00001 + (rex.w ? 0b10 : 0b00), frs1, rm, rd, 0b1010011))
+
+#define FMV(frd, frs1, single) \
+    do {                       \
+        if (single)            \
+            FMVS(frd, frs1);   \
+        else                   \
+            FMVD(frd, frs1);   \
+    } while (0)
 
 // Zba
 //  Add unsigned word (Wz(rs1) + X(rs2))
@@ -792,44 +893,52 @@
 // Count leading zero bits in word
 #define CLZW(rd, rs) EMIT(R_type(0b0110000, 0b00000, rs, 0b001, rd, 0b0011011))
 // Count leading zero bits
-#define CLZxw(rd, rs, x, s1, s2, s3)         \
-    if (rv64_zbb) {                          \
-        if (x)                               \
-            CLZ(rd, rs);                     \
-        else                                 \
-            CLZW(rd, rs);                    \
-    } else {                                 \
-        if (rs != rd)                        \
-            u8 = rd;                         \
-        else                                 \
-            u8 = s1;                         \
-        ADDI(u8, xZR, rex.w ? 63 : 31);      \
-        if (rex.w) {                         \
-            MV(s2, rs);                      \
-            SRLI(s3, s2, 32);                \
-            BEQZ(s3, 4 + 2 * 4);             \
-            SUBI(u8, u8, 32);                \
-            MV(s2, s3);                      \
-        } else {                             \
-            ZEXTW2(s2, rs);                  \
-        }                                    \
-        SRLI(s3, s2, 16);                    \
-        BEQZ(s3, 4 + 2 * 4);                 \
-        SUBI(u8, u8, 16);                    \
-        MV(s2, s3);                          \
-        SRLI(s3, s2, 8);                     \
-        BEQZ(s3, 4 + 2 * 4);                 \
-        SUBI(u8, u8, 8);                     \
-        MV(s2, s3);                          \
-        SRLI(s3, s2, 4);                     \
-        BEQZ(s3, 4 + 2 * 4);                 \
-        SUBI(u8, u8, 4);                     \
-        MV(s2, s3);                          \
-        ANDI(s2, s2, 0b1111);                \
-        TABLE64(s3, (uintptr_t) & lead0tab); \
-        ADD(s3, s3, s2);                     \
-        LBU(s2, s3, 0);                      \
-        SUB(rd, u8, s2);                     \
+#define CLZxw(rd, rs, x, s1, s2, s3)       \
+    if (rv64_zbb) {                        \
+        if (x)                             \
+            CLZ(rd, rs);                   \
+        else                               \
+            CLZW(rd, rs);                  \
+    } else if (rv64_xtheadbb) {            \
+        if (x) {                           \
+            TH_FF1(rd, rs);                \
+        } else {                           \
+            ZEXTW2(rd, rs);                \
+            TH_FF1(rd, rd);                \
+            SUBI(rd, rd, 32);              \
+        }                                  \
+    } else {                               \
+        if (rs != rd)                      \
+            u8 = rd;                       \
+        else                               \
+            u8 = s1;                       \
+        ADDI(u8, xZR, x ? 63 : 31);        \
+        if (x) {                           \
+            MV(s2, rs);                    \
+            SRLI(s3, s2, 32);              \
+            BEQZ(s3, 4 + 2 * 4);           \
+            SUBI(u8, u8, 32);              \
+            MV(s2, s3);                    \
+        } else {                           \
+            ZEXTW2(s2, rs);                \
+        }                                  \
+        SRLI(s3, s2, 16);                  \
+        BEQZ(s3, 4 + 2 * 4);               \
+        SUBI(u8, u8, 16);                  \
+        MV(s2, s3);                        \
+        SRLI(s3, s2, 8);                   \
+        BEQZ(s3, 4 + 2 * 4);               \
+        SUBI(u8, u8, 8);                   \
+        MV(s2, s3);                        \
+        SRLI(s3, s2, 4);                   \
+        BEQZ(s3, 4 + 2 * 4);               \
+        SUBI(u8, u8, 4);                   \
+        MV(s2, s3);                        \
+        ANDI(s2, s2, 0b1111);              \
+        TABLE64(s3, (uintptr_t)&lead0tab); \
+        ADD(s3, s3, s2);                   \
+        LBU(s2, s3, 0);                    \
+        SUB(rd, u8, s2);                   \
     }
 
 // Count trailing zero bits
@@ -875,22 +984,26 @@
 // Sign-extend half-word
 #define SEXTH_(rd, rs) EMIT(R_type(0b0110000, 0b00101, rs, 0b001, rd, 0b0010011))
 // Sign-extend half-word
-#define SEXTH(rd, rs)     \
-    if (rv64_zbb)         \
-        SEXTH_(rd, rs);   \
-    else {                \
-        SLLI(rd, rs, 48); \
-        SRAI(rd, rd, 48); \
+#define SEXTH(rd, rs)          \
+    if (rv64_zbb)              \
+        SEXTH_(rd, rs);        \
+    else if (rv64_xtheadbb)    \
+        TH_EXT(rd, rs, 15, 0); \
+    else {                     \
+        SLLI(rd, rs, 48);      \
+        SRAI(rd, rd, 48);      \
     }
 // Zero-extend half-word
 #define ZEXTH_(rd, rs) EMIT(R_type(0b0000100, 0b00000, rs, 0b100, rd, 0b0111011))
 // Zero-extend half-word
-#define ZEXTH(rd, rs)     \
-    if (rv64_zbb)         \
-        ZEXTH_(rd, rs);   \
-    else {                \
-        SLLI(rd, rs, 48); \
-        SRLI(rd, rd, 48); \
+#define ZEXTH(rd, rs)           \
+    if (rv64_zbb)               \
+        ZEXTH_(rd, rs);         \
+    else if (rv64_xtheadbb)     \
+        TH_EXTU(rd, rs, 15, 0); \
+    else {                      \
+        SLLI(rd, rs, 48);       \
+        SRLI(rd, rd, 48);       \
     }
 
 // Insert low 16bits in rs to low 16bits of rd
@@ -1115,7 +1228,7 @@
 //     reg[rd][i] := 0xff
 //   else
 //     reg[rd][i] := 0
-#define TH_TSTNBZ(rd, rs1) EMIT(I_type(0b1000000000000, rs1, 0b001, rd, 0b0001011))
+#define TH_TSTNBZ(rd, rs1) EMIT(I_type(0b100000000000, rs1, 0b001, rd, 0b0001011))
 
 // XTheadBs - Single-bit instructions
 
@@ -1196,6 +1309,11 @@
 // mem[rs1+7:rs1] := rd
 #define TH_SDIB(rd, rs1, imm5, imm2) EMIT(I_type(0b011010000000 | (((imm2) & 0b11) << 5) | ((imm5) & 0x1f), rs1, 0b101, rd, 0b0001011))
 
+// Load indexed word.
+// addr := rs1 + (rs2 << imm2)
+// rd := sign_extend(mem[addr+7:addr])
+#define TH_LRD(rd, rs1, rs2, imm2) EMIT(R_type(0b0110000 | ((imm2) & 0b11), rs2, rs1, 0b100, rd, 0b0001011))
+
 // TODO
 // th.lbib rd, (rs1), imm5, imm2 Load indexed byte
 // th.lbuia rd, (rs1), imm5, imm2 Load indexed unsigned byte
@@ -1220,7 +1338,6 @@
 // th.lrhu rd, rs1, rs2, imm2 Load indexed unsigned half-word
 // th.lrw rd, rs1, rs2, imm2 Load indexed word
 // th.lrwu rd, rs1, rs2, imm2 Load indexed unsigned word
-// th.lrd rd, rs1, rs2, imm2 Load indexed double-word
 // th.srb rd, rs1, rs2, imm2 Store indexed byte
 // th.srh rd, rs1, rs2, imm2 Store indexed half-word
 // th.srw rd, rs1, rs2, imm2 Store indexed word

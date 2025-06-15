@@ -10,9 +10,8 @@
 
 #include "debug.h"
 #include "box64context.h"
-#include "dynarec.h"
+#include "box64cpu.h"
 #include "emu/x64emu_private.h"
-#include "x64run.h"
 #include "x64emu.h"
 #include "box64stack.h"
 #include "callback.h"
@@ -28,6 +27,7 @@
 #include "bridge.h"
 #include "rv64_lock.h"
 #include "gdbjit.h"
+#include "perfmap.h"
 
 #define XMM0 0
 #define X870 XMM0 + 16
@@ -217,9 +217,10 @@ static void extcache_promote_double_combined(dynarec_rv64_t* dyn, int ninst, int
         } else
             a = dyn->insts[ninst].e.combined1;
         int i = extcache_get_st_f_i64_noback(dyn, ninst, a);
-        // if(BOX64DRENV(dynarec_dump)) dynarec_log(LOG_NONE, "extcache_promote_double_combined, ninst=%d combined%c %d i=%d (stack:%d/%d)\n", ninst, (a == dyn->insts[ninst].e.combined2)?'2':'1', a ,i, dyn->insts[ninst].e.stack_push, -dyn->insts[ninst].e.stack_pop);
+        // if(dyn->need_dump) dynarec_log(LOG_NONE, "extcache_promote_double_combined, ninst=%d combined%c %d i=%d (stack:%d/%d)\n", ninst, (a == dyn->insts[ninst].e.combined2)?'2':'1', a ,i, dyn->insts[ninst].e.stack_push, -dyn->insts[ninst].e.stack_pop);
         if (i >= 0) {
             dyn->insts[ninst].e.extcache[i].t = EXT_CACHE_ST_D;
+            if (dyn->insts[ninst].x87precision) dyn->need_x87check = 2;
             if (!dyn->insts[ninst].e.barrier)
                 extcache_promote_double_internal(dyn, ninst - 1, maxinst, a - dyn->insts[ninst].e.stack_push);
             // go forward is combined is not pop'd
@@ -236,19 +237,20 @@ static void extcache_promote_double_internal(dynarec_rv64_t* dyn, int ninst, int
     while (ninst >= 0) {
         a += dyn->insts[ninst].e.stack_pop; // adjust Stack depth: add pop'd ST (going backward)
         int i = extcache_get_st_f_i64(dyn, ninst, a);
-        // if(BOX64DRENV(dynarec_dump)) dynarec_log(LOG_NONE, "extcache_promote_double_internal, ninst=%d, a=%d st=%d:%d, i=%d\n", ninst, a, dyn->insts[ninst].e.stack, dyn->insts[ninst].e.stack_next, i);
+        // if(dyn->need_dump) dynarec_log(LOG_NONE, "extcache_promote_double_internal, ninst=%d, a=%d st=%d:%d, i=%d\n", ninst, a, dyn->insts[ninst].e.stack, dyn->insts[ninst].e.stack_next, i);
         if (i < 0) return;
         dyn->insts[ninst].e.extcache[i].t = EXT_CACHE_ST_D;
+        if (dyn->insts[ninst].x87precision) dyn->need_x87check = 2;
         // check combined propagation too
         if (dyn->insts[ninst].e.combined1 || dyn->insts[ninst].e.combined2) {
             if (dyn->insts[ninst].e.swapped) {
-                // if(BOX64DRENV(dynarec_dump)) dynarec_log(LOG_NONE, "extcache_promote_double_internal, ninst=%d swapped %d/%d vs %d with st %d\n", ninst, dyn->insts[ninst].e.combined1 ,dyn->insts[ninst].e.combined2, a, dyn->insts[ninst].e.stack);
+                // if(dyn->need_dump) dynarec_log(LOG_NONE, "extcache_promote_double_internal, ninst=%d swapped %d/%d vs %d with st %d\n", ninst, dyn->insts[ninst].e.combined1 ,dyn->insts[ninst].e.combined2, a, dyn->insts[ninst].e.stack);
                 if (a == dyn->insts[ninst].e.combined1)
                     a = dyn->insts[ninst].e.combined2;
                 else if (a == dyn->insts[ninst].e.combined2)
                     a = dyn->insts[ninst].e.combined1;
             } else {
-                // if(BOX64DRENV(dynarec_dump)) dynarec_log(LOG_NONE, "extcache_promote_double_internal, ninst=%d combined %d/%d vs %d with st %d\n", ninst, dyn->insts[ninst].e.combined1 ,dyn->insts[ninst].e.combined2, a, dyn->insts[ninst].e.stack);
+                // if(dyn->need_dump) dynarec_log(LOG_NONE, "extcache_promote_double_internal, ninst=%d combined %d/%d vs %d with st %d\n", ninst, dyn->insts[ninst].e.combined1 ,dyn->insts[ninst].e.combined2, a, dyn->insts[ninst].e.stack);
                 extcache_promote_double_combined(dyn, ninst, maxinst, a);
             }
         }
@@ -264,19 +266,20 @@ static void extcache_promote_double_forward(dynarec_rv64_t* dyn, int ninst, int 
     while ((ninst != -1) && (ninst < maxinst) && (a >= 0)) {
         a += dyn->insts[ninst].e.stack_push; // // adjust Stack depth: add push'd ST (going forward)
         if ((dyn->insts[ninst].e.combined1 || dyn->insts[ninst].e.combined2) && dyn->insts[ninst].e.swapped) {
-            // if(BOX64DRENV(dynarec_dump)) dynarec_log(LOG_NONE, "extcache_promote_double_forward, ninst=%d swapped %d/%d vs %d with st %d\n", ninst, dyn->insts[ninst].e.combined1 ,dyn->insts[ninst].e.combined2, a, dyn->insts[ninst].e.stack);
+            // if(dyn->need_dump) dynarec_log(LOG_NONE, "extcache_promote_double_forward, ninst=%d swapped %d/%d vs %d with st %d\n", ninst, dyn->insts[ninst].e.combined1 ,dyn->insts[ninst].e.combined2, a, dyn->insts[ninst].e.stack);
             if (a == dyn->insts[ninst].e.combined1)
                 a = dyn->insts[ninst].e.combined2;
             else if (a == dyn->insts[ninst].e.combined2)
                 a = dyn->insts[ninst].e.combined1;
         }
         int i = extcache_get_st_f_i64_noback(dyn, ninst, a);
-        // if(BOX64DRENV(dynarec_dump)) dynarec_log(LOG_NONE, "extcache_promote_double_forward, ninst=%d, a=%d st=%d:%d(%d/%d), i=%d\n", ninst, a, dyn->insts[ninst].e.stack, dyn->insts[ninst].e.stack_next, dyn->insts[ninst].e.stack_push, -dyn->insts[ninst].e.stack_pop, i);
+        // if(dyn->need_dump) dynarec_log(LOG_NONE, "extcache_promote_double_forward, ninst=%d, a=%d st=%d:%d(%d/%d), i=%d\n", ninst, a, dyn->insts[ninst].e.stack, dyn->insts[ninst].e.stack_next, dyn->insts[ninst].e.stack_push, -dyn->insts[ninst].e.stack_pop, i);
         if (i < 0) return;
         dyn->insts[ninst].e.extcache[i].t = EXT_CACHE_ST_D;
+        if (dyn->insts[ninst].x87precision) dyn->need_x87check = 2;
         // check combined propagation too
         if ((dyn->insts[ninst].e.combined1 || dyn->insts[ninst].e.combined2) && !dyn->insts[ninst].e.swapped) {
-            // if(BOX64DRENV(dynarec_dump)) dynarec_log(LOG_NONE, "extcache_promote_double_forward, ninst=%d combined %d/%d vs %d with st %d\n", ninst, dyn->insts[ninst].e.combined1 ,dyn->insts[ninst].e.combined2, a, dyn->insts[ninst].e.stack);
+            // if(dyn->need_dump) dynarec_log(LOG_NONE, "extcache_promote_double_forward, ninst=%d combined %d/%d vs %d with st %d\n", ninst, dyn->insts[ninst].e.combined1 ,dyn->insts[ninst].e.combined2, a, dyn->insts[ninst].e.stack);
             extcache_promote_double_combined(dyn, ninst, maxinst, a);
         }
         a -= dyn->insts[ninst].e.stack_pop; // adjust Stack depth: remove pop'd ST (going forward)
@@ -292,20 +295,21 @@ static void extcache_promote_double_forward(dynarec_rv64_t* dyn, int ninst, int 
 void extcache_promote_double(dynarec_rv64_t* dyn, int ninst, int a)
 {
     int i = extcache_get_current_st_f_i64(dyn, a);
-    // if(BOX64DRENV(dynarec_dump)) dynarec_log(LOG_NONE, "extcache_promote_double, ninst=%d a=%d st=%d i=%d\n", ninst, a, dyn->e.stack, i);
+    // if(dyn->need_dump) dynarec_log(LOG_NONE, "extcache_promote_double, ninst=%d a=%d st=%d i=%d\n", ninst, a, dyn->e.stack, i);
     if (i < 0) return;
     dyn->e.extcache[i].t = EXT_CACHE_ST_D;
     dyn->insts[ninst].e.extcache[i].t = EXT_CACHE_ST_D;
+    if (dyn->insts[ninst].x87precision) dyn->need_x87check = 2;
     // check combined propagation too
     if (dyn->e.combined1 || dyn->e.combined2) {
         if (dyn->e.swapped) {
-            // if(BOX64DRENV(dynarec_dump)) dynarec_log(LOG_NONE, "extcache_promote_double, ninst=%d swapped! %d/%d vs %d\n", ninst, dyn->e.combined1 ,dyn->e.combined2, a);
+            // if(dyn->need_dump) dynarec_log(LOG_NONE, "extcache_promote_double, ninst=%d swapped! %d/%d vs %d\n", ninst, dyn->e.combined1 ,dyn->e.combined2, a);
             if (dyn->e.combined1 == a)
                 a = dyn->e.combined2;
             else if (dyn->e.combined2 == a)
                 a = dyn->e.combined1;
         } else {
-            // if(BOX64DRENV(dynarec_dump)) dynarec_log(LOG_NONE, "extcache_promote_double, ninst=%d combined! %d/%d vs %d\n", ninst, dyn->e.combined1 ,dyn->e.combined2, a);
+            // if(dyn->need_dump) dynarec_log(LOG_NONE, "extcache_promote_double, ninst=%d combined! %d/%d vs %d\n", ninst, dyn->e.combined1 ,dyn->e.combined2, a);
             if (dyn->e.combined1 == a)
                 extcache_promote_double(dyn, ninst, dyn->e.combined2);
             else if (dyn->e.combined2 == a)
@@ -591,14 +595,14 @@ int rv64_lock_cas_b(void* addr, uint8_t ref, uint8_t val)
 {
     uint32_t* aligned = (uint32_t*)(((uintptr_t)addr) & ~3);
     uint32_t tmp = *aligned;
-    return rv64_lock_cas_d(aligned, tmp, insert_byte(tmp, val, addr));
+    return rv64_lock_cas_d(aligned, insert_byte(tmp, ref, addr), insert_byte(tmp, val, addr));
 }
 
 int rv64_lock_cas_h(void* addr, uint16_t ref, uint16_t val)
 {
     uint32_t* aligned = (uint32_t*)(((uintptr_t)addr) & ~3);
     uint32_t tmp = *aligned;
-    return rv64_lock_cas_d(aligned, tmp, insert_half(tmp, val, addr));
+    return rv64_lock_cas_d(aligned, insert_half(tmp, ref, addr), insert_half(tmp, val, addr));
 }
 
 
@@ -698,10 +702,10 @@ static register_mapping_t register_mappings[] = {
 void printf_x64_instruction(dynarec_native_t* dyn, zydis_dec_t* dec, instruction_x64_t* inst, const char* name);
 void inst_name_pass3(dynarec_native_t* dyn, int ninst, const char* name, rex_t rex)
 {
-    if (!BOX64DRENV(dynarec_dump) && !BOX64ENV(dynarec_gdbjit) && !BOX64ENV(dynarec_perf_map)) return;
+    if (!dyn->need_dump && !BOX64ENV(dynarec_gdbjit) && !BOX64ENV(dynarec_perf_map)) return;
 
-    static char buf[256];
-    int length = sprintf(buf, "barrier=%d state=%d/%d(%d), %s=%X/%X, use=%X, need=%X/%X, fuse=%d, sm=%d(%d/%d), sew@entry=%d, sew@exit=%d",
+    static char buf[4096];
+    int length = sprintf(buf, "barrier=%d state=%d/%d(%d), %s=%X/%X, use=%X, need=%X/%X, fuse=%d/%d, sm=%d(%d/%d), sew@entry=%d, sew@exit=%d",
         dyn->insts[ninst].x64.barrier,
         dyn->insts[ninst].x64.state_flags,
         dyn->f.pending,
@@ -713,6 +717,7 @@ void inst_name_pass3(dynarec_native_t* dyn, int ninst, const char* name, rex_t r
         dyn->insts[ninst].x64.need_before,
         dyn->insts[ninst].x64.need_after,
         dyn->insts[ninst].nat_flags_fusion,
+        dyn->insts[ninst].no_scratch_usage,
         dyn->smwrite, dyn->insts[ninst].will_write, dyn->insts[ninst].last_write,
         dyn->insts[ninst].vector_sew_entry, dyn->insts[ninst].vector_sew_exit);
     if (dyn->insts[ninst].pred_sz) {
@@ -751,11 +756,11 @@ void inst_name_pass3(dynarec_native_t* dyn, int ninst, const char* name, rex_t r
     if (dyn->insts[ninst].e.combined1 || dyn->insts[ninst].e.combined2)
         length += sprintf(buf + length, " %s:%d/%d", dyn->insts[ninst].e.swapped ? "SWP" : "CMB", dyn->insts[ninst].e.combined1, dyn->insts[ninst].e.combined2);
 
-    if (BOX64DRENV(dynarec_dump)) {
+    if (dyn->need_dump) {
         printf_x64_instruction(dyn, rex.is32bits ? my_context->dec32 : my_context->dec, &dyn->insts[ninst].x64, name);
         dynarec_log(LOG_NONE, "%s%p: %d emitted opcodes, inst=%d, %s%s\n",
-            (BOX64DRENV(dynarec_dump) > 1) ? "\e[32m" : "",
-            (void*)(dyn->native_start + dyn->insts[ninst].address), dyn->insts[ninst].size / 4, ninst, buf, (BOX64DRENV(dynarec_dump) > 1) ? "\e[m" : "");
+            (dyn->need_dump > 1) ? "\e[32m" : "",
+            (void*)(dyn->native_start + dyn->insts[ninst].address), dyn->insts[ninst].size / 4, ninst, buf, (dyn->need_dump > 1) ? "\e[m" : "");
     }
     if (BOX64ENV(dynarec_gdbjit)) {
         static char buf2[512];
@@ -775,6 +780,7 @@ void inst_name_pass3(dynarec_native_t* dyn, int ninst, const char* name, rex_t r
     if (BOX64ENV(dynarec_perf_map) && BOX64ENV(dynarec_perf_map_fd) != -1) {
         writePerfMap(dyn->insts[ninst].x64.addr, dyn->native_start + dyn->insts[ninst].address, dyn->insts[ninst].size / 4, name);
     }
+    if (length > sizeof(buf)) printf_log(LOG_NONE, "Warning: buf to small in inst_name_pass3 (%d vs %zd)\n", length, sizeof(buf));
 }
 
 void print_opcode(dynarec_native_t* dyn, int ninst, uint32_t opcode)
@@ -785,9 +791,9 @@ void print_opcode(dynarec_native_t* dyn, int ninst, uint32_t opcode)
 void print_newinst(dynarec_native_t* dyn, int ninst)
 {
     dynarec_log(LOG_NONE, "%sNew instruction %d, native=%p (0x%x)%s\n",
-        (BOX64DRENV(dynarec_dump) > 1) ? "\e[4;32m" : "",
+        (dyn->need_dump > 1) ? "\e[4;32m" : "",
         ninst, dyn->block, dyn->native_size,
-        (BOX64DRENV(dynarec_dump) > 1) ? "\e[m" : "");
+        (dyn->need_dump > 1) ? "\e[m" : "");
 }
 
 // x87 stuffs
@@ -854,15 +860,27 @@ void updateNativeFlags(dynarec_rv64_t* dyn)
         return;
     for (int i = 1; i < dyn->size; ++i)
         if (dyn->insts[i].nat_flags_fusion) {
-            if (dyn->insts[i].pred_sz == 1 && dyn->insts[i].pred[0] == i - 1
-                && (dyn->insts[i].x64.use_flags & dyn->insts[i - 1].x64.set_flags) == dyn->insts[i].x64.use_flags) {
-                dyn->insts[i - 1].nat_flags_fusion = 1;
-                if (dyn->insts[i].x64.use_flags & X_SF) {
-                    dyn->insts[i - 1].nat_flags_needsign = 1;
+            int j = i - 1;
+            int found = 0;
+            if (dyn->insts[i].pred_sz == 1 && dyn->insts[i].pred[0] == j) {
+                while (j >= 0) {
+                    if (dyn->insts[j].x64.set_flags && (dyn->insts[i].x64.use_flags & dyn->insts[j].x64.set_flags) == dyn->insts[i].x64.use_flags) {
+                        dyn->insts[j].nat_flags_fusion = 1;
+                        if (dyn->insts[i].x64.use_flags & X_SF) {
+                            dyn->insts[j].nat_flags_needsign = 1;
+                        }
+                        dyn->insts[i].x64.use_flags = 0;
+                        dyn->insts[j].nat_next_inst = i;
+                        found = 1;
+                        break;
+                    } else if (j && dyn->insts[j].pred_sz == 1 && dyn->insts[j].pred[0] == j - 1
+                        && dyn->insts[j].no_scratch_usage && !dyn->insts[j].x64.set_flags && !dyn->insts[j].x64.use_flags) {
+                        j -= 1;
+                    } else
+                        break;
                 }
-                dyn->insts[i].x64.use_flags = 0;
-            } else
-                dyn->insts[i].nat_flags_fusion = 0;
+            }
+            if (!found) dyn->insts[i].nat_flags_fusion = 0;
         }
 }
 

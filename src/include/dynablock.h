@@ -21,4 +21,10 @@ dynablock_t* DBAlternateBlock(x64emu_t* emu, uintptr_t addr, uintptr_t filladdr,
 // for use in signal handler
 void cancelFillBlock(void);
 
+// clear instruction cache on a range
+void ClearCache(void* start, size_t len);
+
+uintptr_t getX64Address(dynablock_t* db, uintptr_t native_addr);
+int getX64AddressInst(dynablock_t* db, uintptr_t x64pc);
+
 #endif //__DYNABLOCK_H_

@@ -2,23 +2,23 @@
 #include <stdlib.h>
 #include <stddef.h>
 #include <errno.h>
-#include <signal.h>
 
+#include "os.h"
 #include "debug.h"
 #include "box64context.h"
-#include "dynarec.h"
+#include "box64cpu.h"
 #include "emu/x64emu_private.h"
 #include "emu/x64run_private.h"
-#include "x64run.h"
 #include "x64emu.h"
 #include "box64stack.h"
 #include "callback.h"
 #include "bridge.h"
-#include "emu/x64run_private.h"
 #include "x64trace.h"
 #include "dynarec_native.h"
+#include "../dynablock_private.h"
 #include "custommem.h"
-
+#include "alternate.h"
+#include "mysignal.h"
 #include "arm64_printer.h"
 #include "dynarec_arm64_private.h"
 #include "dynarec_arm64_functions.h"
@@ -1442,6 +1442,7 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                 MOVxw_REG(TO_NAT((nextop & 7) + (rex.b << 3)), gd);
             } else {                    // mem <= reg
                 IF_UNALIGNED(ip) {
+                    MESSAGE(LOG_DEBUG, "\tUnaligned path");
                     addr = geted(dyn, addr, ninst, nextop, &wback, x2, &fixedaddress, NULL, 0, 0, rex, &lock, 0, 0);
                     if(gd==wback) {
                         MOVx_REG(x2, wback);
@@ -1559,15 +1560,9 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                 POP1z(TO_NAT((nextop & 7) + (rex.b << 3)));
             } else {
                 POP1z(x2); // so this can handle POP [ESP] and maybe some variant too
-                addr = geted(dyn, addr, ninst, nextop, &ed, x1, &fixedaddress, &unscaled, 0xfff<<3, 7, rex, NULL, 0, 0);
-                if(ed==xRSP) {
-                    STz(x2, ed, fixedaddress);
-                } else {
-                    // complicated to just allow a segfault that can be recovered correctly
-                    SUBz_U12(xRSP, xRSP, rex.is32bits?4:8);
-                    STz(x2, ed, fixedaddress);
-                    ADDz_U12(xRSP, xRSP, rex.is32bits?4:8);
-                }
+                addr = geted(dyn, addr, ninst, nextop, &ed, x1, &fixedaddress, &unscaled, 0xfff<<(2+rex.is32bits), (1<<(2+rex.is32bits))-1, rex, NULL, 0, 0);
+                STz(x2, ed, fixedaddress);
+                SMWRITE();
             }
             break;
         case 0x90:
@@ -1705,6 +1700,7 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                 CBZx_NEXT(xRCX);
                 TBNZ_MARK2(xFlags, F_DF);
                 IF_UNALIGNED(ip) {
+                    MESSAGE(LOG_DEBUG, "\tUnaligned path");
                     // special optim for large RCX value on forward case only
                     // but because it's unaligned path, check if a byte per byt is needed, and do 4-bytes per 4-bytes only instead
                     if(BOX64DRENV(dynarec_safeflags)) {
@@ -1716,8 +1712,8 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                     ANDw_mask(x1, x1, 0, 1);    //mask = 3
                     CBNZw_MARK(x1);
                     MARK3;
-                    CMPSx_U12(xRCX, 4);
-                    B_MARK(cCC);
+                    ANDx_mask(x1, xRCX, 1, 0b111110, 0b111101); // mask=0xfffffffffffffffc, so ~3LL
+                    CBZx_MARK(x1);  // xRCX<4
                     LDRw_S9_postindex(x1, xRSI, 4);
                     STRw_S9_postindex(x1, xRDI, 4);
                     SUBx_U12(xRCX, xRCX, 4);
@@ -1731,8 +1727,8 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                     }
                     // special optim for large RCX value on forward case only
                     MARK3;
-                    CMPSx_U12(xRCX, 8);
-                    B_MARK(cCC);
+                    ANDx_mask(x1, xRCX, 1, 0b111101, 0b111100); // mask=0xfffffffffffffff8, so ~7LL
+                    CBZx_MARK(x1);  // xRCX<8
                     LDRx_S9_postindex(x1, xRSI, 8);
                     STRx_S9_postindex(x1, xRDI, 8);
                     SUBx_U12(xRCX, xRCX, 8);
@@ -1897,16 +1893,46 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                 INST_NAME("REP STOSB");
                 CBZx_NEXT(xRCX);
                 TBNZ_MARK2(xFlags, F_DF);
+                IF_UNALIGNED(ip) {
+                    MESSAGE(LOG_DEBUG, "\tUnaligned path");
+                    // special optim for large RCX value on forward case only
+                    // but because it's unaligned path, check if a byte per byt is needed, and do 4-bytes per 4-bytes only instead
+                    ANDw_mask(x1, xRDI, 0, 1);    //mask = 3
+                    CBNZw_MARK(x1);
+                    UXTBw(x3, xRAX);    // prepare x3
+                    ORRw_REG_LSL(x3, x3, x3, 8);
+                    ORRw_REG_LSL(x3, x3, x3, 16);   // 4bytes ready
+                    MARK3;
+                    ANDx_mask(x1, xRCX, 1, 0b111110, 0b111101); // mask=0xfffffffffffffffc, so ~3LL
+                    CBZx_MARK(x1);  // xRCX<4
+                    STRw_S9_postindex(x3, xRDI, 4);
+                    SUBx_U12(xRCX, xRCX, 4);
+                    CBNZx_MARK3(xRCX);
+                    CBZx_MARKLOCK(xRCX);
+                } else {
+                    // special optim for large RCX value on forward case only
+                    UXTBw(x3, xRAX);    // prepare x3
+                    ORRw_REG_LSL(x3, x3, x3, 8);
+                    ORRw_REG_LSL(x3, x3, x3, 16);
+                    ORRx_REG_LSL(x3, x3, x3, 32);   // 8 bytes...
+                    MARK3;
+                    ANDx_mask(x1, xRCX, 1, 0b111101, 0b111100); // mask=0xfffffffffffffff8, so ~7LL
+                    CBZx_MARK(x1);  // xRCX<8
+                    STRx_S9_postindex(x3, xRDI, 8);
+                    SUBx_U12(xRCX, xRCX, 8);
+                    CBNZx_MARK3(xRCX);
+                    CBZx_MARKLOCK(xRCX);
+                }
                 MARK;   // Part with DF==0
                 STRB_S9_postindex(xRAX, xRDI, 1);
                 SUBx_U12(xRCX, xRCX, 1);
                 CBNZx_MARK(xRCX);
-                B_MARK3_nocond;
+                B_MARKLOCK_nocond;
                 MARK2;  // Part with DF==1
                 STRB_S9_postindex(xRAX, xRDI, -1);
                 SUBx_U12(xRCX, xRCX, 1);
                 CBNZx_MARK2(xRCX);
-                MARK3;
+                MARKLOCK;
                 // done
             } else {
                 INST_NAME("STOSB");
@@ -2361,7 +2387,7 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
             }
             fpu_purgecache(dyn, ninst, 1, x1, x2, x3);  // using next, even if there no next
             i32 = F16;
-            retn_to_epilog(dyn, ninst, rex, i32);
+            retn_to_epilog(dyn, ip, ninst, rex, i32);
             *need_epilog = 0;
             *ok = 0;
             break;
@@ -2372,7 +2398,7 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                 READFLAGS(X_PEND);  // so instead, force the deferred flags, so it's not too slow, and flags are not lost
             }
             fpu_purgecache(dyn, ninst, 1, x1, x2, x3);  // using next, even if there no next
-            ret_to_epilog(dyn, ninst, rex);
+            ret_to_epilog(dyn, ip, ninst, rex);
             *need_epilog = 0;
             *ok = 0;
             break;
@@ -2463,6 +2489,7 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                 MOV64xw(ed, i64);
             } else {                    // mem <= i32
                 IF_UNALIGNED(ip) {
+                    MESSAGE(LOG_DEBUG, "\tUnaligned path");
                     addr = geted(dyn, addr, ninst, nextop, &wback, x2, &fixedaddress, NULL, 0, 0, rex, &lock, 0, 4);
                     i64 = F32S;
                     if(i64) {
@@ -2549,7 +2576,7 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
         case 0xCC:
             SETFLAGS(X_ALL, SF_SET_NODF);    // Hack, set all flags (to an unknown state...)
             NOTEST(x1);
-            if(PK(0)=='S' && PK(1)=='C') {
+            if (IsBridgeSignature(PK(0), PK(1))) {
                 addr+=2;
                 //BARRIER(BARRIER_FLOAT);
                 INST_NAME("Special Box64 instruction");
@@ -2564,7 +2591,7 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                     *ok = 0;
                     *need_epilog = 1;
                 } else {
-                    MESSAGE(LOG_DUMP, "Native Call to %s\n", getBridgeName((void*)ip)?:GetNativeName(GetNativeFnc(ip)));
+                    MESSAGE(LOG_DUMP, "Native Call to %s\n", GetBridgeName((void*)ip) ?: GetNativeName(GetNativeFnc(ip)));
                     x87_stackcount(dyn, ninst, x1);
                     x87_forget(dyn, ninst, x3, x4, 0);
                     sse_purge07cache(dyn, ninst, x3);
@@ -2580,9 +2607,9 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                     } else {
                         GETIP(ip+1); // read the 0xCC
                         STORE_XEMU_CALL(xRIP);
-                        ADDx_U12(x3, xRIP, 8+8);    // expected return address
+                        ADDx_U12(x3, xRIP, 8+8+2);    // expected return address
                         ADDx_U12(x1, xEmu, (uint32_t)offsetof(x64emu_t, ip)); // setup addr as &emu->ip
-                        CALL_(x64Int3, -1, x3);
+                        CALL_(EmuInt3, -1, x3);
                         SMWRITE2();
                         LOAD_XEMU_CALL(xRIP);
                         addr+=8+8;
@@ -2619,22 +2646,47 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
             break;
         case 0xCD:
             u8 = F8;
-            if(box64_wine && (u8==0x2D || u8==0x2C || u8==0x29)) {
-                INST_NAME("INT 29/2c/2d");
+            #ifdef _WIN32
+            NOTEST(x1);
+            SMEND();
+            GETIP(ip);
+            STORE_XEMU_CALL(xRIP);
+            MOV32w(x1, u8);
+            CALL_S(native_int, -1);
+            LOAD_XEMU_CALL(xRIP);
+            TABLE64(x3, addr); // expected return address
+            CMPSx_REG(xRIP, x3);
+            B_MARK(cNE);
+            LDRw_U12(w1, xEmu, offsetof(x64emu_t, quit));
+            CBZw_NEXT(w1);
+            MARK;
+            LOAD_XEMU_REM();
+            jump_to_epilog(dyn, 0, xRIP, ninst);
+            #else
+            if(box64_wine && (u8==0x2E || u8==0x2D || u8==0x2C || u8==0x29)) {
+                INST_NAME("INT 29/2c/2d/2e");
                 // lets do nothing
-                MESSAGE(LOG_INFO, "INT 29/2c/2d Windows interruption\n");
+                MESSAGE(LOG_INFO, "INT 29/2c/2d/2e Windows interruption\n");
                 GETIP(ip);  // priviledged instruction, IP not updated
                 STORE_XEMU_CALL(xRIP);
                 MOV32w(x1, u8);
                 CALL(native_int, -1);
                 LOAD_XEMU_CALL(xRIP);
+                LOAD_XEMU_REM();
+                TABLE64(x3, addr); // expected return address
+                CMPSx_REG(xRIP, x3);
+                B_MARK(cNE);
+                LDRw_U12(w1, xEmu, offsetof(x64emu_t, quit));
+                CBZw_NEXT(w1);
+                MARK;
+                jump_to_epilog(dyn, 0, xRIP, ninst);
             } else if (u8==0x80) {
                 INST_NAME("32bits SYSCALL");
                 NOTEST(x1);
                 SMEND();
                 GETIP(addr);
                 STORE_XEMU_CALL(xRIP);
-                CALL_S(x86Syscall, -1);
+                CALL_S(EmuX86Syscall, -1);
                 LOAD_XEMU_CALL(xRIP);
                 TABLE64(x3, addr); // expected return address
                 CMPSx_REG(xRIP, x3);
@@ -2678,6 +2730,7 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                 *need_epilog = 0;
                 *ok = 0;
             }
+            #endif
             break;
         case 0xCE:
             if(!rex.is32bits) {
@@ -2697,7 +2750,7 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
             INST_NAME("IRET");
             SETFLAGS(X_ALL, SF_SET_NODF);    // Not a hack, EFLAGS are restored
             BARRIER(BARRIER_FLOAT);
-            iret_to_epilog(dyn, ninst, rex.is32bits, rex.w);
+            iret_to_epilog(dyn, ip, ninst, rex.is32bits, rex.w);
             *need_epilog = 0;
             *ok = 0;
             break;
@@ -3312,7 +3365,7 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                 #endif
             }
             #if STEP < 2
-            if(!rex.is32bits && isNativeCall(dyn, addr+i32, rex.is32bits, &dyn->insts[ninst].natcall, &dyn->insts[ninst].retn))
+            if (!rex.is32bits && IsNativeCall(addr + i32, rex.is32bits, &dyn->insts[ninst].natcall, &dyn->insts[ninst].retn))
                 tmp = dyn->insts[ninst].pass2choice = 3;
             else
                 tmp = dyn->insts[ninst].pass2choice = i32?0:1;
@@ -3328,7 +3381,7 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                         MOV64x(x2, addr);
                     }
                     PUSH1(x2);
-                    MESSAGE(LOG_DUMP, "Native Call to %s (retn=%d)\n", getBridgeName((void*)(dyn->insts[ninst].natcall-1))?:GetNativeName(GetNativeFnc(dyn->insts[ninst].natcall-1)), dyn->insts[ninst].retn);
+                    MESSAGE(LOG_DUMP, "Native Call to %s (retn=%d)\n", GetBridgeName((void*)(dyn->insts[ninst].natcall - 1)) ?: GetNativeName(GetNativeFnc(dyn->insts[ninst].natcall - 1)), dyn->insts[ninst].retn);
                     SKIPTEST(x1);    // disable test as this hack dos 2 instructions for 1
                     // calling a native function
                     SMEND();
@@ -3350,7 +3403,7 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                         GETIP_(dyn->insts[ninst].natcall); // read the 0xCC already
                         STORE_XEMU_CALL(xRIP);
                         ADDx_U12(x1, xEmu, (uint32_t)offsetof(x64emu_t, ip)); // setup addr as &emu->ip
-                        CALL_S(x64Int3, -1);
+                        CALL_S(EmuInt3, -1);
                         SMWRITE2();
                         LOAD_XEMU_CALL(xRIP);
                         MOV64x(x3, dyn->insts[ninst].natcall);
@@ -3389,11 +3442,17 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                         // Push actual return address
                         if(addr < (dyn->start+dyn->isize)) {
                             // there is a next...
-                            j64 = (dyn->insts)?(dyn->insts[ninst].epilog-(dyn->native_size)):0;
+                            if(BOX64DRENV(dynarec_callret)>1)
+                                j64 = CALLRET_GETRET();
+                            else
+                                j64 = (dyn->insts)?(dyn->insts[ninst].epilog-(dyn->native_size)):0;
                             ADR_S20(x4, j64);
                             MESSAGE(LOG_NONE, "\tCALLRET set return to +%di\n", j64>>2);
                         } else {
-                            j64 = (dyn->insts)?(GETMARK-(dyn->native_size)):0;
+                            if(BOX64DRENV(dynarec_callret)>1)
+                                j64 = CALLRET_GETRET();
+                            else
+                                j64 = (dyn->insts)?(GETMARK-(dyn->native_size)):0;
                             ADR_S20(x4, j64);
                             MESSAGE(LOG_NONE, "\tCALLRET set return to +%di\n", j64>>2);
                         }
@@ -3407,6 +3466,7 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                     else
                         j64 = addr+i32;
                     jump_to_next(dyn, j64, 0, ninst, rex.is32bits);
+                    if(BOX64DRENV(dynarec_callret)>1) CALLRET_RET();
                     if (BOX64DRENV(dynarec_callret) && addr >= (dyn->start + dyn->isize)) {
                         // jumps out of current dynablock...
                         MARK;
@@ -3650,7 +3710,7 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                     if(!BOX64ENV(dynarec_safeflags)) {
                         SETFLAGS(X_ALL, SF_SET);
                     } else if(BOX64ENV(cputype)) {
-                        SETFLAGS(X_SF|X_PF|X_ZF|X_AF, SF_SET);
+                        SETFLAGS(X_SF|X_PF|X_ZF|X_AF, SF_SUBSET);
                     }
                     GETSEB(x1, 0);
                     if(BOX64ENV(dynarec_div0)) {
@@ -4049,7 +4109,10 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                         // Push actual return address
                         if(addr < (dyn->start+dyn->isize)) {
                             // there is a next...
-                            j64 = (dyn->insts)?(dyn->insts[ninst].epilog-(dyn->native_size)):0;
+                            if(BOX64DRENV(dynarec_callret)>1)
+                                j64 = CALLRET_GETRET();
+                            else
+                                j64 = (dyn->insts)?(dyn->insts[ninst].epilog-(dyn->native_size)):0;
                             ADR_S20(x4, j64);
                             MESSAGE(LOG_NONE, "\tCALLRET set return to +%di\n", j64>>2);
                         } else {
@@ -4061,6 +4124,7 @@ uintptr_t dynarec64_00(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                     }
                     PUSH1z(xRIP);
                     jump_to_next(dyn, 0, ed, ninst, rex.is32bits);
+                    if(BOX64DRENV(dynarec_callret)>1) CALLRET_RET();
                     if (BOX64DRENV(dynarec_callret) && addr >= (dyn->start + dyn->isize)) {
                         // jumps out of current dynablock...
                         MARK;

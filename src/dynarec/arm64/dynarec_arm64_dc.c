@@ -5,10 +5,8 @@
 
 #include "debug.h"
 #include "box64context.h"
-#include "dynarec.h"
+#include "box64cpu.h"
 #include "emu/x64emu_private.h"
-#include "emu/x64run_private.h"
-#include "x64run.h"
 #include "x64emu.h"
 #include "box64stack.h"
 #include "callback.h"
@@ -57,6 +55,7 @@ uintptr_t dynarec64_DC(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
             } else {
                 FADDD(v1, v1, v2);
             }
+            X87_CHECK_PRECISION(v1);
             if(!BOX64ENV(dynarec_fastround))
                 x87_restoreround(dyn, ninst, u8);
             break;
@@ -78,6 +77,7 @@ uintptr_t dynarec64_DC(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
             } else {
                 FMULD(v1, v1, v2);
             }
+            X87_CHECK_PRECISION(v1);
             if(!BOX64ENV(dynarec_fastround))
                 x87_restoreround(dyn, ninst, u8);
             break;
@@ -136,6 +136,7 @@ uintptr_t dynarec64_DC(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
             } else {
                 FSUBD(v1, v2, v1);
             }
+            X87_CHECK_PRECISION(v1);
             if(!BOX64ENV(dynarec_fastround))
                 x87_restoreround(dyn, ninst, u8);
             break;
@@ -157,6 +158,7 @@ uintptr_t dynarec64_DC(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
             } else {
                 FSUBD(v1, v1, v2);
             }
+            X87_CHECK_PRECISION(v1);
             if(!BOX64ENV(dynarec_fastround))
                 x87_restoreround(dyn, ninst, u8);
             break;
@@ -178,6 +180,7 @@ uintptr_t dynarec64_DC(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
             } else {
                 FDIVD(v1, v2, v1);
             }
+            X87_CHECK_PRECISION(v1);
             if(!BOX64ENV(dynarec_fastround))
                 x87_restoreround(dyn, ninst, u8);
             break;
@@ -199,6 +202,7 @@ uintptr_t dynarec64_DC(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
             } else {
                 FDIVD(v1, v1, v2);
             }
+            X87_CHECK_PRECISION(v1);
             if(!BOX64ENV(dynarec_fastround))
                 x87_restoreround(dyn, ninst, u8);
             break;
@@ -216,6 +220,7 @@ uintptr_t dynarec64_DC(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                 if(!BOX64ENV(dynarec_fastround))
                     u8 = x87_setround(dyn, ninst, x1, x2, x4);
                 FADDD(v1, v1, v2);
+                X87_CHECK_PRECISION(v1);
                 if(!BOX64ENV(dynarec_fastround))
                     x87_restoreround(dyn, ninst, u8);
                 break;
@@ -228,6 +233,7 @@ uintptr_t dynarec64_DC(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                 if(!BOX64ENV(dynarec_fastround))
                     u8 = x87_setround(dyn, ninst, x1, x2, x4);
                 FMULD(v1, v1, v2);
+                X87_CHECK_PRECISION(v1);
                 if(!BOX64ENV(dynarec_fastround))
                     x87_restoreround(dyn, ninst, u8);
                 break;
@@ -259,6 +265,7 @@ uintptr_t dynarec64_DC(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                 if(!BOX64ENV(dynarec_fastround))
                     u8 = x87_setround(dyn, ninst, x1, x2, x4);
                 FSUBD(v1, v1, v2);
+                X87_CHECK_PRECISION(v1);
                 if(!BOX64ENV(dynarec_fastround))
                     x87_restoreround(dyn, ninst, u8);
                 break;
@@ -271,6 +278,7 @@ uintptr_t dynarec64_DC(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                 if(!BOX64ENV(dynarec_fastround))
                     u8 = x87_setround(dyn, ninst, x1, x2, x4);
                 FSUBD(v1, v2, v1);
+                X87_CHECK_PRECISION(v1);
                 if(!BOX64ENV(dynarec_fastround))
                     x87_restoreround(dyn, ninst, u8);
                 break;
@@ -283,6 +291,7 @@ uintptr_t dynarec64_DC(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                 if(!BOX64ENV(dynarec_fastround))
                     u8 = x87_setround(dyn, ninst, x1, x2, x4);
                 FDIVD(v1, v1, v2);
+                X87_CHECK_PRECISION(v1);
                 if(!BOX64ENV(dynarec_fastround))
                     x87_restoreround(dyn, ninst, u8);
                 break;
@@ -295,6 +304,7 @@ uintptr_t dynarec64_DC(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                 if(!BOX64ENV(dynarec_fastround))
                     u8 = x87_setround(dyn, ninst, x1, x2, x4);
                 FDIVD(v1, v2, v1);
+                X87_CHECK_PRECISION(v1);
                 if(!BOX64ENV(dynarec_fastround))
                     x87_restoreround(dyn, ninst, u8);
                 break;

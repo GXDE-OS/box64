@@ -12,7 +12,9 @@
 #include <sys/mman.h>
 #include <pthread.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 #include <stdarg.h>
+#include <ctype.h>
 #ifdef DYNAREC
 #ifdef ARM64
 #include <linux/auxvec.h>
@@ -23,26 +25,30 @@
 #include <fcntl.h>
 #endif
 
+#include "os.h"
 #include "build_info.h"
 #include "debug.h"
 #include "fileutils.h"
 #include "box64context.h"
+#include "box64cpu.h"
+#include "box64cpu_util.h"
 #include "wine_tools.h"
 #include "elfloader.h"
 #include "custommem.h"
 #include "box64stack.h"
 #include "auxval.h"
-#include "x64emu.h"
 #include "threads.h"
 #include "x64trace.h"
 #include "librarian.h"
-#include "x64run.h"
 #include "symbols.h"
 #include "emu/x64run_private.h"
 #include "elfs/elfloader_private.h"
+#include "x64emu.h"
 #include "library.h"
 #include "core.h"
 #include "env.h"
+#include "cleanup.h"
+#include "freq.h"
 
 box64context_t *my_context = NULL;
 extern box64env_t box64env;
@@ -182,37 +188,10 @@ void openFTrace(int reopen)
                     printf("BOX64 Trace %s to \"%s\"\n", append?"appended":"redirected", p);
                     box64_stdout_no_w = 1;
                 }
-                PrintBox64Version();
+                PrintBox64Version(0);
             }
         }
     }
-}
-
-void printf_ftrace(int prefix, const char* fmt, ...)
-{
-    if(ftrace_name) {
-        int fd = fileno(ftrace);
-        if(fd<0 || lseek(fd, 0, SEEK_CUR)==(off_t)-1) {
-            ftrace=fopen(ftrace_name, "a");
-            printf_log(LOG_INFO, "%04d|Recreated trace because fd was invalid\n", GetTID());
-        }
-    }
-
-    va_list args;
-    va_start(args, fmt);
-    if (prefix && ftrace == stdout) {
-        if (prefix > 1) {
-            fprintf(ftrace, "[\033[31m%s\033[0m] ",
-                box64_is32bits ? "BOX32" : "BOX64");
-        } else {
-            fprintf(ftrace, box64_is32bits ? "[BOX32] " : "[BOX64] ");
-        }
-    }
-    vfprintf(ftrace, fmt, args);
-
-    fflush(ftrace);
-
-    va_end(args);
 }
 
 void my_prepare_fork()
@@ -566,11 +545,69 @@ void AddNewLibs(const char* list)
 }
 
 void PrintHelp() {
-    printf_ftrace(1, "This is Box64, the Linux x86_64 emulator with a twist.\n");
-    printf_ftrace(1, "Usage is 'box64 [options] path/to/software [args]' to launch x86_64 software.\n");
-    printf_ftrace(1, " options are:\n");
-    printf_ftrace(1, "    '-v'|'--version' to print box64 version and quit\n");
-    printf_ftrace(1, "    '-h'|'--help' to print this and quit\n");
+    PrintfFtrace(0, "This is Box64, the Linux x86_64 emulator with a twist.\n");
+    PrintfFtrace(0, "Usage is 'box64 [options] path/to/software [args]' to launch x86_64 software.\n");
+    PrintfFtrace(0, " options are:\n");
+    PrintfFtrace(0, "    '-v'|'--version' to print box64 version and quit\n");
+    PrintfFtrace(0, "    '-h'|'--help' to print this and quit\n");
+    PrintfFtrace(0, "    '-k'|'--kill-all' to kill all box64 instances\n");
+}
+
+void KillAllInstances()
+{
+
+    struct dirent* entry;
+    ssize_t len;
+    char proc_path[PATH_MAX];
+    char exe_path[PATH_MAX];
+    char exe_target[PATH_MAX];
+    char self_name[PATH_MAX];
+    char self_name_with_deleted[PATH_MAX];
+
+    DIR* proc_dir = opendir("/proc");
+    if (proc_dir == NULL) {
+        perror("opendir(/proc)");
+        return;
+    }
+
+    ssize_t self_len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    if (self_len == -1) {
+        perror("readlink(/proc/self/exe)");
+        closedir(proc_dir);
+        return;
+    }
+    exe_path[self_len] = '\0';
+
+    char* base_name_self = strrchr(exe_path, '/');
+    base_name_self = base_name_self ? base_name_self + 1 : exe_path;
+    strncpy(self_name, base_name_self, sizeof(self_name));
+    self_name[sizeof(self_name) - 1] = '\0';
+
+    snprintf(self_name_with_deleted, sizeof(self_name_with_deleted), "%s (deleted)", self_name);
+
+    const pid_t self = getpid();
+    while (entry = readdir(proc_dir)) {
+        const pid_t pid = atoi(entry->d_name);
+        if (!pid || pid == self) continue;
+
+        snprintf(proc_path, sizeof(proc_path), "/proc/%s", entry->d_name);
+        struct stat statbuf;
+        if (stat(proc_path, &statbuf) == -1 || !S_ISDIR(statbuf.st_mode)) continue;
+        snprintf(exe_path, sizeof(exe_path), "%s/exe", proc_path);
+        ssize_t len = readlink(exe_path, exe_target, sizeof(exe_target) - 1);
+        if (len == -1) continue;
+        exe_target[len] = '\0';
+        char* base_name = strrchr(exe_target, '/');
+        base_name = base_name ? base_name + 1 : exe_target;
+        if (strcmp(base_name, self_name) != 0 && strcmp(base_name, self_name_with_deleted) != 0) continue;
+
+        if (!kill(pid, SIGKILL)) {
+            printf_log(LOG_INFO, "Killed box64 process %d\n", pid);
+        } else {
+            printf_log(LOG_INFO, "Failed to kill box64 process %d: %s\n", pid, strerror(errno));
+        }
+    }
+    closedir(proc_dir);
 }
 
 static void addLibPaths(box64context_t* context)
@@ -891,12 +928,12 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
     init_auxval(argc, argv, environ?environ:env);
     // analogue to QEMU_VERSION in qemu-user-mode emulation
     if(getenv("BOX64_VERSION")) {
-        PrintBox64Version();
+        PrintBox64Version(0);
         exit(0);
     }
     // trying to open and load 1st arg
     if(argc==1) {
-        /*PrintBox64Version();
+        /*PrintBox64Version(1);
         PrintHelp();
         return 1;*/
         printf("[BOX64] Missing operand after 'box64'\n");
@@ -917,19 +954,20 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
     LoadEnvVariables();
     InitializeEnvFiles();
 
-    if (!BOX64ENV(nobanner)) PrintBox64Version();
-
-
     const char* prog = argv[1];
     int nextarg = 1;
     // check if some options are passed
     while(prog && prog[0]=='-') {
         if(!strcmp(prog, "-v") || !strcmp(prog, "--version")) {
-            if (BOX64ENV(nobanner)) PrintBox64Version();
+            PrintBox64Version(0);
             exit(0);
         }
         if(!strcmp(prog, "-h") || !strcmp(prog, "--help")) {
             PrintHelp();
+            exit(0);
+        }
+        if (!strcmp(prog, "-k") || !strcmp(prog, "--kill-all")) {
+            KillAllInstances();
             exit(0);
         }
         // other options?
@@ -937,13 +975,15 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
             prog = argv[++nextarg];
             break;
         }
-        printf("Warning, Unrecognized option '%s'\n", prog);
+        printf("Warning, unrecognized option '%s'\n", prog);
         prog = argv[++nextarg];
     }
     if(!prog || nextarg==argc) {
         printf("[BOX64] Nothing to run\n");
         exit(0);
     }
+
+    if (!BOX64ENV(nobanner)) PrintBox64Version(1);
 
     displayMiscInfo();
 
@@ -1020,6 +1060,12 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
             // check if it exist
             if(FileExist(tmp, 0)) {
                 box64_custom_gstreamer = box_strdup(tmp);
+            } else {
+                *pp = '\0';
+                strcat(tmp, "/../lib/x86_64-linux-gnu/gstreamer-1.0");
+                if(FileExist(tmp, 0)) {
+                   box64_custom_gstreamer = box_strdup(tmp);
+                }
             }
         }
         // Try to get the name of the exe being run, to ApplyEnvFileEntry laters
@@ -1475,7 +1521,7 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
         if(!ElfGetGlobalSymbolStartEnd(elf_header, &wineinfo, NULL, "wine_main_preload_info", &ver, &vername, 1, &veropt))
             if(!ElfGetWeakSymbolStartEnd(elf_header, &wineinfo, NULL, "wine_main_preload_info", &ver, &vername, 1, &veropt))
                 ElfGetLocalSymbolStartEnd(elf_header, &wineinfo, NULL, "wine_main_preload_info", &ver, &vername, 1, &veropt);
-        if(!wineinfo) {printf_log(LOG_NONE, "Warning, Symbol wine_main_preload_info not found\n");}
+        if(!wineinfo) {printf_log(LOG_DEBUG, "Warning, Symbol wine_main_preload_info not found\n");}
         else {
             *(void**)wineinfo = get_wine_prereserve();
             printf_log(LOG_DEBUG, "WINE wine_main_preload_info found and updated %p -> %p\n", get_wine_prereserve(), *(void**)wineinfo);

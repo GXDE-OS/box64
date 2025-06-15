@@ -20,11 +20,13 @@
 #include <sys/utsname.h>
 #include <sys/resource.h>
 #include <poll.h>
+#include <sys/epoll.h>
 
+#include "os.h"
 #include "debug.h"
 #include "box64stack.h"
 #include "x64emu.h"
-#include "x64run.h"
+#include "box64cpu.h"
 #include "x64emu_private.h"
 #include "x64run_private.h"
 //#include "x64primop.h"
@@ -33,6 +35,7 @@
 #include "box64context.h"
 #include "callback.h"
 #include "signals.h"
+#include "emit_signals.h"
 #include "x64tls.h"
 #include "elfloader.h"
 
@@ -47,6 +50,7 @@ extern int fchmodat (int __fd, const char *__file, mode_t __mode, int __flag);
 int of_convert(int flag);
 int32_t my_open(x64emu_t* emu, void* pathname, int32_t flags, uint32_t mode);
 ssize_t my_readlink(x64emu_t* emu, void* path, void* buf, size_t sz);
+int my_readlinkat(x64emu_t* emu, int fd, void* path, void* buf, size_t bufsize);
 int my_stat(x64emu_t *emu, void* filename, void* buf);
 int my_lstat(x64emu_t *emu, void* filename, void* buf);
 int my_fstat(x64emu_t *emu, int fd, void* buf);
@@ -142,7 +146,7 @@ static const scwrap_t syscallwrap[] = {
     #endif
     //[58] = {__NR_vfork, 0},
     //[59] = {__NR_execve, 3},
-    [60] = {__NR_exit, 1},    // Nees wrapping?
+    [60] = {__NR_exit, 1},    // Needs wrapping?
     [61] = {__NR_wait4, 4},
     [62] = {__NR_kill, 2 },
     //[63] = {__NR_uname, 1}, // Needs wrapping, use old_utsname
@@ -263,7 +267,7 @@ static const scwrap_t syscallwrap[] = {
     [264] = {__NR_renameat, 4},
     #endif
     [266] = {__NR_symlinkat, 3},
-    [267] = {__NR_readlinkat, 4},
+    //[267] = {__NR_readlinkat, 4},
     [268] = {__NR_fchmodat, 3},
     [270] = {__NR_pselect6, 6},
     [272] = {__NR_unshare, 1},
@@ -281,7 +285,9 @@ static const scwrap_t syscallwrap[] = {
     [288] = {__NR_accept4, 4},
     [289] = {__NR_signalfd4, 4},    // this one might need some wrapping
     [290] = {__NR_eventfd2, 2},
+    #ifdef NOALIGN
     [291] = {__NR_epoll_create1, 1},
+    #endif
     [292] = {__NR_dup3, 3},
     [293] = {__NR_pipe2, 2},
     [294] = {__NR_inotify_init1, 1},
@@ -443,7 +449,7 @@ void EXPORT x64Syscall(x64emu_t *emu)
         uintptr_t ret_addr = R_RIP-2;
         if(/*ret_addr<0x700000000000LL &&*/ (my_context->signals[SIGSYS]>2) && !FindElfAddress(my_context, ret_addr)) {
             // not a linux elf, not a syscall to setup x86_64 arch. Signal SIGSYS
-            emit_signal(emu, SIGSYS, (void*)ret_addr, R_EAX&0xffff);  // what are the parameters?
+            EmitSignal(emu, SIGSYS, (void*)ret_addr, R_EAX&0xffff);  // what are the parameters?
             return;
         }
     }
@@ -769,8 +775,10 @@ void EXPORT x64Syscall(x64emu_t *emu)
         #if !defined(__NR_epoll_ctl) || !defined(NOALIGN)
         case 233:
             S_RAX = my_epoll_ctl(emu, S_EDI, S_ESI, S_EDX, (void*)R_R10);
-            if(S_RAX==-1)
+            if(S_RAX==-1) {
                 S_RAX = -errno;
+                if(log) snprintf(buff2, 127, "[err=%d/%s]", errno, strerror(errno));
+            }
             break;
         #endif
         #ifndef __NR_inotify_init
@@ -789,7 +797,8 @@ void EXPORT x64Syscall(x64emu_t *emu)
             break;
         #endif
         case 262:
-            S_RAX = my_fstatat(emu, S_RDI, (char*)R_RSI, (void*)R_RDX, S_R10d);
+            S_RAX = my_fstatat(emu, S_EDI, (char*)R_RSI, (void*)R_RDX, S_R10d);
+            if (log) snprintf(buff2, 127, "[sys_fstatat %d, \"%s\", %p, 0x%x]", S_EDI, (char*)R_RSI, (void*)R_RDX, S_R10d);
             if(S_RAX==-1)
                 S_RAX = -errno;
             break;
@@ -800,6 +809,12 @@ void EXPORT x64Syscall(x64emu_t *emu)
                 S_RAX = -errno;
             break;
         #endif
+        case 267:   // sys_readlinkat
+            if(log) snprintf(buff2, 127, " [sys_readlinkat(%d, \"%s\"...]", S_EDI, (char*)R_RSI);
+            S_RAX = my_readlinkat(emu, S_EDI, (void*)R_RSI, (void*)R_RDX, R_R10); 
+            if(S_RAX==-1)
+                S_RAX = -errno;
+            break;
         #ifndef NOALIGN
         case 281:   // sys_epool_pwait
             S_RAX = my_epoll_pwait(emu, S_EDI, (void*)R_RSI, S_EDX, S_R10d, (void*)R_R8);
@@ -827,6 +842,13 @@ void EXPORT x64Syscall(x64emu_t *emu)
                 S_RAX = -errno;
             break;
         #endif
+        #ifndef NOALIGN
+        case 291:   // sys__epoll_create1
+            S_RAX = epoll_create1(of_convert(S_EDI));
+            if(S_RAX==-1)
+                S_RAX = -errno;
+            break;
+        #endif
         case 317:   // sys_seccomp
             R_RAX = 0;  // ignoring call
             break;
@@ -848,18 +870,16 @@ void EXPORT x64Syscall(x64emu_t *emu)
             break;
         #endif
         case 449:
-            #ifdef __NR_futex_waitv
-            if(BOX64ENV(futex_waitv))
-                S_RAX = syscall(__NR_futex_waitv, R_RDI, R_RSI, R_RDX, R_R10, R_R8);
-            else
+            #if defined(__NR_futex_waitv) && !defined(BAD_SIGNAL)
+            S_RAX = syscall(__NR_futex_waitv, R_RDI, R_RSI, R_RDX, R_R10, R_R8);
+            #else
+            S_RAX = -ENOSYS;
             #endif
-                S_RAX = -ENOSYS;
             break;
         default:
-            printf_log(LOG_INFO, "Error: Unsupported Syscall 0x%02Xh (%d)\n", s, s);
-            emu->quit = 1;
-            emu->error |= ERR_UNIMPL;
-            return;
+            printf_log(LOG_INFO, "Warning: Unsupported Syscall 0x%02Xh (%d)\n", s, s);
+            S_RAX = -ENOSYS;
+            break;
     }
     if(log) {
         if(BOX64ENV(rolling_log))
@@ -1103,10 +1123,11 @@ long EXPORT my_syscall(x64emu_t *emu)
         case 264:
             return renameat(S_RSI, (const char*)R_RDX, S_ECX, (const char*)R_R8);
         #endif
+        case 267:   // sys_readlinkat
+            return my_readlinkat(emu, S_RSI, (void*)R_RDX, (void*)R_RCX, R_R8); 
         #ifndef NOALIGN
         case 281:   // sys_epool_pwait
             return my_epoll_pwait(emu, S_ESI, (void*)R_RDX, S_ECX, S_R8d, (void*)R_R9);
-            break;
         #endif
         case 282:   // sys_signalfd
             // need to mask SIGSEGV
@@ -1134,16 +1155,12 @@ long EXPORT my_syscall(x64emu_t *emu)
             return faccessat(S_ESI, (void*)R_RDX, (mode_t)R_RCX, S_R8d);
         #endif
         case 449:
-            #ifdef __NR_futex_waitv
-            if(BOX64ENV(futex_waitv))
-                return syscall(__NR_futex_waitv, R_RSI, R_RDX, R_RCX, R_R8, R_R9);
-            else
+            #if defined(__NR_futex_waitv) && !defined(BAD_SIGNAL)
+            return syscall(__NR_futex_waitv, R_RSI, R_RDX, R_RCX, R_R8, R_R9);
+            #else
+            errno = ENOSYS;
+            return -1;
             #endif
-                {
-                    errno = ENOSYS;
-                    return -1;
-                }
-            break;
         default:
             if(!(warned&(1<<s))) {
                 printf_log(LOG_INFO, "Warning: Unsupported libc Syscall 0x%02X (%d)\n", s, s);

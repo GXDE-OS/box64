@@ -1,198 +1,10 @@
-#define _GNU_SOURCE 
-#include <stdlib.h>
-#include <stdio.h>
+#define _GNU_SOURCE
 #include <string.h>
-#include <sched.h>
 
 #include "my_cpuid.h"
 #include "../emu/x64emu_private.h"
 #include "debug.h"
-#include "x64emu.h"
-
-int get_cpuMhz()
-{
-    int MHz = 0;
-    char *p = NULL;
-    if((p=getenv("BOX64_CPUMHZ"))) {
-        MHz = atoi(p);
-        return MHz;
-    }
-    char cpumhz[200];
-    sprintf(cpumhz, "%d", MHz?:1000);
-    setenv("BOX64_CPUMHZ", cpumhz, 1);  // set temp value incase box64 gets recursively called
-
-    int cpucore = 0;
-    while(cpucore!=-1) {
-        char cpufreq[4096];
-        sprintf(cpufreq, "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", cpucore);
-        FILE *f = fopen(cpufreq, "r");
-        if(f) {
-            int r;
-            if(1==fscanf(f, "%d", &r)) {
-                r /= 1000;
-                if(MHz<r)
-                    MHz = r;
-            }
-            fclose(f);
-            ++cpucore;
-        }
-        else 
-            cpucore = -1;
-    }
-    #ifndef STATICBUILD
-    if(!MHz) {
-        // try with lscpu, grabbing the max frequency
-        FILE* f = popen("lscpu | grep \"CPU max MHz:\" | sed -r 's/CPU max MHz:\\s{1,}//g'", "r");
-        if(f) {
-            char tmp[200] = "";
-            ssize_t s = fread(tmp, 1, 200, f);
-            pclose(f);
-            if(s>0) {
-                // worked! (unless it's saying "lscpu: command not found" or something like that)
-                if(!strstr(tmp, "lscpu")) {
-                    // trim ending
-                    while(strlen(tmp) && tmp[strlen(tmp)-1]=='\n')
-                        tmp[strlen(tmp)-1] = 0;
-                    // incase multiple cpu type are present, there will be multiple lines
-                    while(strchr(tmp, '\n'))
-                        *strchr(tmp,'\n') = ' ';
-                    // cut the float part (so '.' or ','), it's not needed
-                    if(strchr(tmp, '.'))
-                        *strchr(tmp, '.')= '\0';
-                    if(strchr(tmp, ','))
-                        *strchr(tmp, ',')= '\0';
-                    int mhz;
-                    if(sscanf(tmp, "%d", &mhz)==1)
-                        MHz = mhz;
-                }
-            }
-        }
-    }
-    #endif
-    if(!MHz)
-        MHz = 1000; // default to 1Ghz...
-    sprintf(cpumhz, "%d", MHz);
-    setenv("BOX64_CPUMHZ", cpumhz, 1);  // set actual value
-    return MHz;
-}
-static int nCPU = 0;
-static double bogoMips = 100.;
-
-void grabNCpu() {
-    nCPU = 1;  // default number of CPU to 1
-    FILE *f = fopen("/proc/cpuinfo", "r");
-    ssize_t dummy;
-    if(f) {
-        nCPU = 0;
-        int bogo = 0;
-        size_t len = 500;
-        char* line = malloc(len);
-        while ((dummy = getline(&line, &len, f)) != (ssize_t)-1) {
-            if(!strncmp(line, "processor\t", strlen("processor\t")))
-                ++nCPU;
-            if(!bogo && !strncmp(line, "BogoMIPS\t", strlen("BogoMIPS\t"))) {
-                // grab 1st BogoMIPS
-                float tmp;
-                if(sscanf(line, "BogoMIPS\t: %g", &tmp)==1) {
-                    bogoMips = tmp;
-                    bogo = 1;
-                }
-            }
-        }
-        free(line);
-        fclose(f);
-        if(!nCPU) nCPU=1;
-    }
-}
-int getNCpu()
-{
-    if(!nCPU)
-        grabNCpu();
-    if(BOX64ENV(maxcpu) && nCPU>BOX64ENV(maxcpu))
-        return BOX64ENV(maxcpu);
-    return nCPU;
-}
-
-double getBogoMips()
-{
-    if(!nCPU)
-        grabNCpu();
-    return bogoMips;
-}
-
-const char* getCpuName()
-{
-    static char name[200] = "Unknown CPU";
-    static int done = 0;
-    if(done)
-        return name;
-    done = 1;
-    char *p = NULL;
-    if((p=getenv("BOX64_CPUNAME"))) {
-        strcpy(name, p);
-        return name;
-    }
-    setenv("BOX64_CPUNAME", name, 1);   // temporary set
-    #ifndef STATICBUILD
-    FILE* f = popen("LC_ALL=C lscpu | grep -i \"model name:\" | head -n 1 | sed -r 's/(model name:)\\s{1,}//gi'", "r");
-    if(f) {
-        char tmp[200] = "";
-        ssize_t s = fread(tmp, 1, 200, f);
-        pclose(f);
-        if(s>0) {
-            // worked! (unless it's saying "lscpu: command not found" or something like that)
-            if(!strstr(tmp, "lscpu")) {
-                // trim ending
-                while(strlen(tmp) && tmp[strlen(tmp)-1]=='\n')
-                    tmp[strlen(tmp)-1] = 0;
-                strncpy(name, tmp, 199);
-            }
-            setenv("BOX64_CPUNAME", name, 1);
-            return name;
-        }
-    }
-    // failled, try to get architecture at least
-    f = popen("uname -m", "r");
-    if(f) {
-        char tmp[200] = "";
-        ssize_t s = fread(tmp, 1, 200, f);
-        pclose(f);
-        if(s>0) {
-            // worked!
-            // trim ending
-            while(strlen(tmp) && tmp[strlen(tmp)-1]=='\n')
-                tmp[strlen(tmp)-1] = 0;
-            snprintf(name, 199, "unknown %s cpu", tmp);
-            setenv("BOX64_CPUNAME", name, 1);
-            return name;
-        }
-    }
-    #endif
-    // Nope, bye
-    return name;
-}
-
-const char* getBoxCpuName()
-{
-    static char branding[3*4*4+1] = "";
-    static int done = 0;
-    if(!done) {
-        done = 1;
-        const char* name = getCpuName();
-        if(strstr(name, "MHz") || strstr(name, "GHz")) {
-            // name already have the speed in it
-            snprintf(branding, sizeof(branding), "Box64 on %.*s", 39, name);
-        } else {
-            unsigned int MHz = get_cpuMhz();
-            if(MHz>1500) { // swiches to GHz display...
-                snprintf(branding, sizeof(branding), "Box64 on %.*s @%1.2f GHz", 28, name, MHz/1000.);
-            } else {
-                snprintf(branding, sizeof(branding), "Box64 on %.*s @%04d MHz", 28, name, MHz);
-            }
-        }
-    }
-    return branding;
-}
+#include "freq.h"
 
 void my_cpuid(x64emu_t* emu, uint32_t tmp32u)
 {
@@ -268,7 +80,7 @@ void my_cpuid(x64emu_t* emu, uint32_t tmp32u)
                 if(cpu<0) cpu=0;
                 R_EAX |= cpu<<24;
             }*/
-            R_EDX =   1         // fpu 
+            R_EDX =   1         // fpu
                     | 1<<1      // vme
                     | 1<<2      // debugging extension
                     | 1<<3      // pse
@@ -311,7 +123,7 @@ void my_cpuid(x64emu_t* emu, uint32_t tmp32u)
                     | BOX64ENV(avx)<<29 // F16C
                     | BOX64ENV(avx2)<<30     // RDRAND
                     | 0<<31     // Hypervisor guest running
-                    ; 
+                    ;
             break;
         case 0x2:
             if(BOX64ENV(cputype)) {
@@ -325,7 +137,7 @@ void my_cpuid(x64emu_t* emu, uint32_t tmp32u)
                 R_EDX = 0x007A7000;
             }
             break;
-        
+
         case 0x4:
             if(BOX64ENV(cputype)) {
                 // reserved
@@ -381,8 +193,8 @@ void my_cpuid(x64emu_t* emu, uint32_t tmp32u)
             // extended bits...
             if(R_ECX==0) {
                 R_EAX = 0;
-                R_EBX = 
-                        BOX64ENV(avx)<<3 |  // BMI1 
+                R_EBX =
+                        BOX64ENV(avx)<<3 |  // BMI1
                         BOX64ENV(avx2)<<5 |  //AVX2
                         (BOX64ENV(cputype)?0:1)<<6 | // FDP_EXCPTN_ONLY
                         1<<7 | // SMEP
@@ -396,7 +208,7 @@ void my_cpuid(x64emu_t* emu, uint32_t tmp32u)
                         1<<24 | // CLWB
                         BOX64ENV(shaext)<<29|  // SHA extension
                         0;
-                R_RCX = 
+                R_RCX =
                         BOX64ENV(avx)<<9   | //VAES
                         BOX64ENV(avx2)<<10 | //VPCLMULQDQ.
                         1<<22 | // RDPID
@@ -460,7 +272,7 @@ void my_cpuid(x64emu_t* emu, uint32_t tmp32u)
             } else {
                 //L3 Cache
                 switch(R_ECX) {
-                    case 0: 
+                    case 0:
                         R_EAX = 0;
                         R_EBX = 0; // maximum range of RMID of physical processor
                         R_ECX = 0;
@@ -543,8 +355,8 @@ void my_cpuid(x64emu_t* emu, uint32_t tmp32u)
                         //| 1<<10     // IBS
                         //| 1<<11     // XOP
                         //| 1<<16     // FMA4
-                        ; 
-                R_EDX =   1         // fpu 
+                        ;
+                R_EDX =   1         // fpu
                         | 1<<2      // debugging extension
                         | 1<<3      // pse
                         | 1<<4      // rdtsc
@@ -573,11 +385,11 @@ void my_cpuid(x64emu_t* emu, uint32_t tmp32u)
             } else {
                 R_EAX = 0;  // reserved
                 R_EBX = 0;  // reserved
-                R_ECX = (1<<0)  // LAHF_LM 
+                R_ECX = (1<<0)  // LAHF_LM
                     | (1<<5)    // LZCNT
                     | (1<<8)   // PREFETCHW
                     ;
-                R_EDX = 1       // x87 FPU 
+                R_EDX = 1       // x87 FPU
                     | (1<<8)    // cx8: cmpxchg8b opcode
                     | (1<<11)   // syscall
                     | (1<<15)   // cmov: FCMOV opcodes
@@ -605,7 +417,7 @@ void my_cpuid(x64emu_t* emu, uint32_t tmp32u)
             R_EBX = ((uint32_t*)branding)[9];
             R_ECX = ((uint32_t*)branding)[10];
             R_EDX = ((uint32_t*)branding)[11];
-            break;  
+            break;
         case 0x80000005:
             if(BOX64ENV(cputype)) {
                 //L1 cache and TLB
@@ -665,7 +477,7 @@ void my_cpuid(x64emu_t* emu, uint32_t tmp32u)
             break;
         case 0x8000000a:
             if(BOX64ENV(cputype)) {
-                // SVM Revision and Feature Identification 
+                // SVM Revision and Feature Identification
                 R_EAX = 0;
                 R_EBX = 0;
                 R_ECX = 0;
@@ -706,51 +518,5 @@ void my_cpuid(x64emu_t* emu, uint32_t tmp32u)
             R_EBX = 0;
             R_ECX = 0;
             R_EDX = 0;
-    }   
-}
-
-uint32_t helper_getcpu(x64emu_t* emu) {
-    #if defined(__GLIBC__) && defined(__GLIBC_MINOR__) && !defined(ANDROID)
-    #if __GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ > 28)
-    uint32_t cpu, node;
-    if(!getcpu(&cpu, &node))
-        return (node&0xff)<<12 | (cpu&0xff);
-    #endif
-    #endif
-    return 0;
-}
-
-uint32_t fallback_random32()
-{
-    return random() ^ (random()<<1);
-}
-
-uint32_t get_random32()
-{
-    uint32_t ret;
-    FILE* f = fopen("/dev/urandom", "rb");
-    if(f) {
-        if(fread(&ret, sizeof(ret), 1, f)!=1)
-            ret = fallback_random32();
-        fclose(f);
-    } else
-        ret = fallback_random32();
-    return ret;
-}
-uint64_t fallback_random64()
-{
-    return random() ^ (((uint64_t)random())<<18) ^ (((uint64_t)random())<<41);
-}
-
-uint64_t get_random64()
-{
-    uint64_t ret;
-    FILE* f = fopen("/dev/urandom", "rb");
-    if(f) {
-        if(fread(&ret, sizeof(ret), 1, f)!=1)
-            ret = fallback_random64();
-        fclose(f);
-    } else
-        ret = fallback_random64();
-    return ret;
+    }
 }

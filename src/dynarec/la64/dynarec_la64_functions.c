@@ -10,9 +10,8 @@
 
 #include "debug.h"
 #include "box64context.h"
-#include "dynarec.h"
+#include "box64cpu.h"
 #include "emu/x64emu_private.h"
-#include "x64run.h"
 #include "x64emu.h"
 #include "box64stack.h"
 #include "callback.h"
@@ -26,12 +25,12 @@
 #include "custommem.h"
 #include "bridge.h"
 #include "gdbjit.h"
+#include "perfmap.h"
 #include "elfloader.h"
 
 #define XMM0 0
-#define XMM8 16
-#define X870 8
-#define EMM0 8
+#define X870 16
+#define EMM0 16
 
 // Get a FPU scratch reg
 int fpu_get_scratch(dynarec_la64_t* dyn)
@@ -52,16 +51,22 @@ void fpu_free_reg(dynarec_la64_t* dyn, int reg)
     if (dyn->lsx.lsxcache[reg].t != LSX_CACHE_ST_F && dyn->lsx.lsxcache[reg].t != LSX_CACHE_ST_D && dyn->lsx.lsxcache[reg].t != LSX_CACHE_ST_I64)
         dyn->lsx.lsxcache[reg].v = 0;
 }
-
+// Get an MMX double reg
+int fpu_get_reg_emm(dynarec_la64_t* dyn, int emm)
+{
+    int ret = EMM0 + emm;
+    dyn->lsx.fpuused[ret] = 1;
+    dyn->lsx.lsxcache[ret].t = LSX_CACHE_MM;
+    dyn->lsx.lsxcache[ret].n = emm;
+    dyn->lsx.news |= (1 << (ret));
+    return ret;
+}
 // Get an XMM quad reg
 int fpu_get_reg_xmm(dynarec_la64_t* dyn, int t, int xmm)
 {
     int i;
-    if (xmm > 7) {
-        i = XMM8 + xmm - 8;
-    } else {
-        i = XMM0 + xmm;
-    }
+    i = XMM0 + xmm;
+
     dyn->lsx.fpuused[i] = 1;
     dyn->lsx.lsxcache[i].t = t;
     dyn->lsx.lsxcache[i].n = xmm;
@@ -188,11 +193,23 @@ void lsxcacheUnwind(lsxcache_t* cache)
             }
         }
         cache->x87stack -= cache->stack_push;
+        cache->tags >>= (cache->stack_push * 2);
         cache->stack -= cache->stack_push;
+        if (cache->pushed >= cache->stack_push)
+            cache->pushed -= cache->stack_push;
+        else
+            cache->pushed = 0;
         cache->stack_push = 0;
     }
     cache->x87stack += cache->stack_pop;
     cache->stack_next = cache->stack;
+    if (cache->stack_pop) {
+        if (cache->poped >= cache->stack_pop)
+            cache->poped -= cache->stack_pop;
+        else
+            cache->poped = 0;
+        cache->tags <<= (cache->stack_pop * 2);
+    }
     cache->stack_pop = 0;
     cache->barrier = 0;
     // And now, rebuild the x87cache info with lsxcache
@@ -333,9 +350,9 @@ static register_mapping_t register_mappings[] = {
 void printf_x64_instruction(dynarec_native_t* dyn, zydis_dec_t* dec, instruction_x64_t* inst, const char* name);
 void inst_name_pass3(dynarec_native_t* dyn, int ninst, const char* name, rex_t rex)
 {
-    if (!BOX64DRENV(dynarec_dump) && !BOX64ENV(dynarec_gdbjit) && !BOX64ENV(dynarec_perf_map)) return;
+    if (!dyn->need_dump && !BOX64ENV(dynarec_gdbjit) && !BOX64ENV(dynarec_perf_map)) return;
 
-    static char buf[256];
+    static char buf[4096];
     int length = sprintf(buf, "barrier=%d state=%d/%d(%d), %s=%X/%X, use=%X, need=%X/%X, fuse=%d, sm=%d(%d/%d)",
         dyn->insts[ninst].x64.barrier,
         dyn->insts[ninst].x64.state_flags,
@@ -378,11 +395,11 @@ void inst_name_pass3(dynarec_native_t* dyn, int ninst, const char* name, rex_t r
     if (dyn->insts[ninst].lsx.combined1 || dyn->insts[ninst].lsx.combined2)
         length += sprintf(buf + length, " %s:%d/%d", dyn->insts[ninst].lsx.swapped ? "SWP" : "CMB", dyn->insts[ninst].lsx.combined1, dyn->insts[ninst].lsx.combined2);
 
-    if (BOX64DRENV(dynarec_dump)) {
+    if (dyn->need_dump) {
         printf_x64_instruction(dyn, rex.is32bits ? my_context->dec32 : my_context->dec, &dyn->insts[ninst].x64, name);
         dynarec_log(LOG_NONE, "%s%p: %d emitted opcodes, inst=%d, %s%s\n",
-            (BOX64DRENV(dynarec_dump) > 1) ? "\e[32m" : "",
-            (void*)(dyn->native_start + dyn->insts[ninst].address), dyn->insts[ninst].size / 4, ninst, buf, (BOX64DRENV(dynarec_dump) > 1) ? "\e[m" : "");
+            (dyn->need_dump > 1) ? "\e[32m" : "",
+            (void*)(dyn->native_start + dyn->insts[ninst].address), dyn->insts[ninst].size / 4, ninst, buf, (dyn->need_dump > 1) ? "\e[m" : "");
     }
     if (BOX64ENV(dynarec_gdbjit)) {
         static char buf2[512];
@@ -402,64 +419,95 @@ void inst_name_pass3(dynarec_native_t* dyn, int ninst, const char* name, rex_t r
     if (BOX64ENV(dynarec_perf_map) && BOX64ENV(dynarec_perf_map_fd) != -1) {
         writePerfMap(dyn->insts[ninst].x64.addr, dyn->native_start + dyn->insts[ninst].address, dyn->insts[ninst].size / 4, name);
     }
+    if (length > sizeof(buf)) printf_log(LOG_NONE, "Warning: buf to small in inst_name_pass3 (%d vs %zd)\n", length, sizeof(buf));
 }
 
 // will go badly if address is unaligned
 static uint8_t extract_byte(uint32_t val, void* address)
 {
-    int idx = (((uintptr_t)address)&3)*8;
-    return (val>>idx)&0xff;
+    int idx = (((uintptr_t)address) & 3) * 8;
+    return (val >> idx) & 0xff;
 }
 
 static uint32_t insert_byte(uint32_t val, uint8_t b, void* address)
 {
-    int idx = (((uintptr_t)address)&3)*8;
-    val&=~(0xff<<idx);
-    val|=(((uint32_t)b)<<idx);
+    int idx = (((uintptr_t)address) & 3) * 8;
+    val &= ~(0xff << idx);
+    val |= (((uint32_t)b) << idx);
     return val;
 }
 
 static uint16_t extract_half(uint32_t val, void* address)
 {
-    int idx = (((uintptr_t)address)&3)*8;
-    return (val>>idx)&0xffff;
+    int idx = (((uintptr_t)address) & 3) * 8;
+    return (val >> idx) & 0xffff;
 }
 
 static uint32_t insert_half(uint32_t val, uint16_t h, void* address)
 {
-    int idx = (((uintptr_t)address)&3)*8;
-    val&=~(0xffff<<idx);
-    val|=(((uint32_t)h)<<idx);
+    int idx = (((uintptr_t)address) & 3) * 8;
+    val &= ~(0xffff << idx);
+    val |= (((uint32_t)h) << idx);
     return val;
 }
 
 uint8_t la64_lock_xchg_b_slow(void* addr, uint8_t val)
 {
     uint32_t ret;
-    uint32_t* aligned = (uint32_t*)(((uintptr_t)addr)&~3);
+    uint32_t* aligned = (uint32_t*)(((uintptr_t)addr) & ~3);
     do {
         ret = *aligned;
-    } while(la64_lock_cas_d(aligned, ret, insert_byte(ret, val, addr)));
+    } while (la64_lock_cas_d(aligned, ret, insert_byte(ret, val, addr)));
     return extract_byte(ret, addr);
 }
 
 int la64_lock_cas_b_slow(void* addr, uint8_t ref, uint8_t val)
 {
-    uint32_t* aligned = (uint32_t*)(((uintptr_t)addr)&~3);
+    uint32_t* aligned = (uint32_t*)(((uintptr_t)addr) & ~3);
     uint32_t tmp = *aligned;
-    return la64_lock_cas_d(aligned, ref, insert_byte(tmp, val, addr));
+    return la64_lock_cas_d(aligned, insert_byte(tmp, ref, addr), insert_byte(tmp, val, addr));
 }
 
 int la64_lock_cas_h_slow(void* addr, uint16_t ref, uint16_t val)
 {
-    uint32_t* aligned = (uint32_t*)(((uintptr_t)addr)&~3);
+    uint32_t* aligned = (uint32_t*)(((uintptr_t)addr) & ~3);
     uint32_t tmp = *aligned;
-    return la64_lock_cas_d(aligned, ref, insert_half(tmp, val, addr));
+    return la64_lock_cas_d(aligned, insert_half(tmp, ref, addr), insert_half(tmp, val, addr));
 }
 
 void print_opcode(dynarec_native_t* dyn, int ninst, uint32_t opcode)
 {
     dynarec_log_prefix(0, LOG_NONE, "\t%08x\t%s\n", opcode, la64_print(opcode, (uintptr_t)dyn->block));
+}
+
+static void x87_reset(lsxcache_t* lsx)
+{
+    for (int i = 0; i < 8; ++i)
+        lsx->x87cache[i] = -1;
+    lsx->tags = 0;
+    lsx->x87stack = 0;
+    lsx->stack = 0;
+    lsx->stack_next = 0;
+    lsx->stack_pop = 0;
+    lsx->stack_push = 0;
+    lsx->combined1 = lsx->combined2 = 0;
+    lsx->swapped = 0;
+    lsx->barrier = 0;
+    lsx->pushed = 0;
+    lsx->poped = 0;
+
+    for (int i = 0; i < 24; ++i)
+        if (lsx->lsxcache[i].t == LSX_CACHE_ST_F
+            || lsx->lsxcache[i].t == LSX_CACHE_ST_D
+            || lsx->lsxcache[i].t == LSX_CACHE_ST_I64)
+            lsx->lsxcache[i].v = 0;
+}
+
+static void mmx_reset(lsxcache_t* lsx)
+{
+    lsx->mmxcount = 0;
+    for (int i = 0; i < 8; ++i)
+        lsx->mmxcache[i] = -1;
 }
 
 static void sse_reset(lsxcache_t* lsx)
@@ -470,7 +518,8 @@ static void sse_reset(lsxcache_t* lsx)
 
 void fpu_reset(dynarec_la64_t* dyn)
 {
-    // TODO: x87 and mmx
+    x87_reset(&dyn->lsx);
+    mmx_reset(&dyn->lsx);
     sse_reset(&dyn->lsx);
     fpu_reset_reg(dyn);
 }

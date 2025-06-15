@@ -98,28 +98,28 @@
         LDxw(x1, wback, fixedaddress);                                                            \
         ed = x1;                                                                                  \
     }
-// GETEDH can use hint for ed, and x1 or x2 for wback (depending on hint), might also use x3. wback is 0 if ed is xEAX..xEDI
-#define GETEDH(hint, D)                                                                                                                 \
-    if (MODREG) {                                                                                                                       \
-        ed = TO_NAT((nextop & 7) + (rex.b << 3));                                                                                       \
-        wback = 0;                                                                                                                      \
-    } else {                                                                                                                            \
-        SMREAD();                                                                                                                       \
-        addr = geted(dyn, addr, ninst, nextop, &wback, (hint == x2) ? x1 : x2, (hint == x1) ? x1 : x3, &fixedaddress, rex, NULL, 1, D); \
-        LDxw(hint, wback, fixedaddress);                                                                                                \
-        ed = hint;                                                                                                                      \
+// GETEDH can use hint for wback and ret for ed. wback is 0 if ed is xEAX..xEDI
+#define GETEDH(hint, ret, D)                                                                       \
+    if (MODREG) {                                                                                  \
+        ed = TO_NAT((nextop & 7) + (rex.b << 3));                                                  \
+        wback = 0;                                                                                 \
+    } else {                                                                                       \
+        SMREAD();                                                                                  \
+        addr = geted(dyn, addr, ninst, nextop, &wback, hint, ret, &fixedaddress, rex, NULL, 1, D); \
+        ed = ret;                                                                                  \
+        LDxw(ed, wback, fixedaddress);                                                             \
     }
 // GETEDW can use hint for wback and ret for ed. wback is 0 if ed is xEAX..xEDI
-#define GETEDW(hint, ret, D)                                                                                                            \
-    if (MODREG) {                                                                                                                       \
-        ed = TO_NAT((nextop & 7) + (rex.b << 3));                                                                                       \
-        MV(ret, ed);                                                                                                                    \
-        wback = 0;                                                                                                                      \
-    } else {                                                                                                                            \
-        SMREAD();                                                                                                                       \
-        addr = geted(dyn, addr, ninst, nextop, &wback, (hint == x2) ? x1 : x2, (hint == x1) ? x1 : x3, &fixedaddress, rex, NULL, 0, D); \
-        ed = ret;                                                                                                                       \
-        LDxw(ed, wback, fixedaddress);                                                                                                  \
+#define GETEDW(hint, ret, D)                                                                       \
+    if (MODREG) {                                                                                  \
+        ed = TO_NAT((nextop & 7) + (rex.b << 3));                                                  \
+        MV(ret, ed);                                                                               \
+        wback = 0;                                                                                 \
+    } else {                                                                                       \
+        SMREAD();                                                                                  \
+        addr = geted(dyn, addr, ninst, nextop, &wback, hint, ret, &fixedaddress, rex, NULL, 0, D); \
+        ed = ret;                                                                                  \
+        LDxw(ed, wback, fixedaddress);                                                             \
     }
 // GETGW extract x64 register in gd, that is i
 #define GETGW(i)                                        \
@@ -394,6 +394,7 @@
         OR(wback, wback, ed);             \
     }
 
+#define GB_EQ_EB() (MODREG && ((nextop & 0x38) >> 3) == (nextop & 7) && (rex.r == rex.b))
 
 #define YMM0(a) ymm_mark_zero(dyn, ninst, a);
 
@@ -840,6 +841,23 @@
 #define IF_ALIGNED(A) if (!is_addr_unaligned(A))
 #endif
 
+#ifndef NATIVE_RESTORE_X87PC
+#define NATIVE_RESTORE_X87PC()                   \
+    if (dyn->need_x87check) {                    \
+        LD(x87pc, xEmu, offsetof(x64emu_t, cw)); \
+        SRLI(x87pc, x87pc, 8);                   \
+        ANDI(x87pc, x87pc, 0b11);                \
+    }
+#endif
+#ifndef X87_CHECK_PRECISION
+#define X87_CHECK_PRECISION(A)               \
+    if (!ST_IS_F(0) && dyn->need_x87check) { \
+        BNEZ(x87pc, 4 + 8);                  \
+        FCVTSD(A, A);                        \
+        FCVTDS(A, A);                        \
+    }
+#endif
+
 #define STORE_REG(A) SD(x##A, xEmu, offsetof(x64emu_t, regs[_##A]))
 #define LOAD_REG(A)  LD(x##A, xEmu, offsetof(x64emu_t, regs[_##A]))
 
@@ -991,7 +1009,7 @@
 #else
 #define X87_PUSH_OR_FAIL(var, dyn, ninst, scratch, t)                                                                                                          \
     if ((dyn->e.x87stack == 8) || (dyn->e.pushed == 8)) {                                                                                                      \
-        if (BOX64DRENV(dynarec_dump)) dynarec_log(LOG_NONE, " Warning, suspicious x87 Push, stack=%d/%d on inst %d\n", dyn->e.x87stack, dyn->e.pushed, ninst); \
+        if (dyn->need_dump) dynarec_log(LOG_NONE, " Warning, suspicious x87 Push, stack=%d/%d on inst %d\n", dyn->e.x87stack, dyn->e.pushed, ninst); \
         dyn->abort = 1;                                                                                                                                        \
         return addr;                                                                                                                                           \
     }                                                                                                                                                          \
@@ -999,7 +1017,7 @@
 
 #define X87_PUSH_EMPTY_OR_FAIL(dyn, ninst, scratch)                                                                                                            \
     if ((dyn->e.x87stack == 8) || (dyn->e.pushed == 8)) {                                                                                                      \
-        if (BOX64DRENV(dynarec_dump)) dynarec_log(LOG_NONE, " Warning, suspicious x87 Push, stack=%d/%d on inst %d\n", dyn->e.x87stack, dyn->e.pushed, ninst); \
+        if (dyn->need_dump) dynarec_log(LOG_NONE, " Warning, suspicious x87 Push, stack=%d/%d on inst %d\n", dyn->e.x87stack, dyn->e.pushed, ninst); \
         dyn->abort = 1;                                                                                                                                        \
         return addr;                                                                                                                                           \
     }                                                                                                                                                          \
@@ -1007,7 +1025,7 @@
 
 #define X87_POP_OR_FAIL(dyn, ninst, scratch)                                                                                                                 \
     if ((dyn->e.x87stack == -8) || (dyn->e.poped == 8)) {                                                                                                    \
-        if (BOX64DRENV(dynarec_dump)) dynarec_log(LOG_NONE, " Warning, suspicious x87 Pop, stack=%d/%d on inst %d\n", dyn->e.x87stack, dyn->e.poped, ninst); \
+        if (dyn->need_dump) dynarec_log(LOG_NONE, " Warning, suspicious x87 Pop, stack=%d/%d on inst %d\n", dyn->e.x87stack, dyn->e.poped, ninst); \
         dyn->abort = 1;                                                                                                                                      \
         return addr;                                                                                                                                         \
     }                                                                                                                                                        \
@@ -1048,10 +1066,18 @@
     READFLAGS(A)
 #endif
 
-#define NAT_FLAGS_OPS(op1, op2)                    \
-    do {                                           \
-        dyn->insts[ninst + 1].nat_flags_op1 = op1; \
-        dyn->insts[ninst + 1].nat_flags_op2 = op2; \
+#define NAT_FLAGS_OPS(op1, op2, s1, s2)                                     \
+    do {                                                                    \
+        dyn->insts[dyn->insts[ninst].nat_next_inst].nat_flags_op1 = op1;    \
+        dyn->insts[dyn->insts[ninst].nat_next_inst].nat_flags_op2 = op2;    \
+        if (dyn->insts[ninst + 1].no_scratch_usage && IS_GPR(op1)) {        \
+            MV(s1, op1);                                                    \
+            dyn->insts[dyn->insts[ninst].nat_next_inst].nat_flags_op1 = s1; \
+        }                                                                   \
+        if (dyn->insts[ninst + 1].no_scratch_usage && IS_GPR(op2)) {        \
+            MV(s2, op2);                                                    \
+            dyn->insts[dyn->insts[ninst].nat_next_inst].nat_flags_op2 = s2; \
+        }                                                                   \
     } while (0)
 
 #define NAT_FLAGS_ENABLE_CARRY() dyn->insts[ninst].nat_flags_carry = 1
@@ -1391,6 +1417,8 @@ void* rv64_next(void);
 #define sse_purgecache      STEPNAME(sse_purgecache)
 #define fpu_reflectcache    STEPNAME(fpu_reflectcache)
 #define fpu_unreflectcache  STEPNAME(fpu_unreflectcache)
+#define x87_reflectcount    STEPNAME(x87_reflectcount)
+#define x87_unreflectcount  STEPNAME(x87_unreflectcount)
 #define avx_purge_ymm       STEPNAME(avx_purge_ymm)
 
 #define CacheTransform STEPNAME(CacheTransform)
@@ -1414,9 +1442,9 @@ uintptr_t geted32(dynarec_rv64_t* dyn, uintptr_t addr, int ninst, uint8_t nextop
 void jump_to_epilog(dynarec_rv64_t* dyn, uintptr_t ip, int reg, int ninst);
 void jump_to_epilog_fast(dynarec_rv64_t* dyn, uintptr_t ip, int reg, int ninst);
 void jump_to_next(dynarec_rv64_t* dyn, uintptr_t ip, int reg, int ninst, int is32bits);
-void ret_to_epilog(dynarec_rv64_t* dyn, int ninst, rex_t rex);
-void retn_to_epilog(dynarec_rv64_t* dyn, int ninst, rex_t rex, int n);
-void iret_to_epilog(dynarec_rv64_t* dyn, int ninst, int is64bits);
+void ret_to_epilog(dynarec_rv64_t* dyn, uintptr_t ip, int ninst, rex_t rex);
+void retn_to_epilog(dynarec_rv64_t* dyn, uintptr_t ip, int ninst, rex_t rex, int n);
+void iret_to_epilog(dynarec_rv64_t* dyn, uintptr_t ip, int ninst, int is64bits);
 void call_c(dynarec_rv64_t* dyn, int ninst, void* fnc, int reg, int ret, int saveflags, int savereg, int arg1, int arg2, int arg3, int arg4, int arg5, int arg6);
 void call_n(dynarec_rv64_t* dyn, int ninst, void* fnc, int w);
 void grab_segdata(dynarec_rv64_t* dyn, uintptr_t addr, int ninst, int reg, int segment, int modreg);
@@ -1647,6 +1675,8 @@ void mmx_purgecache(dynarec_rv64_t* dyn, int ninst, int next, int s1);
 void x87_purgecache(dynarec_rv64_t* dyn, int ninst, int next, int s1, int s2, int s3);
 void fpu_reflectcache(dynarec_rv64_t* dyn, int ninst, int s1, int s2, int s3);
 void fpu_unreflectcache(dynarec_rv64_t* dyn, int ninst, int s1, int s2, int s3);
+void x87_reflectcount(dynarec_rv64_t* dyn, int ninst, int s1, int s2);
+void x87_unreflectcount(dynarec_rv64_t* dyn, int ninst, int s1, int s2);
 void fpu_pushcache(dynarec_rv64_t* dyn, int ninst, int s1, int not07);
 void fpu_popcache(dynarec_rv64_t* dyn, int ninst, int s1, int not07);
 
@@ -1792,12 +1822,20 @@ uintptr_t dynarec64_AVX_F3_0F(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip,
 // Dummy macros
 #define B__safe(a, b, c) XOR(xZR, xZR, xZR)
 #define B_(a, b, c)      XOR(xZR, xZR, xZR)
+#define S_(a, b, c)      XOR(xZR, xZR, xZR)
+#define MV_(a, b, c, d)  XOR(xZR, xZR, xZR)
 
 #define NATIVEJUMP_safe(COND, val) \
     B##COND##_safe(dyn->insts[ninst].nat_flags_op1, dyn->insts[ninst].nat_flags_op2, val);
 
 #define NATIVEJUMP(COND, val) \
     B##COND(dyn->insts[ninst].nat_flags_op1, dyn->insts[ninst].nat_flags_op2, val);
+
+#define NATIVESET(COND, rd) \
+    S##COND(rd, dyn->insts[ninst].nat_flags_op1, dyn->insts[ninst].nat_flags_op2);
+
+#define NATIVEMV(COND, rd, rs) \
+    MV##COND(rd, rs, dyn->insts[ninst].nat_flags_op1, dyn->insts[ninst].nat_flags_op2);
 
 #define NOTEST(s1)                                     \
     if (BOX64ENV(dynarec_test)) {                      \
@@ -1925,7 +1963,7 @@ uintptr_t dynarec64_AVX_F3_0F(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip,
         }                                                                            \
         if (dyn->insts[ninst].nat_flags_fusion) {                                    \
             ANDI(s1, dst, 0xff);                                                     \
-            NAT_FLAGS_OPS(s1, xZR);                                                  \
+            NAT_FLAGS_OPS(s1, xZR, xZR, xZR);                                        \
         }                                                                            \
         break;                                                                       \
     }
@@ -1948,7 +1986,7 @@ uintptr_t dynarec64_AVX_F3_0F(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip,
         }                                                                            \
         if (dyn->insts[ninst].nat_flags_fusion) {                                    \
             ZEXTH(s1, dst);                                                          \
-            NAT_FLAGS_OPS(s1, xZR);                                                  \
+            NAT_FLAGS_OPS(s1, xZR, xZR, xZR);                                        \
         }                                                                            \
         break;                                                                       \
     }
@@ -1967,5 +2005,9 @@ uintptr_t dynarec64_AVX_F3_0F(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip,
 
 #define VECTOR_LOAD_VMASK(mask, s1, multiple) \
     vector_loadmask(dyn, ninst, VMASK, mask, s1, multiple)
+
+#ifndef SCRATCH_USAGE
+#define SCRATCH_USAGE(usage)
+#endif
 
 #endif //__DYNAREC_RV64_HELPER_H__

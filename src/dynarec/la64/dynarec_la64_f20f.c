@@ -5,11 +5,9 @@
 
 #include "debug.h"
 #include "box64context.h"
-#include "dynarec.h"
+#include "box64cpu.h"
 #include "emu/x64emu_private.h"
-#include "emu/x64run_private.h"
 #include "la64_emitter.h"
-#include "x64run.h"
 #include "x64emu.h"
 #include "box64stack.h"
 #include "callback.h"
@@ -386,6 +384,13 @@ uintptr_t dynarec64_F20F(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int 
             VFADD_S(q0, q0, q1);
             VEXTRINS_W(q0, v0, 0);
             VEXTRINS_W(q0, v0, 0b00100010);
+            break;
+        case 0xD6:
+            INST_NAME("MOVDQ2Q Gm, Ex");
+            nextop = F8;
+            GETGM(v0);
+            GETEXSD(v1, 0, 0);
+            FMOV_D(v0, v1);
             break;
         case 0xE6: // TODO: !fastround
             INST_NAME("CVTPD2DQ Gx, Ex");

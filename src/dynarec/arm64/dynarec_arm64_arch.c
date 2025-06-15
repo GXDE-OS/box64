@@ -1,14 +1,12 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <signal.h>
-#include <ucontext.h>
 #include <string.h>
 
 #include "debug.h"
 #include "dynablock.h"
 #include "x64emu.h"
 #include "emu/x64emu_private.h"
-#include "x64run.h"
 #include "emu/x64run_private.h"
 #include "dynarec/dynablock_private.h"
 #include "dynarec_arm64_arch.h"
@@ -156,7 +154,7 @@ static int arch_build(dynarec_arm_t* dyn, int ninst, arch_build_t* arch)
         arch->x87 = 1;
         arch->x87_.delta = dyn->insts[ninst].n.x87stack;
     }
-    // opcode can handle unaligned 
+    // opcode can handle unaligned
     arch->unaligned = dyn->insts[ninst].unaligned;
     return arch->flags + arch->x87 + arch->mmx + arch->sse + arch->ymm + arch->unaligned;
 }
@@ -234,12 +232,11 @@ void* populate_arch(dynarec_arm_t* dyn, void* p, size_t tot_sz)
         arch_build_t* build = static_build+i;
         if(i && (!memcmp(build, previous, sizeof(arch_build_t))) && (seq<((1<<10)-1))) {
             // same sequence, increment
-            seq++;
-            arch->seq = seq;
+            arch->seq = ++seq;
         } else {
             int sz = sizeof_arch_build(build);
             if(total+sz>tot_sz) {
-                printf_log(LOG_INFO, "Warning: populate_arch oversized\n");
+                printf_log(LOG_INFO, "Warning: populate_arch on undersized buffer (%d+%d/%d, inst %d/%d)\n", total, sz, tot_sz, i, dyn->size);
                 return NULL;
             }
             arch = next;
@@ -253,8 +250,6 @@ void* populate_arch(dynarec_arm_t* dyn, void* p, size_t tot_sz)
     return p;
 }
 
-int getX64AddressInst(dynablock_t* db, uintptr_t x64pc); // define is signal.c
-
 // NZCV N
 #define NZCV_N      31
 // NZCV Z
@@ -264,6 +259,7 @@ int getX64AddressInst(dynablock_t* db, uintptr_t x64pc); // define is signal.c
 // NZCV V
 #define NZCV_V      28
 
+#ifndef _WIN32 // TODO: Implemented this for Win32
 void adjust_arch(dynablock_t* db, x64emu_t* emu, ucontext_t* p, uintptr_t x64pc)
 {
     if(!db->arch_size || !db->arch)
@@ -289,7 +285,7 @@ void adjust_arch(dynablock_t* db, x64emu_t* emu, ucontext_t* p, uintptr_t x64pc)
     while(i<ninst-1) {
         arch = next;
         i += 1+arch->seq;
-        dynarec_log_prefix(0, LOG_INFO, "[ seq=%d%s%s%s%s%s ] ", arch->seq, arch->flags?" Flags":"", arch->x87?" x87":"", arch->mmx?" MMX":"", arch->sse?" SSE":"", arch->ymm?" YMM":"");
+        dynarec_log_prefix(0, (i<ninst-1)?LOG_DEBUG:LOG_INFO, "[ seq=%d%s%s%s%s%s ] ", arch->seq, arch->flags?" Flags":"", arch->x87?" x87":"", arch->mmx?" MMX":"", arch->sse?" SSE":"", arch->ymm?" YMM":"");
         next = (arch_arch_t*)((uintptr_t)next + sizeof_arch(arch));
     }
     int sz = sizeof(arch_arch_t);
@@ -394,6 +390,7 @@ void adjust_arch(dynablock_t* db, x64emu_t* emu, ucontext_t* p, uintptr_t x64pc)
     }
     dynarec_log_prefix(0, LOG_INFO, "\n");
 }
+#endif
 
 int arch_unaligned(dynablock_t* db, uintptr_t x64pc)
 {

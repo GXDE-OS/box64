@@ -98,6 +98,7 @@ GO("openal.so", openal)
 GO("libalut.so.0", alut)
 GO("libalure.so.1", alure)
 GO("libOpenCL.so.1", opencl)
+GO("libOpenCL.so", opencl)
 //GO("libjpeg.so.8", libjpeg)
 //GO("libjpeg.so.62", libjpeg62)
 //GO("libturbojpeg.so.0", turbojpeg)
@@ -392,6 +393,10 @@ GO("libgnutls.so.30", gnutls)
 GO("libmpg123.so.0", mpg123)
 //GO("libtiff.so.5", libtiff)
 GO("libxml2.so.2", xml2)
+
+GO("libavutil.so.56", libavutil56)
+GO("libavformat.so.58", libavformat58)
+GO("libavcodec.so.58", libavcodec58)
 
 #ifdef TERMUX
 GO("libiconv.so", iconv)

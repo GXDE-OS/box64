@@ -1,13 +1,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
-#include <setjmp.h>
 
+#include "os.h"
 #include "debug.h"
 #include "box64context.h"
-#include "dynarec.h"
+#include "box64cpu.h"
+#include "box64cpu_util.h"
 #include "emu/x64emu_private.h"
-#include "x64run.h"
 #include "x64emu.h"
 #include "box64stack.h"
 #include "callback.h"
@@ -18,16 +18,16 @@
 #include "dynablock.h"
 #include "dynablock_private.h"
 #include "bridge.h"
+#include "alternate.h"
 #include "dynarec_next.h"
 #include "custommem.h"
+#include "x64test.h"
 #endif
 #ifdef HAVE_TRACE
 #include "elfloader.h"
 #endif
 
 #ifdef DYNAREC
-uintptr_t getX64Address(dynablock_t* db, uintptr_t arm_addr);
-
 void* LinkNext(x64emu_t* emu, uintptr_t addr, void* x2, uintptr_t* x3)
 {
     int is32bits = (R_CS == 0x23);
@@ -52,8 +52,7 @@ void* LinkNext(x64emu_t* emu, uintptr_t addr, void* x2, uintptr_t* x3)
     void * jblock;
     dynablock_t* block = NULL;
     if(hasAlternate((void*)addr)) {
-        printf_log(LOG_DEBUG, "Jmp address has alternate: %p", (void*)addr);
-        if (BOX64ENV(log)<LOG_DEBUG) dynarec_log(LOG_INFO, "Jmp address has alternate: %p", (void*)addr);
+        printf_log(LOG_DEBUG, "Jmp address has alternate: %p\n", (void*)addr);
         uintptr_t old_addr = addr;
         addr = (uintptr_t)getAlternate((void*)addr);    // set new address
         R_RIP = addr;   // but also new RIP!
@@ -142,10 +141,6 @@ void DynaCall(x64emu_t* emu, uintptr_t addr)
     }
 }
 
-int my_setcontext(x64emu_t* emu, void* ucp);
-#ifdef BOX32
-int my32_setcontext(x64emu_t* emu, void* ucp);
-#endif
 extern int running32bits;
 void DynaRun(x64emu_t* emu)
 {
@@ -166,9 +161,9 @@ void DynaRun(x64emu_t* emu)
             #endif
             emu->flags.jmpbuf_ready = 1;
             #ifdef ANDROID
-            if((skip=sigsetjmp(*(JUMPBUFF*)emu->jmpbuf, 1)))
+            if ((skip = SigSetJmp(*(JUMPBUFF*)emu->jmpbuf, 1)))
             #else
-            if((skip=sigsetjmp(emu->jmpbuf, 1)))
+            if ((skip = SigSetJmp(emu->jmpbuf, 1)))
             #endif
             {
                 printf_log(LOG_DEBUG, "Setjmp DynaRun, fs=0x%x\n", emu->segs[_FS]);
@@ -179,6 +174,8 @@ void DynaRun(x64emu_t* emu)
                     emu->test.clean = 0;
                 }
                 #endif
+                if(skip==3)
+                    skip = 0;
             }
         }
         if(emu->flags.need_jmpbuf)
@@ -232,7 +229,7 @@ void DynaRun(x64emu_t* emu)
                 int forktype = emu->fork;
                 emu->quit = 0;
                 emu->fork = 0;
-                emu = x64emu_fork(emu, forktype);
+                emu = EmuFork(emu, forktype);
             }
         }
 #endif

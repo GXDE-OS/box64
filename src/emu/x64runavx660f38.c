@@ -9,10 +9,10 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "os.h"
 #include "debug.h"
 #include "box64stack.h"
 #include "x64emu.h"
-#include "x64run.h"
 #include "x64emu_private.h"
 #include "x64run_private.h"
 #include "x64primop.h"
@@ -21,7 +21,7 @@
 #include "box64context.h"
 #include "my_cpuid.h"
 #include "bridge.h"
-#include "signals.h"
+#include "emit_signals.h"
 #include "x64shaext.h"
 #ifdef DYNAREC
 #include "custommem.h"
@@ -539,7 +539,7 @@ uintptr_t RunAVX_660F38(x64emu_t *emu, vex_t vex, uintptr_t addr, int *step)
             GETEY;
             GETGY;
             GETVY;
-            if(!vex.l) emit_signal(emu, SIGILL, (void*)R_RIP, 0);
+            if(!vex.l) EmitSignal(emu, SIGILL, (void*)R_RIP, 0);
             if(GX==EX) {
                 eax1 = *EX;
                 EX = &eax1;
@@ -777,17 +777,19 @@ uintptr_t RunAVX_660F38(x64emu_t *emu, vex_t vex, uintptr_t addr, int *step)
             break;
         case 0x2A:  /* VMOVNTDQA Gx, Ex */
             nextop = F8;
-            GETEX(0);
-            GETGX;
-            GETGY;
-            GX->q[0] = EX->q[0];
-            GX->q[1] = EX->q[1];
-            if(vex.l) {
-                GETEY;
-                GY->q[0] = EY->q[0];
-                GY->q[1] = EY->q[1];
-            } else
-                GY->u128 = 0;
+            if(!MODREG) {
+                GETEX(0);
+                GETGX;
+                GETGY;
+                GX->q[0] = EX->q[0];
+                GX->q[1] = EX->q[1];
+                if(vex.l) {
+                    GETEY;
+                    GY->q[0] = EY->q[0];
+                    GY->q[1] = EY->q[1];
+                } else
+                    GY->u128 = 0;
+            }
             break;
         case 0x2B:  /* VPACKUSDW Gx, Vx, Ex */
             nextop = F8;
@@ -825,6 +827,8 @@ uintptr_t RunAVX_660F38(x64emu_t *emu, vex_t vex, uintptr_t addr, int *step)
             break;
         case 0x2C:  /*VMASKMOVPS Gx, Vx, Ex */
             nextop = F8;
+            if(MODREG)
+                return 0;
             GETEX(0);
             GETGX;
             GETVX;
@@ -841,6 +845,8 @@ uintptr_t RunAVX_660F38(x64emu_t *emu, vex_t vex, uintptr_t addr, int *step)
             break;
         case 0x2D:  /*VMASKMOVPD Gx, Vx, Ex */
             nextop = F8;
+            if(MODREG)
+                return 0;
             GETEX(0);
             GETGX;
             GETVX;
@@ -857,6 +863,8 @@ uintptr_t RunAVX_660F38(x64emu_t *emu, vex_t vex, uintptr_t addr, int *step)
             break;
         case 0x2E:  /*VMASKMOVPS Ex, Vx, Gx */
             nextop = F8;
+            if(MODREG)
+                return 0;
             GETEX(0);
             GETGX;
             GETVX;
@@ -877,6 +885,8 @@ uintptr_t RunAVX_660F38(x64emu_t *emu, vex_t vex, uintptr_t addr, int *step)
             break;
         case 0x2F:  /*VMASKMOVPD Ex, Vx, Gx */
             nextop = F8;
+            if(MODREG)
+                return 0;
             GETEX(0);
             GETGX;
             GETVX;
@@ -982,7 +992,7 @@ uintptr_t RunAVX_660F38(x64emu_t *emu, vex_t vex, uintptr_t addr, int *step)
             GETEY;
             GETGY;
             GETVY;
-            if(!vex.l) emit_signal(emu, SIGILL, (void*)R_RIP, 0);
+            if(!vex.l) EmitSignal(emu, SIGILL, (void*)R_RIP, 0);
             if(GX==EX) {
                 eax1 = *EX;
                 EX = &eax1;
@@ -1153,7 +1163,7 @@ uintptr_t RunAVX_660F38(x64emu_t *emu, vex_t vex, uintptr_t addr, int *step)
             } else
                 GY->u128 = 0;
             break;
-        case 0x41:  /* PHMINPOSUW Gx, Ex */
+        case 0x41:  /* VPHMINPOSUW Gx, Ex */
             nextop = F8;
             GETEX(0);
             GETGX;
@@ -1374,11 +1384,11 @@ uintptr_t RunAVX_660F38(x64emu_t *emu, vex_t vex, uintptr_t addr, int *step)
             }
             break;
 
-        case 0x90:  /* VPGATHERDD Gx, VSIB, Vx */
+        case 0x90:  /* VPGATHERDD/VPGATHERDQ Gx, VSIB, Vx */
         case 0x92:  /* VGATHERDPD/VGATHERDPS Gx, VSIB, Vx */
             nextop = F8;
             if(((nextop&7)!=4) || MODREG) {
-                emit_signal(emu, SIGILL, (void*)R_RIP, 0);
+                EmitSignal(emu, SIGILL, (void*)R_RIP, 0);
             }
             GETGX;
             GETVX;
@@ -1441,11 +1451,11 @@ uintptr_t RunAVX_660F38(x64emu_t *emu, vex_t vex, uintptr_t addr, int *step)
             } else
                 GY->u128 = 0;
             break;
-        case 0x91:  /* VPGATHERQD Gx, VSIB, Vx */
+        case 0x91:  /* VPGATHERQD/VPGATHERQQ Gx, VSIB, Vx */
         case 0x93:  /* VGATHERQPD/VGATHERQPS Gx, VSIB, Vx */
             nextop = F8;
             if(((nextop&7)!=4) || MODREG) {
-                emit_signal(emu, SIGILL, (void*)R_RIP, 0);
+                EmitSignal(emu, SIGILL, (void*)R_RIP, 0);
             }
             GETGX;
             GETVX;

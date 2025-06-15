@@ -5,10 +5,8 @@
 
 #include "debug.h"
 #include "box64context.h"
-#include "dynarec.h"
+#include "box64cpu.h"
 #include "emu/x64emu_private.h"
-#include "emu/x64run_private.h"
-#include "x64run.h"
 #include "x64emu.h"
 #include "box64stack.h"
 #include "callback.h"
@@ -139,7 +137,6 @@ uintptr_t dynarec64_F0(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                             SETFLAGS(X_ALL, SF_SET_PENDING, NAT_FLAGS_NOFUSION);
                             nextop = F8;
                             ANDI(x6, xRAX, 0xff); // AL
-                            SMDMB();
                             if (MODREG) {
                                 if (rex.rex) {
                                     wback = TO_NAT((nextop & 7) + (rex.b << 3));
@@ -161,19 +158,20 @@ uintptr_t dynarec64_F0(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                                     emit_cmp8(dyn, ninst, x6, ed, x3, x4, x5, x1);
                                 }
                                 BNE_MARK2(x6, x2);
-                                if (wb2) {
-                                    SRLI(wback, x2, wb2);
-                                    ANDI(wback, wback, 0xff);
-                                } else {
-                                    ANDI(wback, x2, 0xff);
-                                }
                                 GETGB(x5);
-                                MV(ed, gd);
+                                if (wb2) {
+                                    MOV64x(x4, ~0xff00);
+                                    AND(wback, wback, x4);
+                                    SLLI(gd, gd, 8);
+                                } else {
+                                    ANDI(wback, wback, ~0xff);
+                                }
+                                OR(wback, wback, gd);
                                 MARK2;
                                 ANDI(xRAX, xRAX, ~0xff);
                                 OR(xRAX, xRAX, x2);
-                                B_NEXT_nocond;
                             } else {
+                                SMDMB();
                                 if (rex.rex) {
                                     gb1 = TO_NAT(((nextop & 0x38) >> 3) + (rex.r << 3));
                                     gb2 = 0;
@@ -187,8 +185,8 @@ uintptr_t dynarec64_F0(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                                 SLLI(x5, x5, 3); // shamt
                                 MARKLOCK;
                                 ANDI(x2, wback, ~0b11); // align to 32bit
-                                LWU(x1, x2, 0);
                                 LR_W(x4, x2, 1, 1);
+                                MV(x1, x4);
                                 SRL(x4, x4, x5);
                                 ANDI(x4, x4, 0xff);
                                 BNE_MARK(x6, x4); // compare AL with m8
@@ -214,8 +212,8 @@ uintptr_t dynarec64_F0(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                                 // load m8 into AL
                                 ANDI(xRAX, xRAX, ~0xff);
                                 OR(xRAX, xRAX, x4);
+                                SMDMB();
                             }
-                            SMDMB();
                             break;
                         default:
                             DEFAULT;
@@ -233,9 +231,9 @@ uintptr_t dynarec64_F0(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                                 wback = 0;
                                 UFLAG_IF { emit_cmp32(dyn, ninst, rex, xRAX, ed, x3, x4, x5, x6); }
                                 MV(x1, ed); // save value
-                                SUB(x2, x1, xRAX);
+                                SUBxw(x2, ed, xRAX);
                                 BNE_MARK2(x2, xZR);
-                                MV(ed, gd);
+                                MVxw(ed, gd);
                                 MARK2;
                                 MVxw(xRAX, x1);
                             } else {
@@ -790,9 +788,9 @@ uintptr_t dynarec64_F0(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
             if (MODREG) {
                 GETGD;
                 GETED(0);
-                MV(x1, gd);
+                MV(x5, gd);
                 MV(gd, ed);
-                MV(ed, x1);
+                MV(ed, x5);
             } else {
                 SMDMB();
                 GETGD;
@@ -853,13 +851,26 @@ uintptr_t dynarec64_F0(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                         emit_inc32(dyn, ninst, rex, ed, x3, x4, x5, x6);
                     } else {
                         addr = geted(dyn, addr, ninst, nextop, &wback, x2, x1, &fixedaddress, rex, LOCK_LOCK, 0, 0);
-                        MARKLOCK;
-                        LRxw(x1, wback, 1, 1);
+                        ANDI(x1, wback, (1 << (rex.w + 2)) - 1);
+                        BNEZ_MARK3(x1);
+                        // Aligned
+                        ADDIxw(x4, xZR, 1); 
+                        AMOADDxw(x1, x4, wback, 1, 1);
+                        B_MARK_nocond;
+                        MARK3;
+                        // Unaligned
+                        ANDI(x5, wback, -(1 << (rex.w + 2)));
+                        MARKLOCK2;
+                        LDxw(x1, wback, 0);
+                        LRxw(x6, x5, 1, 1);
                         ADDIxw(x4, x1, 1);
-                        SCxw(x3, x4, wback, 1, 1);
-                        BNEZ_MARKLOCK(x3);
+                        SCxw(x3, x6, x5, 1, 1);
+                        BNEZ_MARKLOCK2(x3);
+                        SDxw(x4, wback, 0);
+                        MARK;
                         IFXORNAT (X_ALL | X_PEND)
                             emit_inc32(dyn, ninst, rex, x1, x3, x4, x5, x6);
+                        SMDMB();
                     }
                     break;
                 case 1: // DEC Ed
@@ -871,13 +882,26 @@ uintptr_t dynarec64_F0(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                         emit_dec32(dyn, ninst, rex, ed, x3, x4, x5, x6);
                     } else {
                         addr = geted(dyn, addr, ninst, nextop, &wback, x2, x1, &fixedaddress, rex, LOCK_LOCK, 0, 0);
-                        MARKLOCK;
-                        LRxw(x1, wback, 1, 1);
+                        ANDI(x1, wback, (1 << (rex.w + 2)) - 1);
+                        BNEZ_MARK3(x1);
+                        // Aligned
+                        ADDIxw(x4, xZR, -1); 
+                        AMOADDxw(x1, x4, wback, 1, 1);
+                        B_MARK_nocond;
+                        MARK3;
+                        // Unaligned
+                        ANDI(x5, wback, -(1 << (rex.w + 2)));
+                        MARKLOCK2;
+                        LDxw(x1, wback, 0);
+                        LRxw(x6, x5, 1, 1);
                         ADDIxw(x4, x1, -1);
-                        SCxw(x3, x4, wback, 1, 1);
-                        BNEZ_MARKLOCK(x3);
+                        SCxw(x3, x6, x5, 1, 1);
+                        BNEZ_MARKLOCK2(x3);
+                        SDxw(x4, wback, 0);
+                        MARK;
                         IFXORNAT (X_ALL | X_PEND)
                             emit_dec32(dyn, ninst, rex, x1, x3, x4, x5, x6);
+                        SMDMB();
                     }
                     break;
                 default:

@@ -5,11 +5,9 @@
 
 #include "debug.h"
 #include "box64context.h"
-#include "dynarec.h"
+#include "box64cpu.h"
 #include "emu/x64emu_private.h"
-#include "emu/x64run_private.h"
 #include "la64_emitter.h"
-#include "x64run.h"
 #include "x64emu.h"
 #include "box64stack.h"
 #include "callback.h"
@@ -20,7 +18,7 @@
 #include "emu/x87emu_private.h"
 #include "emu/x64shaext.h"
 #include "bitutils.h"
-
+#include "freq.h"
 #include "la64_printer.h"
 #include "dynarec_la64_private.h"
 #include "dynarec_la64_functions.h"
@@ -90,7 +88,7 @@ uintptr_t dynarec64_0F(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
             SMEND();
             GETIP(addr);
             STORE_XEMU_CALL();
-            CALL_S(x64Syscall, -1);
+            CALL_S(EmuX64Syscall, -1);
             LOAD_XEMU_CALL();
             TABLE64(x3, addr); // expected return address
             BNE_MARK(xRIP, x3);
@@ -285,6 +283,17 @@ uintptr_t dynarec64_0F(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                 SMWRITE2();
             }
             break;
+        case 0x2A:
+            INST_NAME("CVTPI2PS Gx,Em");
+            nextop = F8;
+            GETGX(v0, 1);
+            GETEM(v1, 0);
+            q0 = fpu_get_scratch(dyn);
+            u8 = sse_setround(dyn, ninst, x1, x2);
+            VFFINT_S_W(q0, v1);
+            x87_restoreround(dyn, ninst, u8);
+            VEXTRINS_D(v0, q0, VEXTRINS_IMM_4_0(0, 0));
+            break;
         case 0x2B:
             INST_NAME("MOVNTPS Ex,Gx");
             nextop = F8;
@@ -298,6 +307,73 @@ uintptr_t dynarec64_0F(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                 addr = geted(dyn, addr, ninst, nextop, &ed, x2, x3, &fixedaddress, rex, NULL, 1, 0);
                 VST(v0, ed, fixedaddress);
             }
+            break;
+        case 0x2C:
+            INST_NAME("CVTTPS2PI Gm,Ex");
+            nextop = F8;
+            GETGM(v0);
+            GETEX(v1, 0, 0);
+            if (BOX64ENV(dynarec_fastround)) {
+                VFTINTRZ_W_S(v0, v1);
+            } else {
+                MOVGR2FCSR(FCSR2, xZR); // reset all bits
+                VFTINTRZ_W_S(v0, v1);
+                MOVFCSR2GR(x5, FCSR2); // get back FPSR to check
+                MOV32w(x3, (1 << FR_V) | (1 << FR_O));
+                AND(x5, x5, x3);
+                BEQZ_MARK3(x5); // no fp exception, work done.
+
+                // check +/-Nan, +overlow ,replace with 0x80000000
+                q0 = fpu_get_scratch(dyn);
+                q1 = fpu_get_scratch(dyn); // mask
+                d0 = fpu_get_scratch(dyn);
+                VLDI(q0, 0b1001110000000); // broadcast 0x80000000 to all
+                VLDI(d0, (0b10011 << 8) | 0x4f);
+                VFCMP_S(q1, d0, v1, cULE); // get Nan,+overflow mark
+                VBITSEL_V(v0, v0, q0, q1);
+
+                MARK3;
+            }
+            break;
+        case 0x2D:
+            INST_NAME("CVTPS2PI Gm, Ex");
+            nextop = F8;
+            GETGM(v0);
+            GETEX(v1, 0, 0);
+            u8 = sse_setround(dyn, ninst, x4, x6);
+            if (BOX64ENV(dynarec_fastround)) {
+                VFTINTRZ_W_S(v0, v1);
+            } else {
+                MOVGR2FCSR(FCSR2, xZR); // reset all bits
+                VFTINT_W_S(v0, v1);
+                MOVFCSR2GR(x5, FCSR2); // get back FPSR to check
+                MOV32w(x3, (1 << FR_V) | (1 << FR_O));
+                AND(x5, x5, x3);
+                BEQZ_MARK3(x5); // no fp exception, work done, fast path.
+
+                // check +/-Nan, +overlow ,replace with 0x80000000
+                /* LoongArch follow IEEE754-2008,
+                   if val < -2147483648.0f got -2147483648 match sse
+                   if var >  2147483648.0f got  2147483647 need mask
+                   but lucky _Float32 is not accurate:
+                   -2147483648.0f is 0xcf000000 (_Float32)
+                   -2147483520.0f is 0xceffffff (_Float32)
+                    2147483648.0f is 0x4f000000 (_Float32)
+                    2147483520.0f is 0x4effffff (_Float32)
+                   combine (unorder || gt 0x4f000000)
+                   use cULE  for (unodered || 0x4f000000 <= v1[x])
+                */
+                q0 = fpu_get_scratch(dyn);
+                q1 = fpu_get_scratch(dyn); // mask
+                d0 = fpu_get_scratch(dyn);
+                VLDI(q0, 0b1001110000000); // broadcast 0x80000000 to all
+                VLDI(d0, (0b10011 << 8) | 0x4f);
+                VFCMP_S(q1, d0, v1, cULE); // get Nan,+overflow mark
+                VBITSEL_V(v0, v0, q0, q1);
+
+                MARK3;
+            }
+            x87_restoreround(dyn, ninst, u8);
             break;
         case 0x2E:
             // no special check...
@@ -358,6 +434,168 @@ uintptr_t dynarec64_0F(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
             // SSE3
             nextop = F8;
             switch (nextop) {
+                case 0x00:
+                    INST_NAME("PSHUFB Gm, Em");
+                    nextop = F8;
+                    GETGM(q0);
+                    GETEM(q1, 0);
+                    v0 = fpu_get_scratch(dyn);
+                    v1 = fpu_get_scratch(dyn);
+                    d0 = fpu_get_scratch(dyn);
+                    VLDI(v0, 0b0000010000111); // broadcast 0b10000111 as byte
+                    VAND_V(v0, v0, q1);
+                    VMINI_BU(v0, v0, 0x1f);
+                    VXOR_V(v1, v1, v1);
+                    VSHUF_B(q0, v1, q0, v0);
+                    break;
+                case 0x01:
+                    INST_NAME("PHADDW Gm, Em");
+                    nextop = F8;
+                    GETGM(q0);
+                    GETEM(q1, 0);
+                    v0 = fpu_get_scratch(dyn);
+                    v1 = fpu_get_scratch(dyn);
+                    VPICKEV_H(v0, q1, q0);
+                    VPICKOD_H(v1, q1, q0);
+                    VADD_H(q0, v1, v0);
+                    VSHUF4I_W(q0, q0, 0b11011000);
+                    break;
+                case 0x02:
+                    INST_NAME("PHADDD Gm, Em");
+                    nextop = F8;
+                    GETGM(q0);
+                    GETEM(q1, 0);
+                    v0 = fpu_get_scratch(dyn);
+                    v1 = fpu_get_scratch(dyn);
+                    VPICKEV_W(v0, q1, q0);
+                    VPICKOD_W(v1, q1, q0);
+                    VADD_W(q0, v0, v1);
+                    VSHUF4I_W(q0, q0, 0b11011000);
+                    break;
+                case 0x03:
+                    INST_NAME("PHADDSW Gm, Em");
+                    nextop = F8;
+                    GETGM(q0);
+                    GETEM(q1, 0);
+                    v0 = fpu_get_scratch(dyn);
+                    v1 = fpu_get_scratch(dyn);
+                    VPICKEV_H(v0, q1, q0);
+                    VPICKOD_H(v1, q1, q0);
+                    VSADD_H(q0, v0, v1);
+                    VSHUF4I_W(q0, q0, 0b11011000);
+                    break;
+                case 0x04:
+                    INST_NAME("PMADDUBSW Gm,Em");
+                    nextop = F8;
+                    GETGM(q0);
+                    GETEM(q1, 0);
+                    v0 = fpu_get_scratch(dyn);
+                    v1 = fpu_get_scratch(dyn);
+                    VEXT2XV_HU_BU(v0, q0);
+                    VEXT2XV_H_B(v1, q1);
+                    XVMUL_H(v0, v0, v1);
+                    VPICKEV_H(q0, v1, v0);
+                    VPICKOD_H(v0, v1, v0);
+                    VSADD_H(q0, v0, q0);
+                    break;
+                case 0x05:
+                    INST_NAME("PHSUBW Gm,Em");
+                    nextop = F8;
+                    GETGM(q0);
+                    GETEM(q1, 0);
+                    v0 = fpu_get_scratch(dyn);
+                    v1 = fpu_get_scratch(dyn);
+                    VPICKEV_H(v0, q1, q0);
+                    VPICKOD_H(v1, q1, q0);
+                    VSUB_H(q0, v0, v1);
+                    VSHUF4I_W(q0, q0, 0b11011000);
+                    break;
+                case 0x06:
+                    INST_NAME("PHSUBD Gm,Em");
+                    nextop = F8;
+                    GETGM(q0);
+                    GETEM(q1, 0);
+                    v0 = fpu_get_scratch(dyn);
+                    v1 = fpu_get_scratch(dyn);
+                    VPICKEV_W(v0, q1, q0);
+                    VPICKOD_W(v1, q1, q0);
+                    VSUB_W(q0, v0, v1);
+                    VSHUF4I_W(q0, q0, 0b11011000);
+                    break;
+                case 0x07:
+                    INST_NAME("PHSUBSW Gm,Em");
+                    nextop = F8;
+                    GETGM(q0);
+                    GETEM(q1, 0);
+                    v0 = fpu_get_scratch(dyn);
+                    v1 = fpu_get_scratch(dyn);
+                    VPICKEV_H(v0, q1, q0);
+                    VPICKOD_H(v1, q1, q0);
+                    VSSUB_H(q0, v0, v1);
+                    VSHUF4I_W(q0, q0, 0b11011000);
+                    break;
+                case 0x08:
+                    INST_NAME("PSIGNB Gm,Em");
+                    nextop = F8;
+                    GETGM(q0);
+                    GETEM(q1, 0);
+                    VSIGNCOV_B(q0, q1, q0);
+                    break;
+                case 0x09:
+                    INST_NAME("PSIGNW Gm,Em");
+                    nextop = F8;
+                    GETGM(q0);
+                    GETEM(q1, 0);
+                    VSIGNCOV_H(q0, q1, q0);
+                    break;
+                case 0x0A:
+                    INST_NAME("PSIGND Gm,Em");
+                    nextop = F8;
+                    GETGM(q0);
+                    GETEM(q1, 0);
+                    VSIGNCOV_W(q0, q1, q0);
+                    break;
+                case 0x0B:
+                    INST_NAME("PMULHRSW Gm,Em");
+                    nextop = F8;
+                    GETGM(q0);
+                    GETEM(q1, 0);
+                    v0 = fpu_get_scratch(dyn);
+                    v1 = fpu_get_scratch(dyn);
+                    VEXT2XV_W_H(v0, q0);
+                    VEXT2XV_W_H(v1, q1);
+                    XVMUL_W(v0, v0, v1);
+                    VSRLI_W(v0, v0, 14);
+                    VADDI_WU(v0, v0, 1);
+                    VSRLNI_H_W(q0, v0, 1);
+                    break;
+                case 0x1C:
+                    INST_NAME("PABSB Gm,Em");
+                    nextop = F8;
+                    GETGM(q0);
+                    GETEM(q1, 0);
+                    v0 = fpu_get_scratch(dyn);
+                    VXOR_V(v0, v0, v0);
+                    VABSD_B(q0, q1, v0);
+                    break;
+                case 0x1D:
+                    INST_NAME("PABSW Gm,Em");
+                    nextop = F8;
+                    GETGM(q0);
+                    GETEM(q1, 0);
+                    v0 = fpu_get_scratch(dyn);
+                    VXOR_V(v0, v0, v0);
+                    VABSD_H(q0, q1, v0);
+                    break;
+                case 0x1E:
+                    INST_NAME("PABSD Gm,Em");
+                    nextop = F8;
+                    GETGM(q0);
+                    GETEM(q1, 0);
+                    v0 = fpu_get_scratch(dyn);
+                    VXOR_V(v0, v0, v0);
+                    VABSD_W(q0, q1, v0);
+                    break;
                 case 0xC8 ... 0xCD:
                     u8 = nextop;
                     switch (u8) {
@@ -450,6 +688,24 @@ uintptr_t dynarec64_0F(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
         case 0x3A: // more SSE3 opcodes
             opcode = F8;
             switch (opcode) {
+                case 0x0F:
+                    INST_NAME("PALIGNR Gm, Em, Ib");
+                    nextop = F8;
+                    GETGM(q0);
+                    GETEM(q1, 1);
+                    u8 = F8;
+                    if (u8 > 15) {
+                        VXOR_V(q0, q0, q0);
+                    } else if (!u8) {
+                        VEXTRINS_D(q0, q1, VEXTRINS_IMM_4_0(0, 0));
+                    } else {
+                        d0 = fpu_get_scratch(dyn);
+                        VOR_V(d0, q0, q0);
+                        VSHUF4I_D(d0, q1, 0b00010010);
+                        VBSRL_V(d0, d0, u8);
+                        VEXTRINS_D(q0, d0, 0);
+                    }
+                    break;
                 case 0xCC:
                     INST_NAME("SHA1RNDS4 Gx, Ex, Ib");
                     nextop = F8;
@@ -653,13 +909,11 @@ uintptr_t dynarec64_0F(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
             GETEX(v1, 0, 0);
             if (!BOX64ENV(dynarec_fastnan) && v0 != v1) {
                 q0 = fpu_get_scratch(dyn);
-                // always copy from v1 if any oprand is NaN
-                VFCMP_S(q0, v0, v1, cUN);
-                VANDN_V(v0, q0, v0);
-                VAND_V(q0, q0, v1);
-                VOR_V(v0, v0, q0);
+                VFCMP_S(q0, v1, v0, cULE);
+                VBITSEL_V(v0, v0, v1, q0);
+            } else {
+                VFMIN_S(v0, v0, v1);
             }
-            VFMIN_S(v0, v0, v1);
             break;
         case 0x5E:
             INST_NAME("DIVPS Gx, Ex");
@@ -689,15 +943,330 @@ uintptr_t dynarec64_0F(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
             GETEX(v1, 0, 0);
             if (!BOX64ENV(dynarec_fastnan) && v0 != v1) {
                 q0 = fpu_get_scratch(dyn);
-                // always copy from v1 if any oprand is NaN
-                VFCMP_S(q0, v0, v1, cUN);
-                VANDN_V(v0, q0, v0);
-                VAND_V(q0, q0, v1);
-                VOR_V(v0, v0, q0);
+                q1 = fpu_get_scratch(dyn);
+                VFCMP_S(q0, v1, v0, cLT);  // ~cLT = un ge eq, if either v0/v1=nan ,choose v1. if eq either is ok,but when +0.0 == -0.0 x86 sse choose v1
+                VBITSEL_V(v0, v1, v0, q0); // swap v0 v1 => v1 v0 for ~cLT
+            } else {
+                VFMAX_S(v0, v0, v1);
             }
-            VFMAX_S(v0, v0, v1);
             break;
-
+        case 0x60:
+            INST_NAME("PUNPCKLBW Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VILVL_B(v0, v1, v0);
+            break;
+        case 0x61:
+            INST_NAME("PUNPCKLWD Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VILVL_H(v0, v1, v0);
+            break;
+        case 0x62:
+            INST_NAME("PUNPCKLDQ Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VEXTRINS_W(v0, v1, VEXTRINS_IMM_4_0(1, 0));
+            break;
+        case 0x63:
+            INST_NAME("PACKSSWB Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VPACKEV_D(v0, v1, v0);
+            VSSRANI_B_H(v0, v0, 0);
+            break;
+        case 0x64:
+            INST_NAME("PCMPGTB Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VSLT_B(v0, v1, v0);
+            break;
+        case 0x65:
+            INST_NAME("PCMPGTW Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VSLT_H(v0, v1, v0);
+            break;
+        case 0x66:
+            INST_NAME("PCMPGTD Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VSLT_W(v0, v1, v0);
+            break;
+        case 0x67:
+            INST_NAME("PACKUSWB Gm, Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            q0 = fpu_get_scratch(dyn);
+            VPACKEV_D(v0, v1, v0);
+            VSSRANI_BU_H(v0, v0, 0);
+            break;
+        case 0x68:
+            INST_NAME("PUNPCKHBW Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VILVL_B(v0, v1, v0);
+            VEXTRINS_D(v0, v0, VEXTRINS_IMM_4_0(0, 1));
+            break;
+        case 0x69:
+            INST_NAME("PUNPCKHWD Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VILVL_H(v0, v1, v0);
+            VEXTRINS_D(v0, v0, VEXTRINS_IMM_4_0(0, 1));
+            break;
+        case 0x6A:
+            INST_NAME("PUNPCKHDQ Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VILVL_W(v0, v1, v0);
+            VEXTRINS_D(v0, v0, VEXTRINS_IMM_4_0(0, 1));
+            break;
+        case 0x6B:
+            INST_NAME("PACKSSDW Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            d0 = fpu_get_scratch(dyn);
+            VPACKEV_D(v0, v1, v0);
+            VSSRANI_H_W(v0, v0, 0);
+            break;
+        case 0x6E:
+            INST_NAME("MOVD Gm, Ed");
+            nextop = F8;
+            GETG;
+            v0 = mmx_get_reg_empty(dyn, ninst, x1, x2, x3, gd);
+            if (MODREG) {
+                ed = TO_NAT(nextop & 7);
+                if (rex.w) {
+                    MOVGR2FR_D(v0, ed);
+                } else {
+                    MOVGR2FR_W(v0, ed);
+                    MOVGR2FRH_W(v0, xZR);
+                }
+            } else {
+                addr = geted(dyn, addr, ninst, nextop, &wback, x3, x1, &fixedaddress, rex, NULL, 1, 0);
+                if (rex.w) {
+                    FLD_D(v0, wback, fixedaddress);
+                } else {
+                    FLD_S(v0, wback, fixedaddress);
+                    MOVGR2FRH_W(v0, xZR);
+                }
+            }
+            break;
+        case 0x6F:
+            INST_NAME("MOVQ Gm, Em");
+            nextop = F8;
+            GETG;
+            if (MODREG) {
+                v1 = mmx_get_reg(dyn, ninst, x1, x2, x3, nextop & 7);
+                v0 = mmx_get_reg_empty(dyn, ninst, x1, x2, x3, gd);
+                FMOV_D(v0, v1);
+            } else {
+                v0 = mmx_get_reg_empty(dyn, ninst, x1, x2, x3, gd);
+                addr = geted(dyn, addr, ninst, nextop, &wback, x3, x1, &fixedaddress, rex, NULL, 1, 0);
+                FLD_D(v0, wback, fixedaddress);
+            }
+            break;
+        case 0x70:
+            INST_NAME("PSHUFW Gm,Em,Ib");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 1);
+            u8 = F8;
+            VSHUF4I_H(v0, v1, u8);
+            break;
+        case 0x71:
+            nextop = F8;
+            switch ((nextop >> 3) & 7) {
+                case 2:
+                    INST_NAME("PSRLW Em, Ib");
+                    GETEM(v0, 1);
+                    u8 = F8;
+                    if (u8) {
+                        if (u8 > 15) {
+                            VXOR_V(v0, v0, v0);
+                        } else if (u8) {
+                            VSRLI_H(v0, v0, u8);
+                        }
+                        PUTEM(v0);
+                    }
+                    break;
+                case 4:
+                    INST_NAME("PSRAW Em, Ib");
+                    GETEM(v0, 1);
+                    u8 = F8;
+                    if (u8 > 15) u8 = 15;
+                    if (u8) {
+                        VSRAI_H(v0, v0, u8);
+                    }
+                    PUTEM(v0);
+                    break;
+                case 6:
+                    INST_NAME("PSLLW Em, Ib");
+                    GETEM(v0, 1);
+                    u8 = F8;
+                    if (u8) {
+                        if (u8 > 15) {
+                            VXOR_V(v0, v0, v0);
+                        } else {
+                            VSLLI_H(v0, v0, u8);
+                        }
+                        PUTEM(v0);
+                    }
+                    break;
+                default:
+                    *ok = 0;
+                    DEFAULT;
+            }
+            break;
+        case 0x72:
+            nextop = F8;
+            switch ((nextop >> 3) & 7) {
+                case 2:
+                    INST_NAME("PSRLD Em, Ib");
+                    GETEM(v0, 1);
+                    u8 = F8;
+                    if (u8) {
+                        if (u8 > 31) {
+                            VXOR_V(v0, v0, v0);
+                        } else if (u8) {
+                            VSRLI_W(v0, v0, u8);
+                        }
+                        PUTEM(v0);
+                    }
+                    break;
+                case 4:
+                    INST_NAME("PSRAD Em, Ib");
+                    GETEM(v0, 1);
+                    u8 = F8;
+                    if (u8 > 31) u8 = 31;
+                    if (u8) {
+                        VSRAI_W(v0, v0, u8);
+                    }
+                    PUTEM(v0);
+                    break;
+                case 6:
+                    INST_NAME("PSLLD Em, Ib");
+                    GETEM(v0, 1);
+                    u8 = F8;
+                    if (u8) {
+                        if (u8 > 31) {
+                            VXOR_V(v0, v0, v0);
+                        } else {
+                            VSLLI_W(v0, v0, u8);
+                        }
+                        PUTEM(v0);
+                    }
+                    break;
+                default:
+                    DEFAULT;
+            }
+            break;
+        case 0x73:
+            nextop = F8;
+            switch ((nextop >> 3) & 7) {
+                case 2:
+                    INST_NAME("PSRLQ Em, Ib");
+                    GETEM(v0, 1);
+                    u8 = F8;
+                    if (u8) {
+                        if (u8 > 63) {
+                            VXOR_V(v0, v0, v0);
+                        } else if (u8) {
+                            VSRLI_D(v0, v0, u8);
+                        }
+                        PUTEM(v0);
+                    }
+                    break;
+                case 6:
+                    INST_NAME("PSLLQ Em, Ib");
+                    GETEM(v0, 1);
+                    u8 = F8;
+                    if (u8) {
+                        if (u8 > 63) {
+                            VXOR_V(v0, v0, v0);
+                        } else {
+                            VSLLI_D(v0, v0, u8);
+                        }
+                        PUTEM(v0);
+                    }
+                    break;
+                default:
+                    DEFAULT;
+            }
+            break;
+        case 0x74:
+            INST_NAME("PCMPEQB Gm,Em");
+            nextop = F8;
+            GETGM(d0);
+            GETEM(d1, 0);
+            VSEQ_B(d0, d0, d1);
+            break;
+        case 0x75:
+            INST_NAME("PCMPEQW Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(q0, 0);
+            VSEQ_H(v0, v0, q0);
+            break;
+        case 0x76:
+            INST_NAME("PCMPEQD Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VSEQ_W(v0, v0, v1);
+            break;
+        case 0x77:
+            INST_NAME("EMMS");
+            // empty MMX, FPU now usable
+            mmx_purgecache(dyn, ninst, 0, x1);
+            break;
+        case 0x7E:
+            INST_NAME("MOVD Ed, Gm");
+            nextop = F8;
+            GETGM(v0);
+            if (MODREG) {
+                ed = TO_NAT((nextop & 0x07) + (rex.b << 3));
+                if (rex.w) {
+                    MOVFR2GR_D(ed, v0);
+                } else {
+                    MOVFR2GR_S(ed, v0);
+                    ZEROUP(ed);
+                }
+            } else {
+                addr = geted(dyn, addr, ninst, nextop, &ed, x3, x2, &fixedaddress, rex, NULL, 1, 0);
+                if (rex.w)
+                    FST_D(v0, ed, fixedaddress);
+                else
+                    FST_S(v0, ed, fixedaddress);
+                SMWRITE2();
+            }
+            break;
+        case 0x7F:
+            INST_NAME("MOVQ Em, Gm");
+            nextop = F8;
+            GETGM(v0);
+            if (MODREG) {
+                v1 = mmx_get_reg_empty(dyn, ninst, x1, x2, x3, nextop & 7);
+                FMOV_D(v1, v0);
+            } else {
+                addr = geted(dyn, addr, ninst, nextop, &ed, x3, x2, &fixedaddress, rex, NULL, 1, 0);
+                FST_D(v0, ed, fixedaddress);
+                SMWRITE2();
+            }
+            break;
 #define GO(GETFLAGS, NO, YES, NATNO, NATYES, F, I)                                          \
     READFLAGS_FUSION(F, x1, x2, x3, x4, x5);                                                \
     i32_ = F32S;                                                                            \
@@ -1353,6 +1922,37 @@ uintptr_t dynarec64_0F(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                 SDxw(gd, ed, fixedaddress);
             }
             break;
+        case 0xC4:
+            INST_NAME("PINSRW Gm,Ed,Ib");
+            nextop = F8;
+            GETGM(v0);
+            if (MODREG) {
+                u8 = (F8) & 3;
+                ed = TO_NAT((nextop & 7) + (rex.b << 3));
+            } else {
+                SMREAD();
+                addr = geted(dyn, addr, ninst, nextop, &wback, x2, x4, &fixedaddress, rex, NULL, 1, 1);
+                u8 = (F8) & 3;
+                ed = x3;
+                LD_HU(ed, wback, fixedaddress);
+            }
+            VINSGR2VR_H(v0, ed, u8);
+            break;
+        case 0xC5:
+            INST_NAME("PEXTRW Gd,Em,Ib");
+            nextop = F8;
+            GETGD;
+            if (MODREG) {
+                GETEM(v0, 1);
+                u8 = (F8) & 3;
+                VPICKVE2GR_HU(gd, v0, u8);
+            } else {
+                SMREAD();
+                addr = geted(dyn, addr, ninst, nextop, &wback, x2, x4, &fixedaddress, rex, NULL, 0, 1);
+                u8 = (F8) & 3;
+                LD_HU(gd, wback, (u8 << 1));
+            }
+            break;
         case 0xC6:
             INST_NAME("SHUFPS Gx, Ex, Ib");
             nextop = F8;
@@ -1399,6 +1999,362 @@ uintptr_t dynarec64_0F(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
             INST_NAME("BSWAP Reg");
             gd = TO_NAT((opcode & 7) + (rex.b << 3));
             REVBxw(gd, gd);
+            break;
+        case 0xD1:
+            INST_NAME("PSRLW Gm, Em");
+            nextop = F8;
+            GETGM(d0);
+            GETEM(d1, 0);
+            v0 = fpu_get_scratch(dyn);
+            v1 = fpu_get_scratch(dyn);
+            VSLEI_DU(v0, d1, 15);
+            VREPLVEI_H(v1, d1, 0);
+            VSRL_H(d0, d0, v1);
+            VAND_V(d0, d0, v0);
+            break;
+        case 0xD2:
+            INST_NAME("PSRLD Gm, Em");
+            nextop = F8;
+            GETGM(d0);
+            GETEM(d1, 0);
+            v0 = fpu_get_scratch(dyn);
+            v1 = fpu_get_scratch(dyn);
+            VSLEI_DU(v0, d1, 31);
+            VREPLVEI_W(v1, d1, 0);
+            VSRL_W(d0, d0, v1);
+            VAND_V(d0, d0, v0);
+            break;
+        case 0xD3:
+            INST_NAME("PSRLQ Gm, Em");
+            nextop = F8;
+            GETGM(d0);
+            GETEM(d1, 0);
+            v0 = fpu_get_scratch(dyn);
+            VLDI(v0, 0b0110000111111); // broadcast 63 as 64bit imm
+            VSLE_DU(v0, d1, v0);
+            VSRL_D(d0, d0, d1);
+            VAND_V(d0, d0, v0);
+            break;
+        case 0xD4:
+            INST_NAME("PADDQ Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VADD_D(v0, v0, v1);
+            break;
+        case 0xD5:
+            INST_NAME("PMULLW Gm, Em");
+            nextop = F8;
+            GETGM(q0);
+            GETEM(q1, 0);
+            VMUL_H(q0, q0, q1);
+            break;
+        case 0xD7:
+            nextop = F8;
+            INST_NAME("PMOVMSKB Gd, Em");
+            GETGD;
+            v0 = fpu_get_scratch(dyn);
+            GETEM(v1, 0);
+            VMSKLTZ_B(v0, v1);
+            MOVFR2GR_D(x1, v0);
+            BSTRPICK_D(gd, x1, 7, 0);
+            break;
+        case 0xD8:
+            INST_NAME("PSUBUSB Gm, Em");
+            nextop = F8;
+            GETGM(q0);
+            GETEM(q1, 0);
+            VSSUB_BU(q0, q0, q1);
+            break;
+        case 0xD9:
+            INST_NAME("PSUBUSW Gm, Em");
+            nextop = F8;
+            GETGM(q0);
+            GETEM(q1, 0);
+            VSSUB_HU(q0, q0, q1);
+            break;
+        case 0xDA:
+            INST_NAME("PMINUB Gm, Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VMIN_BU(v0, v0, v1);
+            break;
+        case 0xDB:
+            INST_NAME("PAND Gm, Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VAND_V(v0, v0, v1);
+            break;
+        case 0xDC:
+            INST_NAME("PADDUSB Gm, Em");
+            nextop = F8;
+            GETGM(q0);
+            GETEM(q1, 0);
+            VSADD_BU(q0, q0, q1);
+            break;
+        case 0xDD:
+            INST_NAME("PADDUSW Gm, Em");
+            nextop = F8;
+            GETGM(q0);
+            GETEM(q1, 0);
+            VSADD_HU(q0, q0, q1);
+            break;
+        case 0xDE:
+            INST_NAME("PMAXUB Gm, Em");
+            nextop = F8;
+            GETGM(d0);
+            GETEM(d1, 0);
+            VMAX_BU(d0, d0, d1);
+            break;
+        case 0xDF:
+            INST_NAME("PANDN Gm, Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VANDN_V(v0, v0, v1);
+            break;
+        case 0xE0:
+            INST_NAME("PAVGB Gm, Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VAVGR_BU(v0, v0, v1);
+            break;
+        case 0xE1:
+            INST_NAME("PSRAW Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            q0 = fpu_get_scratch(dyn);
+            VMINI_DU(q0, v1, 15);
+            VREPLVEI_H(q0, q0, 0);
+            VSRA_H(v0, v0, q0);
+            break;
+        case 0xE2:
+            INST_NAME("PSRAD Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            q0 = fpu_get_scratch(dyn);
+            VMINI_WU(q0, v1, 31);
+            VREPLVEI_W(q0, q0, 0);
+            VSRA_W(v0, v0, q0);
+            break;
+        case 0xE3:
+            INST_NAME("PAVGW Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VAVG_HU(v0, v0, v1);
+            break;
+        case 0xE4:
+            INST_NAME("PMULHUW Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VMUH_HU(v0, v0, v1);
+            break;
+        case 0xE5:
+            INST_NAME("PMULHW Gm, Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VMUH_H(v0, v0, v1);
+            break;
+        case 0xE7:
+            INST_NAME("MOVNTQ Em, Gm");
+            nextop = F8;
+            GETGM(v0);
+            if (MODREG) {
+                v1 = mmx_get_reg_empty(dyn, ninst, x1, x2, x3, nextop & 7);
+                FMOV_D(v1, v0);
+            } else {
+                addr = geted(dyn, addr, ninst, nextop, &ed, x3, x2, &fixedaddress, rex, NULL, 1, 0);
+                FST_D(v0, ed, fixedaddress);
+                SMWRITE2();
+            }
+            break;
+        case 0xE8:
+            INST_NAME("PSUBSB Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(q0, 0);
+            VSSUB_B(v0, v0, q0);
+            break;
+        case 0xE9:
+            INST_NAME("PSUBSW Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(q0, 0);
+            VSSUB_H(v0, v0, q0);
+            break;
+        case 0xEA:
+            INST_NAME("PMINSW Gx,Ex");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VMIN_H(v0, v0, v1);
+            break;
+        case 0xEB:
+            INST_NAME("POR Gm, Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VOR_V(v0, v0, v1);
+            break;
+        case 0xEC:
+            INST_NAME("PADDSB Gm, Em");
+            nextop = F8;
+            GETGM(d0);
+            GETEM(d1, 0);
+            VSADD_B(d0, d0, d1);
+            break;
+        case 0xED:
+            INST_NAME("PADDSW Gm, Em");
+            nextop = F8;
+            GETGM(d0);
+            GETEM(d1, 0);
+            VSADD_H(d0, d0, d1);
+            break;
+        case 0xEE:
+            INST_NAME("PMAXSW Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VMAX_H(v0, v0, v1);
+            break;
+        case 0xEF:
+            INST_NAME("PXOR Gm, Em");
+            nextop = F8;
+            GETGM(d0);
+            GETEM(d1, 0);
+            VXOR_V(d0, d0, d1);
+            break;
+        case 0xF1:
+            INST_NAME("PSLLW Gm, Em");
+            nextop = F8;
+            GETGM(d0);
+            GETEM(d1, 0);
+            v0 = fpu_get_scratch(dyn);
+            v1 = fpu_get_scratch(dyn);
+            VSLEI_DU(v0, d1, 15);
+            VREPLVEI_H(v1, d1, 0);
+            VSLL_H(d0, d0, v1);
+            VAND_V(d0, d0, v0);
+            break;
+        case 0xF2:
+            INST_NAME("PSLLD Gm, Em");
+            nextop = F8;
+            GETGM(d0);
+            GETEM(d1, 0);
+            v0 = fpu_get_scratch(dyn);
+            v1 = fpu_get_scratch(dyn);
+            VSLEI_DU(v0, d1, 31);
+            VREPLVEI_W(v1, d1, 0);
+            VSLL_W(d0, d0, v1);
+            VAND_V(d0, d0, v0);
+            break;
+        case 0xF3:
+            INST_NAME("PSLLQ Gm, Em");
+            nextop = F8;
+            GETGM(d0);
+            GETEM(d1, 0);
+            v0 = fpu_get_scratch(dyn);
+            VLDI(v0, 0b0110000111111); // broadcast 63 as 64bit imm
+            VSLE_DU(v0, d1, v0);
+            VSLL_D(d0, d0, d1);
+            VAND_V(d0, d0, v0);
+            break;
+        case 0xF4:
+            INST_NAME("PMULUDQ Gm,Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VMULWEV_D_WU(v0, v0, v1);
+            break;
+        case 0xF5:
+            INST_NAME("PMADDWD Gm, Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            q0 = fpu_get_scratch(dyn);
+            VXOR_V(q0, q0, q0);
+            VMADDWEV_W_H(q0, v0, v1);
+            VMADDWOD_W_H(q0, v0, v1);
+            VBSLL_V(v0, q0, 0);
+            break;
+        case 0xF6:
+            INST_NAME("PSADBW Gm, Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VABSD_BU(v0, v0, v1);
+            VHADDW_HU_BU(v0, v0, v0);
+            VHADDW_WU_HU(v0, v0, v0);
+            VHADDW_DU_WU(v0, v0, v0);
+            break;
+        case 0xF7:
+            INST_NAME("MASKMOVQ Gm, Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            q0 = fpu_get_scratch(dyn);
+            q1 = fpu_get_scratch(dyn);
+            VSLTI_B(q1, v1, 0); // q1 = byte selection mask
+            FLD_D(q0, xRDI, 0);
+            VBITSEL_V(q0, q0, v0, q1); // sel v0 if mask is 1
+            FST_D(q0, xRDI, 0);
+            break;
+        case 0xF8:
+            INST_NAME("PSUBB Gm, Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VSUB_B(v0, v0, v1);
+            break;
+        case 0xF9:
+            INST_NAME("PSUBW Gm, Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VSUB_H(v0, v0, v1);
+            break;
+        case 0xFA:
+            INST_NAME("PSUBD Gm, Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VSUB_W(v0, v0, v1);
+            break;
+        case 0xFB:
+            INST_NAME("PSUBQ Gm, Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VSUB_D(v0, v0, v1);
+            break;
+        case 0xFC:
+            INST_NAME("PADDB Gm, Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VADD_B(v0, v0, v1);
+            break;
+        case 0xFD:
+            INST_NAME("PADDW Gm, Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VADD_H(v0, v0, v1);
+            break;
+        case 0xFE:
+            INST_NAME("PADDD Gm, Em");
+            nextop = F8;
+            GETGM(v0);
+            GETEM(v1, 0);
+            VADD_W(v0, v0, v1);
             break;
         default:
             DEFAULT;

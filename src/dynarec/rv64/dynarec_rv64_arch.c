@@ -8,7 +8,6 @@
 #include "dynablock.h"
 #include "x64emu.h"
 #include "emu/x64emu_private.h"
-#include "x64run.h"
 #include "emu/x64run_private.h"
 #include "dynarec/dynablock_private.h"
 #include "dynarec_rv64_arch.h"
@@ -84,7 +83,7 @@ static int arch_build(dynarec_rv64_t* dyn, int ninst, arch_build_t* arch)
 {
     memset(arch, 0, sizeof(arch_build_t));
     // todo
-    // opcode can handle unaligned 
+    // opcode can handle unaligned
     arch->unaligned = dyn->insts[ninst].unaligned;
     return arch->flags + arch->x87 + arch->mmx + arch->sse + arch->ymm + arch->unaligned;
 }
@@ -168,8 +167,6 @@ void* populate_arch(dynarec_rv64_t* dyn, void* p, size_t sz)
     }
     return p;
 }
-
-int getX64AddressInst(dynablock_t* db, uintptr_t x64pc); // define is signal.c
 
 void adjust_arch(dynablock_t* db, x64emu_t* emu, ucontext_t* p, uintptr_t x64pc)
 {

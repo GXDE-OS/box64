@@ -5,10 +5,8 @@
 
 #include "debug.h"
 #include "box64context.h"
-#include "dynarec.h"
+#include "box64cpu.h"
 #include "emu/x64emu_private.h"
-#include "emu/x64run_private.h"
-#include "x64run.h"
 #include "x64emu.h"
 #include "box64stack.h"
 #include "callback.h"
@@ -208,6 +206,7 @@ uintptr_t dynarec64_DD(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int nin
                 if(ed!=x1) {MOVx_REG(x1, ed);}
                 CALL(native_fsave, -1);
                 CALL(reset_fpu, -1);
+                NATIVE_RESTORE_X87PC();
                 break;
             case 7:
                 INST_NAME("FNSTSW m2byte");

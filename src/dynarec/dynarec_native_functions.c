@@ -4,23 +4,23 @@
 #include <errno.h>
 #include <string.h>
 #include <math.h>
-#include <signal.h>
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "os.h"
 #include "debug.h"
 #include "box64context.h"
-#include "dynarec.h"
+#include "box64cpu.h"
 #include "emu/x64emu_private.h"
 #include "tools/bridge_private.h"
-#include "x64run.h"
 #include "x64emu.h"
 #include "box64stack.h"
 #include "callback.h"
 #include "emu/x64run_private.h"
 #include "emu/x87emu_private.h"
 #include "x64trace.h"
-#include "signals.h"
+#include "mysignal.h"
+#include "emit_signals.h"
 #include "dynarec_native.h"
 #include "custommem.h"
 #include "bridge.h"
@@ -186,42 +186,43 @@ void native_ud(x64emu_t* emu)
 {
     if(BOX64ENV(dynarec_test))
         emu->test.test = 0;
-    emit_signal(emu, SIGILL, (void*)R_RIP, 0);
+    EmitSignal(emu, SIGILL, (void*)R_RIP, 0);
 }
 
 void native_br(x64emu_t* emu)
 {
     if(BOX64ENV(dynarec_test))
         emu->test.test = 0;
-    emit_signal(emu, SIGSEGV, (void*)R_RIP, 0xb09d);
+    EmitSignal(emu, SIGSEGV, (void*)R_RIP, 0xb09d);
 }
 
 void native_priv(x64emu_t* emu)
 {
     emu->test.test = 0;
-    emit_signal(emu, SIGSEGV, (void*)R_RIP, 0xbad0);
+    EmitSignal(emu, SIGSEGV, (void*)R_RIP, 0xbad0);
 }
 
 void native_int(x64emu_t* emu, int num)
 {
     emu->test.test = 0;
-    emit_interruption(emu, num, (void*)R_RIP);
+    EmitInterruption(emu, num, (void*)R_RIP);
 }
-
-void native_singlestep(x64emu_t* emu)
+#ifndef _WIN32
+void native_wineint(x64emu_t* emu, int num)
 {
-    emit_signal(emu, SIGTRAP, (void*)R_RIP, 1);
+    emu->test.test = 0;
+    EmitWineInt(emu, num, (void*)R_RIP);
 }
-
+#endif
 void native_int3(x64emu_t* emu)
 {
-    emit_signal(emu, SIGTRAP, NULL, 3);
+    EmitSignal(emu, SIGTRAP, NULL, 3);
 }
 
 void native_div0(x64emu_t* emu)
 {
     emu->test.test = 0;
-    emit_div0(emu,  (void*)R_RIP, 1);
+    EmitDiv0(emu, (void*)R_RIP, 1);
 }
 
 void native_fsave(x64emu_t* emu, uint8_t* ed)
@@ -490,14 +491,12 @@ void native_pclmul(x64emu_t* emu, int gx, int ex, void* p, uint32_t u8)
     for (int i=0; i<64; ++i)
         if(GX->q[g]&(1LL<<i))
             result ^= (op2<<i);
-
-    GX->q[0] = result&0xffffffffffffffffLL;
-    GX->q[1] = (result>>64)&0xffffffffffffffffLL;
+    GX->u128 = result;
 }
 void native_pclmul_x(x64emu_t* emu, int gx, int vx, void* p, uint32_t u8)
 {
 
-    sse_regs_t *EX = ((uintptr_t)p<16)?((sse_regs_t*)p):&emu->xmm[(uintptr_t)p];
+    sse_regs_t *EX = ((uintptr_t)p>15)?((sse_regs_t*)p):&emu->xmm[(uintptr_t)p];
     sse_regs_t *GX = &emu->xmm[gx];
     sse_regs_t *VX = &emu->xmm[vx];
     int g = (u8&1)?1:0;
@@ -508,13 +507,13 @@ void native_pclmul_x(x64emu_t* emu, int gx, int vx, void* p, uint32_t u8)
         if(VX->q[g]&(1LL<<i))
             result ^= (op2<<i);
 
-    GX->q[0] = result&0xffffffffffffffffLL;
-    GX->q[1] = (result>>64)&0xffffffffffffffffLL;
+    GX->u128 = result;
 }
 void native_pclmul_y(x64emu_t* emu, int gy, int vy, void* p, uint32_t u8)
 {
-
-    sse_regs_t *EY = ((uintptr_t)p<16)?((sse_regs_t*)p):&emu->ymm[(uintptr_t)p];
+    //compute both low and high values
+    native_pclmul_x(emu, gy, vy, p, u8);
+    sse_regs_t *EY = ((uintptr_t)p>15)?((sse_regs_t*)(p+16)):&emu->ymm[(uintptr_t)p];
     sse_regs_t *GY = &emu->ymm[gy];
     sse_regs_t *VY = &emu->ymm[vy];
     int g = (u8&1)?1:0;
@@ -525,8 +524,7 @@ void native_pclmul_y(x64emu_t* emu, int gy, int vy, void* p, uint32_t u8)
         if(VY->q[g]&(1LL<<i))
             result ^= (op2<<i);
 
-    GY->q[0] = result&0xffffffffffffffffLL;
-    GY->q[1] = (result>>64)&0xffffffffffffffffLL;
+    GY->u128 = result;
 }
 
 void native_clflush(x64emu_t* emu, void* p)
@@ -619,35 +617,6 @@ uint8_t geted_ib(dynarec_native_t* dyn, uintptr_t addr, int ninst, uint8_t nexto
 }
 #undef F8
 
-int isNativeCall(dynarec_native_t* dyn, uintptr_t addr, int is32bits, uintptr_t* calladdress, uint16_t* retn)
-{
-    (void)dyn;
-    if(is32bits)
-        addr &= 0xFFFFFFFFLL;
-
-#define PK(a)       *(uint8_t*)(addr+a)
-#define PK32(a)     *(int32_t*)(addr+a)
-
-    if(!addr || !getProtection(addr))
-        return 0;
-    if(PK(0)==0xff && PK(1)==0x25) {            // "absolute" jump, maybe the GOT (well, RIP relative in fact)
-        uintptr_t a1 = addr + 6 + (PK32(2));    // need to add a check to see if the address is from the GOT !
-        addr = (uintptr_t)getAlternate(*(void**)a1);
-    }
-    if(!addr || !getProtection(addr))
-        return 0;
-    onebridge_t *b = (onebridge_t*)(addr);
-    if(b->CC==0xCC && b->S=='S' && b->C=='C' && b->w!=(wrapper_t)0 && b->f!=(uintptr_t)PltResolver64) {
-        // found !
-        if(retn) *retn = (b->C3==0xC2)?b->N:0;
-        if(calladdress) *calladdress = addr+1;
-        return 1;
-    }
-    return 0;
-#undef PK32
-#undef PK
-}
-
 // AVX
 void avx_mark_zero(dynarec_native_t* dyn, int ninst, int reg)
 {
@@ -662,7 +631,7 @@ int is_avx_zero_unset(dynarec_native_t* dyn, int ninst, int reg)
 {
     if((dyn->ymm_zero>>reg)&1) {
         dyn->ymm_zero &= ~(1<<reg);
-        return 1;    
+        return 1;
     }
     return 0;
 }
@@ -684,7 +653,7 @@ void propagate_nodf(dynarec_native_t* dyn, int ninst)
         if(dyn->insts[ninst].x64.gen_flags || dyn->insts[ninst].x64.use_flags)
             return; // flags are use, so maybe it's needed
         dyn->insts[ninst].df_notneeded = 1;
-        --ninst;       
+        --ninst;
     }
 }
 

@@ -17,6 +17,7 @@
 #include <execinfo.h>
 #endif
 
+#include "os.h"
 #include "box32context.h"
 #include "debug.h"
 #include "x64emu.h"
@@ -24,9 +25,8 @@
 #include "emu/x64run_private.h"
 #include "signals.h"
 #include "box64stack.h"
-#include "dynarec.h"
+#include "box64cpu.h"
 #include "callback.h"
-#include "x64run.h"
 #include "elfloader.h"
 #include "threads.h"
 #include "emu/x87emu_private.h"
@@ -306,10 +306,6 @@ typedef struct __attribute__((packed, aligned(4))) my_siginfo32_s
     } _sifields;
 } my_siginfo32_t;
 
-#ifdef DYNAREC
-uintptr_t getX64Address(dynablock_t* db, uintptr_t arm_addr);
-#endif
-
 x64_stack_t* sigstack_getstack();
 int my_sigaltstack(x64emu_t* emu, const x64_stack_t* ss, x64_stack_t* oss);
 EXPORT int my32_sigaltstack(x64emu_t* emu, const i386_stack_t* ss, i386_stack_t* oss)
@@ -465,6 +461,10 @@ void convert_siginfo_to_32(void* d, void* s, int sig)
         dst->_sifields._sigchld.__si_utime = src->si_utime;
     }
 }
+
+void relockMutex(int locks);
+int unlockMutex();
+
 int write_opcode(uintptr_t rip, uintptr_t native_ip, int is32bits);
 #define is_memprot_locked (1<<1)
 #define is_dyndump_locked (1<<8)
@@ -488,7 +488,7 @@ void my_sigactionhandler_oldcode_32(x64emu_t* emu, int32_t sig, int simple, sigi
     if(p) {
         pc = (void*)p->uc_mcontext.pc;
         if(db)
-            frame = (uintptr_t)p->uc_mcontext.regs[10+_SP];
+            frame = from_ptr((ptr_t)p->uc_mcontext.regs[10+_SP]);
     }
 #elif defined(LA64)
     dynablock_t* db = (dynablock_t*)cur_db;//FindDynablockFromNativeAddress(pc);
@@ -497,7 +497,7 @@ void my_sigactionhandler_oldcode_32(x64emu_t* emu, int32_t sig, int simple, sigi
     if(p) {
         pc = (void*)p->uc_mcontext.__pc;
         if(db)
-            frame = (uintptr_t)p->uc_mcontext.__gregs[12+_SP];
+            frame = from_ptr((ptr_t)p->uc_mcontext.__gregs[12+_SP]);
     }
 #elif defined(RV64)
     dynablock_t* db = (dynablock_t*)cur_db;//FindDynablockFromNativeAddress(pc);
@@ -506,7 +506,7 @@ void my_sigactionhandler_oldcode_32(x64emu_t* emu, int32_t sig, int simple, sigi
     if(p) {
         pc = (void*)p->uc_mcontext.__gregs[0];
         if(db)
-            frame = (uintptr_t)p->uc_mcontext.__gregs[9];
+            frame = from_ptr((ptr_t)p->uc_mcontext.__gregs[9]);
     }
 #else
 #error Unsupported architecture
@@ -523,9 +523,9 @@ void my_sigactionhandler_oldcode_32(x64emu_t* emu, int32_t sig, int simple, sigi
     int used_stack = 0;
     if(new_ss) {
         if(new_ss->ss_flags == SS_ONSTACK) { // already using it!
-            frame = ((uintptr_t)emu->regs[_SP].q[0] - 128) & ~0x0f;
+            frame = from_ptr(((ptr_t)emu->regs[_SP].q[0] - 128) & ~0x0f);
         } else {
-            frame = (uintptr_t)(((uintptr_t)new_ss->ss_sp + new_ss->ss_size - 16) & ~0x0f);
+            frame = from_ptr(((uintptr_t)new_ss->ss_sp + new_ss->ss_size - 16) & ~0x0f);
             used_stack = 1;
             new_ss->ss_flags = SS_ONSTACK;
         }

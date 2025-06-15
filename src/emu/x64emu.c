@@ -3,21 +3,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/syscall.h>
-#include <sys/time.h>
-#include <sys/mman.h>
 
+#include "os.h"
 #include "debug.h"
 #include "box64stack.h"
 #include "x64emu.h"
+#include "box64cpu.h"
+#include "box64cpu_util.h"
 #include "x64emu_private.h"
 #include "x87emu_private.h"
 #include "box64context.h"
-#include "x64run.h"
 #include "x64run_private.h"
 #include "callback.h"
 #include "bridge.h"
-#include "elfs/elfloader_private.h"
 #ifdef HAVE_TRACE
 #include "x64trace.h"
 #endif
@@ -29,12 +27,6 @@
 #else
 #warning Architecture cannot follow SSE Flush to 0 flag
 #endif
-
-typedef struct cleanup_s {
-    void*       f;
-    int         arg;
-    void*       a;
-} cleanup_t;
 
 static uint32_t x86emu_parity_tab[8] =
 {
@@ -109,7 +101,7 @@ x64emu_t *NewX64EmuFromStack(x64emu_t* emu, box64context_t *context, uintptr_t s
     printf_log(LOG_DEBUG, "New X86_64 Emu from stack, with EIP=%p and Stack=%p/0x%X\n", (void*)start, (void*)stack, stacksize);
 
     internalX64Setup(emu, context, start, stack, stacksize, 0);
-    
+
     return emu;
 }
 
@@ -144,61 +136,6 @@ void SetTraceEmu(uintptr_t start, uintptr_t end)
     trace_end = end;
 }
 #endif
-
-void AddCleanup(x64emu_t *emu, void *p)
-{
-    (void)emu;
-    
-    if(my_context->clean_sz == my_context->clean_cap) {
-        my_context->clean_cap += 32;
-        my_context->cleanups = (cleanup_t*)box_realloc(my_context->cleanups, sizeof(cleanup_t)*my_context->clean_cap);
-    }
-    my_context->cleanups[my_context->clean_sz].arg = 0;
-    my_context->cleanups[my_context->clean_sz].a = NULL;
-    my_context->cleanups[my_context->clean_sz++].f = p;
-}
-
-void AddCleanup1Arg(x64emu_t *emu, void *p, void* a, elfheader_t* h)
-{
-    (void)emu;
-    if(!h)
-        return;
-    
-    if(h->clean_sz == h->clean_cap) {
-        h->clean_cap += 32;
-        h->cleanups = (cleanup_t*)box_realloc(h->cleanups, sizeof(cleanup_t)*h->clean_cap);
-    }
-    h->cleanups[h->clean_sz].arg = 1;
-    h->cleanups[h->clean_sz].a = a;
-    h->cleanups[h->clean_sz++].f = p;
-}
-
-void CallCleanup(x64emu_t *emu, elfheader_t* h)
-{
-    printf_log(LOG_DEBUG, "Calling atexit registered functions for elf: %p/%s\n", h, h?h->name:"(nil)");
-    if(!h)
-        return;
-    for(int i=h->clean_sz-1; i>=0; --i) {
-        printf_log(LOG_DEBUG, "Call cleanup #%d (args:%d, arg:%p)\n", i, h->cleanups[i].arg, h->cleanups[i].a);
-        RunFunctionWithEmu(emu, 0, (uintptr_t)(h->cleanups[i].f), h->cleanups[i].arg, h->cleanups[i].a );
-        // now remove the cleanup
-        if(i!=h->clean_sz-1)
-            memmove(h->cleanups+i, h->cleanups+i+1, (h->clean_sz-i-1)*sizeof(cleanup_t));
-        --h->clean_sz;
-    }
-}
-
-void CallAllCleanup(x64emu_t *emu)
-{
-    printf_log(LOG_DEBUG, "Calling atexit registered functions\n");
-    for(int i=my_context->clean_sz-1; i>=0; --i) {
-        printf_log(LOG_DEBUG, "Call cleanup #%d\n", i);
-        --my_context->clean_sz;
-        RunFunctionWithEmu(emu, 0, (uintptr_t)(my_context->cleanups[i].f), my_context->cleanups[i].arg, my_context->cleanups[i].a );
-    }
-    box_free(my_context->cleanups);
-    my_context->cleanups = NULL;
-}
 
 static void internalFreeX64(x64emu_t* emu)
 {
@@ -456,14 +393,14 @@ const char* DumpCPURegs(x64emu_t* emu, uintptr_t ip, int is32bits)
         int stack = emu->fpu_stack;
         if(stack>8) stack = 8;
         for (int i=0; i<stack; i++) {
-            sprintf(tmp, "ST%d=%f", i, ST(i).d);
+            sprintf(tmp, "ST%d=%f(0x%llx)", i, ST(i).d, ST(i).q);
             strcat(buff, tmp);
-            int c = 10-strlen(tmp);
+            int c = 20-strlen(tmp);
             if(c<1) c=1;
             while(c--) strcat(buff, " ");
             if(i==3) strcat(buff, "\n");
         }
-        sprintf(tmp, " C3210 = %d%d%d%d", emu->sw.f.F87_C3, emu->sw.f.F87_C2, emu->sw.f.F87_C1, emu->sw.f.F87_C0);
+        sprintf(tmp, " C3210 = %d%d%d%d CW=%x", emu->sw.f.F87_C3, emu->sw.f.F87_C2, emu->sw.f.F87_C1, emu->sw.f.F87_C0, emu->cw.x16);
         strcat(buff, tmp);
         strcat(buff, "\n");
     }
@@ -532,7 +469,7 @@ const char* DumpCPURegs(x64emu_t* emu, uintptr_t ip, int is32bits)
                 } else {
                     strcat(buff, "\n");
                 }
-            } 
+            }
     }
     if(is32bits)
         sprintf(tmp, "EIP=%08lx ", ip);
@@ -582,8 +519,8 @@ void UnimpOpcode(x64emu_t* emu, int is32bits)
 {
     R_RIP = emu->old_ip;
 
-    int tid = syscall(SYS_gettid);
-    printf_log(LOG_INFO, "%04d|%p: Unimplemented %sOpcode (%02X %02X %02X %02X) %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n", 
+    int tid = GetTID();
+    printf_log(LOG_INFO, "%04d|%p: Unimplemented %sOpcode (%02X %02X %02X %02X) %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
         tid, (void*)emu->old_ip, is32bits?"32bits ":"",
         Peek(emu, -4), Peek(emu, -3), Peek(emu, -2), Peek(emu, -1),
         Peek(emu, 0), Peek(emu, 1), Peek(emu, 2), Peek(emu, 3),
@@ -643,133 +580,6 @@ void EmuCall(x64emu_t* emu, uintptr_t addr)
     }
 }
 
-#if defined(RV64)
-static size_t readBinarySizeFromFile(const char* fname)
-{
-    if (access(fname, R_OK) != 0) return -1;
-    FILE* fp = fopen(fname, "r");
-    if (fp == NULL) return -1;
-
-    char b[sizeof(uint64_t)] = { 0 }, tmp;
-    ssize_t n = fread(b, 1, sizeof(b), fp);
-    if (n <= 0) return -1;
-
-    for (ssize_t i = 0; i < n / 2; i++) {
-        tmp = b[n - i - 1];
-        b[n - i - 1] = b[i];
-        b[i] = tmp;
-    }
-    return *(uint64_t*)b;
-}
-
-static inline uint64_t readCycleCounter()
-{
-    uint64_t val;
-    asm volatile("rdtime %0"
-                 : "=r"(val));
-    return val;
-}
-
-static inline uint64_t readFreq()
-{
-    static size_t val = -1;
-
-    val = readBinarySizeFromFile("/sys/firmware/devicetree/base/cpus/timebase-frequency");
-    if (val != (size_t)-1) return val;
-
-    // fallback to rdtime + sleep
-    struct timespec ts;
-    ts.tv_sec = 0;
-    ts.tv_nsec = 50000000; // 50 milliseconds
-    uint64_t cycles = readCycleCounter();
-    nanosleep(&ts, NULL);
-    // round to MHz
-    val = (size_t)round(((double)(readCycleCounter() - cycles) * 20) / 1e6) * 1e6;
-    return (uint64_t)val;
-}
-#elif defined(ARM64)
-static inline uint64_t readCycleCounter()
-{
-    uint64_t val;
-    asm volatile("mrs %0, cntvct_el0"
-                 : "=r"(val));
-    return val;
-}
-static inline uint64_t readFreq()
-{
-    uint64_t val;
-    asm volatile("mrs %0, cntfrq_el0"
-                 : "=r"(val));
-    return val;
-}
-#elif defined(LA64)
-static inline uint64_t readCycleCounter()
-{
-    uint64_t val;
-    asm volatile("rdtime.d %0, %1"
-                 : "=r"(val) : "r"(0));
-    return val;
-}
-
-static inline uint64_t readFreq()
-{
-    static size_t val = -1;
-
-    FILE* f = popen("cat /proc/cpuinfo | grep -i \"CPU MHz\" | head -n 1 | sed -r 's/CPU MHz.+:\\s{1,}//g'", "r");
-    if(f) {
-        char tmp[200] = "";
-        ssize_t s = fread(tmp, 1, 200, f);
-        pclose(f);
-        if (s > 0) return (uint64_t)atof(tmp) * 1e6;
-    }
-    
-    // fallback to rdtime + sleep
-    struct timespec ts;
-    ts.tv_sec = 0;
-    ts.tv_nsec = 50000000; // 50 milliseconds
-    uint64_t cycles = readCycleCounter();
-    nanosleep(&ts, NULL);
-    // round to MHz
-    val = (size_t)round(((double)(readCycleCounter() - cycles) * 20) / 1e6) * 1e6;
-    return (uint64_t)val;
-}
-#endif
-
-uint64_t ReadTSC(x64emu_t* emu)
-{
-    (void)emu;
-    
-    // Hardware counter, per architecture
-#if defined(ARM64) || defined(RV64) || defined(LA64)
-    if (!box64_rdtsc) return readCycleCounter();
-#endif
-    // fall back to gettime...
-#if !defined(NOGETCLOCK)
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
-    return (uint64_t)(ts.tv_sec) * 1000000000LL + ts.tv_nsec;
-#else
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (uint64_t)(tv.tv_sec) * 1000000 + tv.tv_usec;
-#endif
-}
-
-uint64_t ReadTSCFrequency(x64emu_t* emu)
-{
-    (void)emu;
-    // Hardware counter, per architecture
-#if defined(ARM64) || defined(RV64) || defined(LA64)
-    if (!box64_rdtsc) return readFreq();
-#endif
-    // fall back to get time
-#if !defined(NOGETCLOCK)
-    return 1000000000LL;
-#else
-    return 1000000;
-#endif
-}
-
 void ResetSegmentsCache(x64emu_t *emu)
 {
     if(!emu)
@@ -797,4 +607,984 @@ void applyFlushTo0(x64emu_t* emu)
     __builtin_aarch64_set_fpcr(fpcr);
     #endif
     #endif
+}
+
+#define PARITY(x) (((emu->x64emu_parity_tab[(x) / 32] >> ((x) % 32)) & 1) == 0)
+#define XOR2(x)   (((x) ^ ((x) >> 1)) & 0x1)
+void UpdateFlags(x64emu_t* emu)
+{
+    uint64_t cc;
+    uint64_t lo, hi;
+    uint64_t bc;
+    uint64_t cnt;
+
+    switch (emu->df) {
+        case d_none:
+            return;
+        case d_add8:
+            CONDITIONAL_SET_FLAG(emu->res.u16 & 0x100, F_CF);
+            CONDITIONAL_SET_FLAG(!emu->res.u8, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u8 & 0x80, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            cc = (emu->op1.u8 & emu->op2.u8) | ((~emu->res.u8) & (emu->op1.u8 | emu->op2.u8));
+            CONDITIONAL_SET_FLAG(XOR2(cc >> 6), F_OF);
+            CONDITIONAL_SET_FLAG(cc & 0x8, F_AF);
+            break;
+        case d_add8b:
+            CONDITIONAL_SET_FLAG(((uint16_t)emu->op1.u8 + emu->op2.u8) & 0x100, F_CF);
+            CONDITIONAL_SET_FLAG(!emu->res.u8, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u8 & 0x80, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            cc = (emu->op1.u8 & emu->op2.u8) | ((~emu->res.u8) & (emu->op1.u8 | emu->op2.u8));
+            CONDITIONAL_SET_FLAG(XOR2(cc >> 6), F_OF);
+            CONDITIONAL_SET_FLAG(cc & 0x8, F_AF);
+            break;
+        case d_add16:
+            CONDITIONAL_SET_FLAG(emu->res.u32 & 0x10000, F_CF);
+            CONDITIONAL_SET_FLAG(!emu->res.u16, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u16 & 0x8000, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            cc = (emu->op1.u16 & emu->op2.u16) | ((~emu->res.u16) & (emu->op1.u16 | emu->op2.u16));
+            CONDITIONAL_SET_FLAG(XOR2(cc >> 14), F_OF);
+            CONDITIONAL_SET_FLAG(cc & 0x8, F_AF);
+            break;
+        case d_add16b:
+            CONDITIONAL_SET_FLAG(((uint32_t)emu->op1.u16 + emu->op2.u16) & 0x10000, F_CF);
+            CONDITIONAL_SET_FLAG(!emu->res.u16, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u16 & 0x8000, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            cc = (emu->op1.u16 & emu->op2.u16) | ((~emu->res.u16) & (emu->op1.u16 | emu->op2.u16));
+            CONDITIONAL_SET_FLAG(XOR2(cc >> 14), F_OF);
+            CONDITIONAL_SET_FLAG(cc & 0x8, F_AF);
+            break;
+        case d_add32:
+            CONDITIONAL_SET_FLAG(emu->res.u64 & 0x100000000LL, F_CF);
+            CONDITIONAL_SET_FLAG(!emu->res.u32, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u32 & 0x80000000, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            cc = (emu->op1.u32 & emu->op2.u32) | ((~emu->res.u32) & (emu->op1.u32 | emu->op2.u32));
+            CONDITIONAL_SET_FLAG(XOR2(cc >> 30), F_OF);
+            CONDITIONAL_SET_FLAG(cc & 0x8, F_AF);
+            break;
+        case d_add32b:
+            lo = (emu->op2.u32 & 0xFFFF) + (emu->op1.u32 & 0xFFFF);
+            hi = (lo >> 16) + (emu->op2.u32 >> 16) + (emu->op1.u32 >> 16);
+            CONDITIONAL_SET_FLAG(hi & 0x10000, F_CF);
+            CONDITIONAL_SET_FLAG(!emu->res.u32, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u32 & 0x80000000, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            cc = (emu->op1.u32 & emu->op2.u32) | ((~emu->res.u32) & (emu->op1.u32 | emu->op2.u32));
+            CONDITIONAL_SET_FLAG(XOR2(cc >> 30), F_OF);
+            CONDITIONAL_SET_FLAG(cc & 0x8, F_AF);
+            break;
+        case d_add64:
+            lo = (emu->op2.u64 & 0xFFFFFFFF) + (emu->op1.u64 & 0xFFFFFFFF);
+            hi = (lo >> 32) + (emu->op2.u64 >> 32) + (emu->op1.u64 >> 32);
+            CONDITIONAL_SET_FLAG(hi & 0x100000000L, F_CF);
+            CONDITIONAL_SET_FLAG(!emu->res.u64, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u64 & 0x8000000000000000LL, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            cc = (emu->op1.u64 & emu->op2.u64) | ((~emu->res.u64) & (emu->op1.u64 | emu->op2.u64));
+            CONDITIONAL_SET_FLAG(XOR2(cc >> 62), F_OF);
+            CONDITIONAL_SET_FLAG(cc & 0x8, F_AF);
+            break;
+        case d_and8:
+            CLEAR_FLAG(F_OF);
+            CLEAR_FLAG(F_CF);
+            CLEAR_FLAG(F_AF);
+            CONDITIONAL_SET_FLAG(emu->res.u8 & 0x80, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u8, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            break;
+        case d_and16:
+            CLEAR_FLAG(F_OF);
+            CLEAR_FLAG(F_CF);
+            CLEAR_FLAG(F_AF);
+            CONDITIONAL_SET_FLAG(emu->res.u16 & 0x8000, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u16, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            break;
+        case d_and32:
+            CLEAR_FLAG(F_OF);
+            CLEAR_FLAG(F_CF);
+            CLEAR_FLAG(F_AF);
+            CONDITIONAL_SET_FLAG(emu->res.u32 & 0x80000000, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u32, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            break;
+        case d_and64:
+            CLEAR_FLAG(F_OF);
+            CLEAR_FLAG(F_CF);
+            CLEAR_FLAG(F_AF);
+            CONDITIONAL_SET_FLAG(emu->res.u64 & 0x8000000000000000LL, F_SF);
+            CONDITIONAL_SET_FLAG(emu->res.u64 == 0, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            break;
+        case d_dec8:
+            CONDITIONAL_SET_FLAG(emu->res.u8 & 0x80, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u8, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            bc = (emu->res.u8 & (~emu->op1.u8 | 1)) | (~emu->op1.u8 & 1);
+            CONDITIONAL_SET_FLAG(XOR2(bc >> 6), F_OF);
+            CONDITIONAL_SET_FLAG(bc & 0x8, F_AF);
+            break;
+        case d_dec16:
+            CONDITIONAL_SET_FLAG(emu->res.u16 & 0x8000, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u16, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            bc = (emu->res.u16 & (~emu->op1.u16 | 1)) | (~emu->op1.u16 & 1);
+            CONDITIONAL_SET_FLAG(XOR2(bc >> 14), F_OF);
+            CONDITIONAL_SET_FLAG(bc & 0x8, F_AF);
+            break;
+        case d_dec32:
+            CONDITIONAL_SET_FLAG(emu->res.u32 & 0x80000000, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u32, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            bc = (emu->res.u32 & (~emu->op1.u32 | 1)) | (~emu->op1.u32 & 1);
+            CONDITIONAL_SET_FLAG(XOR2(bc >> 30), F_OF);
+            CONDITIONAL_SET_FLAG(bc & 0x8, F_AF);
+            break;
+        case d_dec64:
+            CONDITIONAL_SET_FLAG(emu->res.u64 & 0x8000000000000000LL, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u64, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            bc = (emu->res.u64 & (~emu->op1.u64 | 1LL)) | (~emu->op1.u64 & 1LL);
+            CONDITIONAL_SET_FLAG(XOR2(bc >> 62), F_OF);
+            CONDITIONAL_SET_FLAG(bc & 0x8, F_AF);
+            break;
+        case d_inc8:
+            CONDITIONAL_SET_FLAG(!emu->res.u8, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u8 & 0x80, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            cc = ((1 & emu->op1.u8) | (~emu->res.u8)) & (1 | emu->op1.u8);
+            CONDITIONAL_SET_FLAG(XOR2(cc >> 6), F_OF);
+            CONDITIONAL_SET_FLAG(cc & 0x8, F_AF);
+            break;
+        case d_inc16:
+            CONDITIONAL_SET_FLAG(!emu->res.u16, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u16 & 0x8000, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            cc = (1 & emu->op1.u16) | ((~emu->res.u16) & (1 | emu->op1.u16));
+            CONDITIONAL_SET_FLAG(XOR2(cc >> 14), F_OF);
+            CONDITIONAL_SET_FLAG(cc & 0x8, F_AF);
+            break;
+        case d_inc32:
+            CONDITIONAL_SET_FLAG(!emu->res.u32, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u32 & 0x80000000, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            cc = (1 & emu->op1.u32) | ((~emu->res.u32) & (1 | emu->op1.u32));
+            CONDITIONAL_SET_FLAG(XOR2(cc >> 30), F_OF);
+            CONDITIONAL_SET_FLAG(cc & 0x8, F_AF);
+            break;
+        case d_inc64:
+            CONDITIONAL_SET_FLAG(!emu->res.u64, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u64 & 0x8000000000000000LL, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            cc = (1LL & emu->op1.u64) | ((~emu->res.u64) & (1LL | emu->op1.u64));
+            CONDITIONAL_SET_FLAG(XOR2(cc >> 62), F_OF);
+            CONDITIONAL_SET_FLAG(cc & 0x8, F_AF);
+            break;
+        case d_imul8:
+            lo = emu->res.u16 & 0xff;
+            hi = (emu->res.u16 >> 8) & 0xff;
+            if (((lo & 0x80) == 0 && hi == 0x00) || ((lo & 0x80) != 0 && hi == 0xFF)) {
+                CLEAR_FLAG(F_CF);
+                CLEAR_FLAG(F_OF);
+            } else {
+                SET_FLAG(F_CF);
+                SET_FLAG(F_OF);
+            }
+            if (!BOX64ENV(cputype)) {
+                CONDITIONAL_SET_FLAG((emu->res.u8 >> 7) & 1, F_SF);
+                CLEAR_FLAG(F_ZF);
+                CLEAR_FLAG(F_AF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            }
+            break;
+        case d_imul16:
+            lo = (uint16_t)emu->res.u32;
+            hi = (uint16_t)(emu->res.u32 >> 16);
+            if (((lo & 0x8000) == 0 && hi == 0x00) || ((lo & 0x8000) != 0 && hi == 0xFFFF)) {
+                CLEAR_FLAG(F_CF);
+                CLEAR_FLAG(F_OF);
+            } else {
+                SET_FLAG(F_CF);
+                SET_FLAG(F_OF);
+            }
+            if (!BOX64ENV(cputype)) {
+                CONDITIONAL_SET_FLAG((emu->res.u16 >> 15) & 1, F_SF);
+                CLEAR_FLAG(F_ZF);
+                CLEAR_FLAG(F_AF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            }
+            break;
+        case d_imul32:
+            if ((((emu->res.u32 & 0x80000000) == 0) && emu->op1.u32 == 0x00) || (((emu->res.u32 & 0x80000000) != 0) && emu->op1.u32 == 0xFFFFFFFF)) {
+                CLEAR_FLAG(F_CF);
+                CLEAR_FLAG(F_OF);
+            } else {
+                SET_FLAG(F_CF);
+                SET_FLAG(F_OF);
+            }
+            if (!BOX64ENV(cputype)) {
+                CONDITIONAL_SET_FLAG((emu->res.u32 >> 31) & 1, F_SF);
+                CLEAR_FLAG(F_ZF);
+                CLEAR_FLAG(F_AF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            }
+            break;
+        case d_imul64:
+            if (((emu->res.u64 & 0x8000000000000000LL) == 0 && emu->op1.u64 == 0x00) || ((emu->res.u64 & 0x8000000000000000LL) != 0 && emu->op1.u64 == 0xFFFFFFFFFFFFFFFFLL)) {
+                CLEAR_FLAG(F_CF);
+                CLEAR_FLAG(F_OF);
+            } else {
+                SET_FLAG(F_CF);
+                SET_FLAG(F_OF);
+            }
+            if (!BOX64ENV(cputype)) {
+                CONDITIONAL_SET_FLAG((emu->res.u64 >> 63) & 1, F_SF);
+                CLEAR_FLAG(F_ZF);
+                CLEAR_FLAG(F_AF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            }
+            break;
+        case d_mul8:
+            hi = (emu->res.u16 >> 8) & 0xff;
+            if (hi == 0) {
+                CLEAR_FLAG(F_CF);
+                CLEAR_FLAG(F_OF);
+            } else {
+                SET_FLAG(F_CF);
+                SET_FLAG(F_OF);
+            }
+            if (!BOX64ENV(cputype)) {
+                CONDITIONAL_SET_FLAG((emu->res.u8 >> 7) & 1, F_SF);
+                CLEAR_FLAG(F_ZF);
+                CLEAR_FLAG(F_AF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            }
+            break;
+        case d_mul16:
+            hi = (uint16_t)(emu->res.u32 >> 16);
+            if (hi == 0) {
+                CLEAR_FLAG(F_CF);
+                CLEAR_FLAG(F_OF);
+            } else {
+                SET_FLAG(F_CF);
+                SET_FLAG(F_OF);
+            }
+            if (!BOX64ENV(cputype)) {
+                CONDITIONAL_SET_FLAG((emu->res.u16 >> 15) & 1, F_SF);
+                CLEAR_FLAG(F_ZF);
+                CLEAR_FLAG(F_AF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            }
+            break;
+        case d_mul32:
+            if (emu->op1.u32 == 0) {
+                CLEAR_FLAG(F_CF);
+                CLEAR_FLAG(F_OF);
+            } else {
+                SET_FLAG(F_CF);
+                SET_FLAG(F_OF);
+            }
+            if (!BOX64ENV(cputype)) {
+                CONDITIONAL_SET_FLAG((emu->res.u32 >> 31) & 1, F_SF);
+                CLEAR_FLAG(F_ZF);
+                CLEAR_FLAG(F_AF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            }
+            break;
+        case d_mul64:
+            if (emu->op1.u64 == 0) {
+                CLEAR_FLAG(F_CF);
+                CLEAR_FLAG(F_OF);
+            } else {
+                SET_FLAG(F_CF);
+                SET_FLAG(F_OF);
+            }
+            if (!BOX64ENV(cputype)) {
+                CONDITIONAL_SET_FLAG((emu->res.u64 >> 63) & 1, F_SF);
+                CLEAR_FLAG(F_ZF);
+                CLEAR_FLAG(F_AF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            }
+            break;
+        case d_or8:
+            CLEAR_FLAG(F_OF);
+            CLEAR_FLAG(F_CF);
+            CLEAR_FLAG(F_AF);
+            CONDITIONAL_SET_FLAG(emu->res.u8 & 0x80, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u8, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            break;
+        case d_or16:
+            CLEAR_FLAG(F_OF);
+            CLEAR_FLAG(F_CF);
+            CLEAR_FLAG(F_AF);
+            CONDITIONAL_SET_FLAG(emu->res.u16 & 0x8000, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u16, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            break;
+        case d_or32:
+            CLEAR_FLAG(F_OF);
+            CLEAR_FLAG(F_CF);
+            CLEAR_FLAG(F_AF);
+            CONDITIONAL_SET_FLAG(emu->res.u32 & 0x80000000, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u32, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            break;
+        case d_or64:
+            CLEAR_FLAG(F_OF);
+            CLEAR_FLAG(F_CF);
+            CLEAR_FLAG(F_AF);
+            CONDITIONAL_SET_FLAG(emu->res.u64 & 0x8000000000000000LL, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u64, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            break;
+        case d_neg8:
+            CONDITIONAL_SET_FLAG(emu->op1.u8, F_CF);
+            CONDITIONAL_SET_FLAG(!emu->res.u8, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u8 & 0x80, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            bc = emu->res.u8 | emu->op1.u8;
+            CONDITIONAL_SET_FLAG(XOR2(bc >> 6), F_OF);
+            CONDITIONAL_SET_FLAG(bc & 0x8, F_AF);
+            break;
+        case d_neg16:
+            CONDITIONAL_SET_FLAG(emu->op1.u16, F_CF);
+            CONDITIONAL_SET_FLAG(!emu->res.u16, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u16 & 0x8000, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            bc = emu->res.u16 | emu->op1.u16;
+            CONDITIONAL_SET_FLAG(XOR2(bc >> 14), F_OF);
+            CONDITIONAL_SET_FLAG(bc & 0x8, F_AF);
+            break;
+        case d_neg32:
+            CONDITIONAL_SET_FLAG(emu->op1.u32, F_CF);
+            CONDITIONAL_SET_FLAG(!emu->res.u32, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u32 & 0x80000000, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            bc = emu->res.u32 | emu->op1.u32;
+            CONDITIONAL_SET_FLAG(XOR2(bc >> 30), F_OF);
+            CONDITIONAL_SET_FLAG(bc & 0x8, F_AF);
+            break;
+        case d_neg64:
+            CONDITIONAL_SET_FLAG(emu->op1.u64, F_CF);
+            CONDITIONAL_SET_FLAG(!emu->res.u64, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u64 & 0x8000000000000000LL, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            bc = emu->res.u64 | emu->op1.u64;
+            CONDITIONAL_SET_FLAG(XOR2(bc >> 62), F_OF);
+            CONDITIONAL_SET_FLAG(bc & 0x8, F_AF);
+            break;
+        case d_shl8:
+            cnt = emu->op2.u8 & 0x1f;
+            if (cnt > 0) {
+                cc = emu->op1.u8 & (1 << (8 - cnt));
+                CONDITIONAL_SET_FLAG(cc, F_CF);
+                CONDITIONAL_SET_FLAG(!emu->res.u8, F_ZF);
+                CONDITIONAL_SET_FLAG(emu->res.u8 & 0x80, F_SF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+                if (BOX64ENV(cputype)) {
+                    CONDITIONAL_SET_FLAG(((emu->res.u8 >> 7) ^ ACCESS_FLAG(F_CF)) & 0x01, F_OF);
+                    SET_FLAG(F_AF);
+                } else {
+                    CONDITIONAL_SET_FLAG(XOR2(emu->op1.u8 >> 6), F_OF);
+                    CLEAR_FLAG(F_AF);
+                }
+            }
+            break;
+        case d_shl16:
+            cnt = emu->op2.u16 & 0x1f;
+            if (cnt > 0) {
+                cc = emu->op1.u16 & (1 << (16 - cnt));
+                CONDITIONAL_SET_FLAG(cc, F_CF);
+                CONDITIONAL_SET_FLAG(!emu->res.u16, F_ZF);
+                CONDITIONAL_SET_FLAG(emu->res.u16 & 0x8000, F_SF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+                if (BOX64ENV(cputype)) {
+                    CONDITIONAL_SET_FLAG(((emu->res.u16 >> 15) ^ ACCESS_FLAG(F_CF)) & 0x01, F_OF);
+                    SET_FLAG(F_AF);
+                } else {
+                    CONDITIONAL_SET_FLAG(XOR2(emu->op1.u16 >> 14), F_OF);
+                    CLEAR_FLAG(F_AF);
+                }
+            }
+            break;
+        case d_shl32:
+            cnt = emu->op2.u32 & 0x1f;
+            if (cnt > 0) {
+                cc = emu->op1.u32 & (1 << (32 - cnt));
+                CONDITIONAL_SET_FLAG(cc, F_CF);
+                CONDITIONAL_SET_FLAG(!emu->res.u32, F_ZF);
+                CONDITIONAL_SET_FLAG(emu->res.u32 & 0x80000000, F_SF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+                if (BOX64ENV(cputype)) {
+                    CONDITIONAL_SET_FLAG(((emu->res.u32 >> 31) ^ ACCESS_FLAG(F_CF)) & 0x01, F_OF);
+                    SET_FLAG(F_AF);
+                } else {
+                    CONDITIONAL_SET_FLAG(XOR2(emu->op1.u32 >> 30), F_OF);
+                    CLEAR_FLAG(F_AF);
+                }
+            }
+            break;
+        case d_shl64:
+            if (emu->op2.u64 > 0) {
+                cc = emu->op1.u64 & (1LL << (64 - emu->op2.u64));
+                CONDITIONAL_SET_FLAG(cc, F_CF);
+                CONDITIONAL_SET_FLAG(!emu->res.u64, F_ZF);
+                CONDITIONAL_SET_FLAG(emu->res.u64 & 0x8000000000000000LL, F_SF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+                if (BOX64ENV(cputype)) {
+                    CONDITIONAL_SET_FLAG(((emu->res.u64 >> 63) ^ ACCESS_FLAG(F_CF)) & 0x01, F_OF);
+                    SET_FLAG(F_AF);
+                } else {
+                    CONDITIONAL_SET_FLAG(XOR2(emu->op1.u64 >> 62), F_OF);
+                    CLEAR_FLAG(F_AF);
+                }
+            }
+            break;
+        case d_sar8:
+            if (emu->op2.u8) {
+                cc = (emu->op1.i8 >> (emu->op2.u8 - 1)) & 1;
+                CONDITIONAL_SET_FLAG(cc, F_CF);
+                CONDITIONAL_SET_FLAG(!emu->res.u8, F_ZF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+                CONDITIONAL_SET_FLAG(emu->res.u8 & 0x80, F_SF);
+                CLEAR_FLAG(F_OF);
+                if (BOX64ENV(cputype))
+                    SET_FLAG(F_AF);
+                else
+                    CLEAR_FLAG(F_AF);
+            }
+            break;
+        case d_sar16:
+            if (emu->op2.u16) {
+                cc = (emu->op1.i16 >> (emu->op2.u16 - 1)) & 1;
+                CONDITIONAL_SET_FLAG(cc, F_CF);
+                CONDITIONAL_SET_FLAG(!emu->res.u16, F_ZF);
+                CONDITIONAL_SET_FLAG(emu->res.u16 & 0x8000, F_SF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+                CLEAR_FLAG(F_OF);
+                if (BOX64ENV(cputype))
+                    SET_FLAG(F_AF);
+                else
+                    CLEAR_FLAG(F_AF);
+            }
+            break;
+        case d_sar32:
+            if (emu->op2.u32) {
+                cc = emu->op1.u32 & (1 << (emu->op2.u32 - 1));
+                CONDITIONAL_SET_FLAG(cc, F_CF);
+                CONDITIONAL_SET_FLAG(!emu->res.u32, F_ZF);
+                CONDITIONAL_SET_FLAG(emu->res.u32 & 0x80000000, F_SF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+                CLEAR_FLAG(F_OF);
+                if (BOX64ENV(cputype))
+                    SET_FLAG(F_AF);
+                else
+                    CLEAR_FLAG(F_AF);
+            }
+            break;
+        case d_sar64:
+            if (emu->op2.u64) {
+                cc = emu->op1.u64 & (1LL << (emu->op2.u64 - 1));
+                CONDITIONAL_SET_FLAG(cc, F_CF);
+                CONDITIONAL_SET_FLAG(!emu->res.u64, F_ZF);
+                CONDITIONAL_SET_FLAG(emu->res.u64 & 0x8000000000000000LL, F_SF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+                CLEAR_FLAG(F_OF);
+                if (BOX64ENV(cputype))
+                    SET_FLAG(F_AF);
+                else
+                    CLEAR_FLAG(F_AF);
+            }
+            break;
+        case d_shr8:
+            cnt = emu->op2.u8 & 0x1f;
+            if (cnt > 0) {
+                cc = emu->op1.u8 & (1 << (cnt - 1));
+                CONDITIONAL_SET_FLAG(cc, F_CF);
+                CONDITIONAL_SET_FLAG(!emu->res.u8, F_ZF);
+                CONDITIONAL_SET_FLAG(emu->res.u8 & 0x80, F_SF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+                if (BOX64ENV(cputype)) {
+                    CONDITIONAL_SET_FLAG((emu->res.u8 >> 6) & 0x1, F_OF);
+                    SET_FLAG(F_AF);
+                } else {
+                    CONDITIONAL_SET_FLAG((emu->op1.u8 >> 7) & 0x1, F_OF);
+                    CLEAR_FLAG(F_AF);
+                }
+            }
+            break;
+        case d_shr16:
+            cnt = emu->op2.u16 & 0x1f;
+            if (cnt > 0) {
+                cc = emu->op1.u16 & (1 << (cnt - 1));
+                CONDITIONAL_SET_FLAG(cc, F_CF);
+                CONDITIONAL_SET_FLAG(!emu->res.u16, F_ZF);
+                CONDITIONAL_SET_FLAG(emu->res.u16 & 0x8000, F_SF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+                if (BOX64ENV(cputype)) {
+                    CONDITIONAL_SET_FLAG((emu->res.u16 >> 14) & 0x1, F_OF);
+                    SET_FLAG(F_AF);
+                } else {
+                    CONDITIONAL_SET_FLAG((emu->op1.u16 >> 15) & 0x1, F_OF);
+                    CLEAR_FLAG(F_AF);
+                }
+            }
+            if (cnt == 1) {
+                CONDITIONAL_SET_FLAG(emu->op1.u16 & 0x8000, F_OF);
+            }
+            break;
+        case d_shr32:
+            cnt = emu->op2.u32 & 0x1f;
+            if (cnt > 0) {
+                cc = emu->op1.u32 & (1 << (cnt - 1));
+                CONDITIONAL_SET_FLAG(cc, F_CF);
+                CONDITIONAL_SET_FLAG(!emu->res.u32, F_ZF);
+                CONDITIONAL_SET_FLAG(emu->res.u32 & 0x80000000, F_SF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+                if (BOX64ENV(cputype)) {
+                    CONDITIONAL_SET_FLAG((emu->res.u32 >> 30) & 0x1, F_OF);
+                    SET_FLAG(F_AF);
+                } else {
+                    CONDITIONAL_SET_FLAG((emu->op1.u32 >> 31) & 0x1, F_OF);
+                    CLEAR_FLAG(F_AF);
+                }
+            }
+            break;
+        case d_shr64:
+            cnt = emu->op2.u64;
+            if (cnt > 0) {
+                cc = emu->op1.u64 & (1LL << (cnt - 1));
+                CONDITIONAL_SET_FLAG(cc, F_CF);
+                CONDITIONAL_SET_FLAG(!emu->res.u64, F_ZF);
+                CONDITIONAL_SET_FLAG(emu->res.u64 & 0x8000000000000000LL, F_SF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+                if (BOX64ENV(cputype)) {
+                    CONDITIONAL_SET_FLAG((emu->res.u64 >> 62) & 0x1, F_OF);
+                    SET_FLAG(F_AF);
+                } else {
+                    CONDITIONAL_SET_FLAG((emu->op1.u64 >> 63) & 0x1, F_OF);
+                    CLEAR_FLAG(F_AF);
+                }
+            }
+            break;
+        case d_shrd16:
+            cnt = emu->op2.u16;
+            if (cnt > 0) {
+                cc = emu->op1.u16 & (1 << (cnt - 1));
+                if (cnt > 15 && BOX64ENV(cputype))
+                    cc = 0;
+                CONDITIONAL_SET_FLAG(cc, F_CF);
+                CONDITIONAL_SET_FLAG(!emu->res.u16, F_ZF);
+                CONDITIONAL_SET_FLAG(emu->res.u16 & 0x8000, F_SF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            }
+            if BOX64ENV (cputype) {
+                CONDITIONAL_SET_FLAG(XOR2(emu->res.u16 >> 14), F_OF);
+            } else {
+                CONDITIONAL_SET_FLAG(((emu->res.u16 >> (16 - (cnt & 15))) ^ (emu->op1.u16 >> 15)) & 1, F_OF);
+            }
+            if (BOX64ENV(cputype))
+                SET_FLAG(F_AF);
+            else
+                CLEAR_FLAG(F_AF);
+            break;
+        case d_shrd32:
+            cnt = emu->op2.u32;
+            if (cnt > 0) {
+                cc = emu->op1.u32 & (1 << (cnt - 1));
+                CONDITIONAL_SET_FLAG(cc, F_CF);
+                CONDITIONAL_SET_FLAG(!emu->res.u32, F_ZF);
+                CONDITIONAL_SET_FLAG(emu->res.u32 & 0x80000000, F_SF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+                if BOX64ENV (cputype) {
+                    CONDITIONAL_SET_FLAG(XOR2(emu->res.u32 >> 30), F_OF);
+                } else {
+                    CONDITIONAL_SET_FLAG(((emu->res.u32 >> (32 - cnt)) ^ (emu->op1.u32 >> 31)) & 1, F_OF);
+                }
+                if (BOX64ENV(cputype))
+                    SET_FLAG(F_AF);
+                else
+                    CLEAR_FLAG(F_AF);
+            }
+            break;
+        case d_shrd64:
+            cnt = emu->op2.u64;
+            if (cnt > 0) {
+                cc = emu->op1.u64 & (1LL << (cnt - 1));
+                CONDITIONAL_SET_FLAG(cc, F_CF);
+                CONDITIONAL_SET_FLAG(!emu->res.u64, F_ZF);
+                CONDITIONAL_SET_FLAG(emu->res.u64 & 0x8000000000000000LL, F_SF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+                if BOX64ENV (cputype) {
+                    CONDITIONAL_SET_FLAG(XOR2(emu->res.u64 >> 62), F_OF);
+                } else {
+                    CONDITIONAL_SET_FLAG(((emu->res.u64 >> (64 - cnt)) ^ (emu->op1.u64 >> 63)) & 1, F_OF);
+                }
+                if (BOX64ENV(cputype))
+                    SET_FLAG(F_AF);
+                else
+                    CLEAR_FLAG(F_AF);
+            }
+            break;
+        case d_shld16:
+            cnt = emu->op2.u16;
+            if (cnt > 0) {
+                cc = emu->op1.u16 & (1 << (16 - cnt));
+                CONDITIONAL_SET_FLAG(cc, F_CF);
+                CONDITIONAL_SET_FLAG(!emu->res.u16, F_ZF);
+                CONDITIONAL_SET_FLAG(emu->res.u16 & 0x8000, F_SF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+                if BOX64ENV (cputype) {
+                    if (cnt > 15)
+                        CONDITIONAL_SET_FLAG(ACCESS_FLAG(F_CF), F_OF);
+                    else
+                        CONDITIONAL_SET_FLAG((ACCESS_FLAG(F_CF) ^ (emu->res.u16 >> 15)) & 1, F_OF);
+                } else {
+                    CONDITIONAL_SET_FLAG(XOR2(emu->op1.u16 >> 14), F_OF);
+                }
+                if (BOX64ENV(cputype))
+                    SET_FLAG(F_AF);
+                else
+                    CLEAR_FLAG(F_AF);
+            }
+            break;
+        case d_shld32:
+            cnt = emu->op2.u32;
+            if (cnt > 0) {
+                cc = emu->op1.u32 & (1 << (32 - cnt));
+                CONDITIONAL_SET_FLAG(cc, F_CF);
+                CONDITIONAL_SET_FLAG(!emu->res.u32, F_ZF);
+                CONDITIONAL_SET_FLAG(emu->res.u32 & 0x80000000, F_SF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+                if BOX64ENV (cputype) {
+                    CONDITIONAL_SET_FLAG((ACCESS_FLAG(F_CF) ^ (emu->res.u32 >> 31)) & 1, F_OF);
+                } else {
+                    CONDITIONAL_SET_FLAG(XOR2(emu->op1.u32 >> 30), F_OF);
+                }
+                if (BOX64ENV(cputype))
+                    SET_FLAG(F_AF);
+                else
+                    CLEAR_FLAG(F_AF);
+            }
+            break;
+        case d_shld64:
+            cnt = emu->op2.u64;
+            if (cnt > 0) {
+                cc = emu->op1.u64 & (1LL << (64 - cnt));
+                CONDITIONAL_SET_FLAG(cc, F_CF);
+                CONDITIONAL_SET_FLAG(!emu->res.u64, F_ZF);
+                CONDITIONAL_SET_FLAG(emu->res.u64 & 0x8000000000000000LL, F_SF);
+                CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+                if BOX64ENV (cputype) {
+                    CONDITIONAL_SET_FLAG((ACCESS_FLAG(F_CF) ^ (emu->res.u64 >> 63)) & 1, F_OF);
+                } else {
+                    CONDITIONAL_SET_FLAG(XOR2(emu->op1.u64 >> 62), F_OF);
+                }
+                if (BOX64ENV(cputype))
+                    SET_FLAG(F_AF);
+                else
+                    CLEAR_FLAG(F_AF);
+            }
+            break;
+        case d_sub8:
+            CONDITIONAL_SET_FLAG(emu->res.u8 & 0x80, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u8, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            bc = (emu->res.u8 & (~emu->op1.u8 | emu->op2.u8)) | (~emu->op1.u8 & emu->op2.u8);
+            CONDITIONAL_SET_FLAG(bc & 0x80, F_CF);
+            CONDITIONAL_SET_FLAG(XOR2(bc >> 6), F_OF);
+            CONDITIONAL_SET_FLAG(bc & 0x8, F_AF);
+            break;
+        case d_sub16:
+            CONDITIONAL_SET_FLAG(emu->res.u16 & 0x8000, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u16, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            bc = (emu->res.u16 & (~emu->op1.u16 | emu->op2.u16)) | (~emu->op1.u16 & emu->op2.u16);
+            CONDITIONAL_SET_FLAG(bc & 0x8000, F_CF);
+            CONDITIONAL_SET_FLAG(XOR2(bc >> 14), F_OF);
+            CONDITIONAL_SET_FLAG(bc & 0x8, F_AF);
+            break;
+        case d_sub32:
+            CONDITIONAL_SET_FLAG(emu->res.u32 & 0x80000000, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u32, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            bc = (emu->res.u32 & (~emu->op1.u32 | emu->op2.u32)) | (~emu->op1.u32 & emu->op2.u32);
+            CONDITIONAL_SET_FLAG(bc & 0x80000000, F_CF);
+            CONDITIONAL_SET_FLAG(XOR2(bc >> 30), F_OF);
+            CONDITIONAL_SET_FLAG(bc & 0x8, F_AF);
+            break;
+        case d_sub64:
+            CONDITIONAL_SET_FLAG(emu->res.u64 & 0x8000000000000000LL, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u64, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            bc = (emu->res.u64 & (~emu->op1.u64 | emu->op2.u64)) | (~emu->op1.u64 & emu->op2.u64);
+            CONDITIONAL_SET_FLAG(bc & 0x8000000000000000LL, F_CF);
+            CONDITIONAL_SET_FLAG(XOR2(bc >> 62), F_OF);
+            CONDITIONAL_SET_FLAG(bc & 0x8, F_AF);
+            break;
+        case d_xor8:
+            CLEAR_FLAG(F_OF);
+            CLEAR_FLAG(F_CF);
+            CLEAR_FLAG(F_AF);
+            CONDITIONAL_SET_FLAG(emu->res.u8 & 0x80, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u8, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            break;
+        case d_xor16:
+            CLEAR_FLAG(F_OF);
+            CLEAR_FLAG(F_CF);
+            CLEAR_FLAG(F_AF);
+            CONDITIONAL_SET_FLAG(emu->res.u16 & 0x8000, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u16, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            break;
+        case d_xor32:
+            CLEAR_FLAG(F_OF);
+            CLEAR_FLAG(F_CF);
+            CLEAR_FLAG(F_AF);
+            CONDITIONAL_SET_FLAG(emu->res.u32 & 0x80000000, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u32, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            break;
+        case d_xor64:
+            CLEAR_FLAG(F_OF);
+            CLEAR_FLAG(F_CF);
+            CLEAR_FLAG(F_AF);
+            CONDITIONAL_SET_FLAG(emu->res.u64 & 0x8000000000000000LL, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u64, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            break;
+        case d_cmp8:
+            CONDITIONAL_SET_FLAG(emu->res.u8 & 0x80, F_SF);
+            CONDITIONAL_SET_FLAG((emu->res.u8 & 0xff) == 0, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            bc = (emu->res.u8 & (~emu->op1.u8 | emu->op2.u8)) | (~emu->op1.u8 & emu->op2.u8);
+            CONDITIONAL_SET_FLAG(bc & 0x80, F_CF);
+            CONDITIONAL_SET_FLAG(XOR2(bc >> 6), F_OF);
+            CONDITIONAL_SET_FLAG(bc & 0x8, F_AF);
+            break;
+        case d_cmp16:
+            CONDITIONAL_SET_FLAG(emu->res.u16 & 0x8000, F_SF);
+            CONDITIONAL_SET_FLAG((emu->res.u16 & 0xffff) == 0, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            bc = (emu->res.u16 & (~emu->op1.u16 | emu->op2.u16)) | (~emu->op1.u16 & emu->op2.u16);
+            CONDITIONAL_SET_FLAG(bc & 0x8000, F_CF);
+            CONDITIONAL_SET_FLAG(XOR2(bc >> 14), F_OF);
+            CONDITIONAL_SET_FLAG(bc & 0x8, F_AF);
+            break;
+        case d_cmp32:
+            CONDITIONAL_SET_FLAG(emu->res.u32 & 0x80000000, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u32, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            bc = (emu->res.u32 & (~emu->op1.u32 | emu->op2.u32)) | (~emu->op1.u32 & emu->op2.u32);
+            CONDITIONAL_SET_FLAG(bc & 0x80000000, F_CF);
+            CONDITIONAL_SET_FLAG(XOR2(bc >> 30), F_OF);
+            CONDITIONAL_SET_FLAG(bc & 0x8, F_AF);
+            break;
+        case d_cmp64:
+            CONDITIONAL_SET_FLAG(emu->res.u64 & 0x8000000000000000LL, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u64, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            bc = (emu->res.u64 & (~emu->op1.u64 | emu->op2.u64)) | (~emu->op1.u64 & emu->op2.u64);
+            CONDITIONAL_SET_FLAG(bc & 0x8000000000000000LL, F_CF);
+            CONDITIONAL_SET_FLAG(XOR2(bc >> 62), F_OF);
+            CONDITIONAL_SET_FLAG(bc & 0x8, F_AF);
+            break;
+        case d_tst8:
+            CLEAR_FLAG(F_OF);
+            CONDITIONAL_SET_FLAG(emu->res.u8 & 0x80, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u8, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            CLEAR_FLAG(F_CF);
+            break;
+        case d_tst16:
+            CLEAR_FLAG(F_OF);
+            CONDITIONAL_SET_FLAG(emu->res.u16 & 0x8000, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u16, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            CLEAR_FLAG(F_CF);
+            break;
+        case d_tst32:
+            CLEAR_FLAG(F_OF);
+            CONDITIONAL_SET_FLAG(emu->res.u32 & 0x80000000, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u32, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            CLEAR_FLAG(F_CF);
+            break;
+        case d_tst64:
+            CLEAR_FLAG(F_OF);
+            CONDITIONAL_SET_FLAG(emu->res.u64 & 0x8000000000000000LL, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u64, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            CLEAR_FLAG(F_CF);
+            break;
+        case d_adc8:
+            CONDITIONAL_SET_FLAG(emu->res.u16 & 0x100, F_CF);
+            CONDITIONAL_SET_FLAG(!emu->res.u8, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u8 & 0x80, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            cc = (emu->op1.u8 & emu->op2.u8) | ((~emu->res.u8) & (emu->op1.u8 | emu->op2.u8));
+            CONDITIONAL_SET_FLAG(XOR2(cc >> 6), F_OF);
+            CONDITIONAL_SET_FLAG(cc & 0x8, F_AF);
+            break;
+        case d_adc16:
+            CONDITIONAL_SET_FLAG(emu->res.u32 & 0x10000, F_CF);
+            CONDITIONAL_SET_FLAG((emu->res.u16 & 0xffff) == 0, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u16 & 0x8000, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            cc = (emu->op1.u16 & emu->op2.u16) | ((~emu->res.u16) & (emu->op1.u16 | emu->op2.u16));
+            CONDITIONAL_SET_FLAG(XOR2(cc >> 14), F_OF);
+            CONDITIONAL_SET_FLAG(cc & 0x8, F_AF);
+            break;
+        case d_adc32:
+            CONDITIONAL_SET_FLAG(emu->res.u64 & 0x100000000L, F_CF);
+            CONDITIONAL_SET_FLAG((emu->res.u32 & 0xffffffff) == 0, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u32 & 0x80000000, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            cc = (emu->op1.u32 & emu->op2.u32) | ((~emu->res.u32) & (emu->op1.u32 | emu->op2.u32));
+            CONDITIONAL_SET_FLAG(XOR2(cc >> 30), F_OF);
+            CONDITIONAL_SET_FLAG(cc & 0x8, F_AF);
+            break;
+        case d_adc32b:
+            if (emu->res.u32 == (emu->op1.u32 + emu->op2.u32)) {
+                lo = (emu->op1.u32 & 0xFFFF) + (emu->op2.u32 & 0xFFFF);
+            } else {
+                lo = 1 + (emu->op1.u32 & 0xFFFF) + (emu->op2.u32 & 0xFFFF);
+            }
+            hi = (lo >> 16) + (emu->op1.u32 >> 16) + (emu->op2.u32 >> 16);
+            CONDITIONAL_SET_FLAG(hi & 0x10000, F_CF);
+            CONDITIONAL_SET_FLAG(!emu->res.u32, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u32 & 0x80000000, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            cc = (emu->op2.u32 & emu->op1.u32) | ((~emu->res.u32) & (emu->op2.u32 | emu->op1.u32));
+            CONDITIONAL_SET_FLAG(XOR2(cc >> 30), F_OF);
+            CONDITIONAL_SET_FLAG(cc & 0x8, F_AF);
+            break;
+        case d_adc64:
+            if (emu->res.u64 == (emu->op1.u64 + emu->op2.u64)) {
+                lo = (emu->op1.u64 & 0xFFFFFFFF) + (emu->op2.u64 & 0xFFFFFFFF);
+            } else {
+                lo = 1 + (emu->op1.u64 & 0xFFFFFFFF) + (emu->op2.u64 & 0xFFFFFFFF);
+            }
+            hi = (lo >> 32) + (emu->op1.u64 >> 32) + (emu->op2.u64 >> 32);
+            CONDITIONAL_SET_FLAG(hi & 0x100000000L, F_CF);
+            CONDITIONAL_SET_FLAG(!emu->res.u64, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u64 & 0x8000000000000000LL, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            cc = (emu->op2.u64 & emu->op1.u64) | ((~emu->res.u64) & (emu->op2.u64 | emu->op1.u64));
+            CONDITIONAL_SET_FLAG(XOR2(cc >> 62), F_OF);
+            CONDITIONAL_SET_FLAG(cc & 0x8, F_AF);
+            break;
+        case d_sbb8:
+            CONDITIONAL_SET_FLAG(emu->res.u8 & 0x80, F_SF);
+            CONDITIONAL_SET_FLAG((emu->res.u8 & 0xff) == 0, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            bc = (emu->res.u8 & (~emu->op1.u8 | emu->op2.u8)) | (~emu->op1.u8 & emu->op2.u8);
+            CONDITIONAL_SET_FLAG(bc & 0x80, F_CF);
+            CONDITIONAL_SET_FLAG(XOR2(bc >> 6), F_OF);
+            CONDITIONAL_SET_FLAG(bc & 0x8, F_AF);
+            break;
+        case d_sbb16:
+            CONDITIONAL_SET_FLAG(emu->res.u16 & 0x8000, F_SF);
+            CONDITIONAL_SET_FLAG((emu->res.u16 & 0xffff) == 0, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            bc = (emu->res.u16 & (~emu->op1.u16 | emu->op2.u16)) | (~emu->op1.u16 & emu->op2.u16);
+            CONDITIONAL_SET_FLAG(bc & 0x8000, F_CF);
+            CONDITIONAL_SET_FLAG(XOR2(bc >> 14), F_OF);
+            CONDITIONAL_SET_FLAG(bc & 0x8, F_AF);
+            break;
+        case d_sbb32:
+            CONDITIONAL_SET_FLAG(emu->res.u32 & 0x80000000, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u32, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            bc = (emu->res.u32 & (~emu->op1.u32 | emu->op2.u32)) | (~emu->op1.u32 & emu->op2.u32);
+            CONDITIONAL_SET_FLAG(bc & 0x80000000, F_CF);
+            CONDITIONAL_SET_FLAG(XOR2(bc >> 30), F_OF);
+            CONDITIONAL_SET_FLAG(bc & 0x8, F_AF);
+            break;
+        case d_sbb64:
+            CONDITIONAL_SET_FLAG(emu->res.u64 & 0x8000000000000000LL, F_SF);
+            CONDITIONAL_SET_FLAG(!emu->res.u64, F_ZF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            bc = (emu->res.u64 & (~emu->op1.u64 | emu->op2.u64)) | (~emu->op1.u64 & emu->op2.u64);
+            CONDITIONAL_SET_FLAG(bc & 0x8000000000000000LL, F_CF);
+            CONDITIONAL_SET_FLAG(XOR2(bc >> 62), F_OF);
+            CONDITIONAL_SET_FLAG(bc & 0x8, F_AF);
+            break;
+        case d_rol8:
+            if (BOX64ENV(cputype))
+                CONDITIONAL_SET_FLAG((emu->res.u8 + (emu->res.u8 >> 7)) & 1, F_OF);
+            else
+                CONDITIONAL_SET_FLAG(XOR2(emu->op1.u8 >> 6), F_OF);
+            CONDITIONAL_SET_FLAG(emu->res.u8 & 0x1, F_CF);
+            break;
+        case d_rol16:
+            if (BOX64ENV(cputype))
+                CONDITIONAL_SET_FLAG((emu->res.u16 + (emu->res.u16 >> 15)) & 1, F_OF);
+            else
+                CONDITIONAL_SET_FLAG(XOR2(emu->op1.u16 >> 14), F_OF);
+            CONDITIONAL_SET_FLAG(emu->res.u16 & 0x1, F_CF);
+            break;
+        case d_rol32:
+            if (BOX64ENV(cputype))
+                CONDITIONAL_SET_FLAG((emu->res.u32 + (emu->res.u32 >> 31)) & 1, F_OF);
+            else
+                CONDITIONAL_SET_FLAG(XOR2(emu->op1.u32 >> 30), F_OF);
+            CONDITIONAL_SET_FLAG(emu->res.u32 & 0x1, F_CF);
+            break;
+        case d_rol64:
+            if (BOX64ENV(cputype))
+                CONDITIONAL_SET_FLAG((emu->res.u64 + (emu->res.u64 >> 63)) & 1, F_OF);
+            else
+                CONDITIONAL_SET_FLAG(XOR2(emu->op1.u64 >> 62), F_OF);
+            CONDITIONAL_SET_FLAG(emu->res.u64 & 0x1, F_CF);
+            break;
+        case d_ror8:
+            if (BOX64ENV(cputype))
+                CONDITIONAL_SET_FLAG(XOR2(emu->res.u8 >> 6), F_OF);
+            else
+                CONDITIONAL_SET_FLAG(((emu->op1.u8 >> 7) ^ emu->op1.u8) & 1, F_OF);
+            CONDITIONAL_SET_FLAG(emu->res.u8 & (1 << 7), F_CF);
+            break;
+        case d_ror16:
+            if (BOX64ENV(cputype))
+                CONDITIONAL_SET_FLAG(XOR2(emu->res.u16 >> 14), F_OF);
+            else
+                CONDITIONAL_SET_FLAG(((emu->op1.u16 >> 15) ^ emu->op1.u16) & 1, F_OF);
+            CONDITIONAL_SET_FLAG(emu->res.u16 & (1 << 15), F_CF);
+            break;
+        case d_ror32:
+            if (BOX64ENV(cputype))
+                CONDITIONAL_SET_FLAG(XOR2(emu->res.u32 >> 30), F_OF);
+            else
+                CONDITIONAL_SET_FLAG(((emu->op1.u32 >> 31) ^ emu->op1.u32) & 1, F_OF);
+            CONDITIONAL_SET_FLAG(emu->res.u32 & (1 << 31), F_CF);
+            break;
+        case d_ror64:
+            if (BOX64ENV(cputype))
+                CONDITIONAL_SET_FLAG(XOR2(emu->res.u64 >> 62), F_OF);
+            else
+                CONDITIONAL_SET_FLAG(((emu->op1.u64 >> 63) ^ emu->op1.u64) & 1, F_OF);
+            CONDITIONAL_SET_FLAG(emu->res.u64 & (1L << 63), F_CF);
+            break;
+
+        case d_unknown:
+            printf_log(LOG_NONE, "%p trying to evaluate Unknown deferred Flags\n", (void*)R_RIP);
+            break;
+    }
+    RESET_FLAGS(emu);
+}
+
+uintptr_t GetSegmentBaseEmu(x64emu_t* emu, int seg)
+{
+    if (emu->segs_serial[seg] != emu->context->sel_serial) {
+        emu->segs_offs[seg] = (uintptr_t)GetSegmentBase(emu->segs[seg]);
+        emu->segs_serial[seg] = emu->context->sel_serial;
+    }
+    return emu->segs_offs[seg];
 }

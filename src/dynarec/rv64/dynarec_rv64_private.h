@@ -100,6 +100,8 @@ typedef struct flagcache_s {
     uint8_t             dfnone_here;// defered flags is cleared in this opcode
 } flagcache_t;
 
+typedef struct callret_s callret_t;
+
 typedef struct instruction_rv64_s {
     instruction_x64_t   x64;
     uintptr_t           address;    // (start) address of the riscv emitted instruction
@@ -123,18 +125,23 @@ typedef struct instruction_rv64_s {
     uint16_t            ymm0_out;   // the ymm0 at th end of the opcode
     uint16_t            ymm0_pass2, ymm0_pass3;
     int                 barrier_maybe;
-    uint8_t             will_write;
-    uint8_t             last_write;
-    uint8_t             lock;
+    uint8_t             will_write:2;    // [strongmem] will write to memory
+    uint8_t             will_read:1;     // [strongmem] will read from memory
+    uint8_t             last_write:1;    // [strongmem] the last write in a SEQ
+    uint8_t             lock:1;          // [strongmem] lock semantic
+    uint8_t             lock_prefixed:1; // [strongmem] the opcode is lock prefixed
     uint8_t             df_notneeded;
     uint8_t             nat_flags_fusion:1;
     uint8_t             nat_flags_nofusion:1;
     uint8_t             nat_flags_carry:1;
     uint8_t             nat_flags_sign:1;
     uint8_t             nat_flags_needsign:1;
-    uint8_t             unaligned:1; // this opcode can be re-generated for unaligned special case
+    uint8_t             unaligned:1;    // this opcode can be re-generated for unaligned special case
+    uint8_t             x87precision:1; // this opcode can handle x87pc
+    uint8_t             no_scratch_usage:1; // this opcode does not use scratch register
     uint8_t             nat_flags_op1;
     uint8_t             nat_flags_op2;
+    uint16_t            nat_next_inst;
     flagcache_t         f_exit;     // flags status at end of instruction
     extcache_t          e;          // extcache at end of instruction (but before poping)
     flagcache_t         f_entry;    // flags status before the instruction begin
@@ -169,6 +176,8 @@ typedef struct dynarec_rv64_s {
     dynablock_t*        dynablock;
     instsize_t*         instsize;
     size_t              insts_size; // size of the instruction size array (calculated)
+    int                 callret_size;   // size of the array
+    callret_t*          callrets;   // arrey of callret return, with NOP / UDF depending if the block is clean or dirty
     uint8_t             smwrite;    // for strongmem model emulation
     uintptr_t           forward;    // address of the last end of code while testing forward
     uintptr_t           forward_to; // address of the next jump to (to check if everything is ok)
@@ -183,6 +192,8 @@ typedef struct dynarec_rv64_s {
     uint8_t             inst_vl;        // vl inside current instruction, for vsetvli elimination
     uint8_t             inst_vlmul;     // vlmul inside current instruction
     void*               gdbjit_block;
+    uint32_t            need_x87check; // x87 low precision check
+    uint32_t            need_dump;     // need to dump the block
 } dynarec_rv64_t;
 
 // v0 is hardware wired to vector mask register, which should be always reserved
