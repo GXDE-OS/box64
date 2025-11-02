@@ -33,6 +33,7 @@ typedef void (*vFpA_t)(void*, va_list);
 typedef int32_t (*iFip_t)(int32_t, void*);
 typedef int32_t (*iFup_t)(uint32_t, void*);
 typedef int32_t (*iFpi_t)(void*, int32_t);
+typedef int32_t (*iFpu_t)(void*, uint32_t);
 typedef int32_t (*iFpL_t)(void*, uintptr_t);
 typedef int32_t (*iFpp_t)(void*, void*);
 typedef int32_t (*iFpV_t)(void*, ...);
@@ -53,6 +54,7 @@ typedef int32_t (*iFipp_t)(int32_t, void*, void*);
 typedef int32_t (*iFipV_t)(int32_t, void*, ...);
 typedef int32_t (*iFipA_t)(int32_t, void*, va_list);
 typedef int32_t (*iFpLi_t)(void*, uintptr_t, int32_t);
+typedef int32_t (*iFpLp_t)(void*, uintptr_t, void*);
 typedef int32_t (*iFppi_t)(void*, void*, int32_t);
 typedef int32_t (*iFppp_t)(void*, void*, void*);
 typedef int32_t (*iFppV_t)(void*, void*, ...);
@@ -116,6 +118,7 @@ typedef int32_t (*iFppipppp_t)(void*, void*, int32_t, void*, void*, void*, void*
 	GO(_Jv_RegisterClasses, vFv_t) \
 	GO(__cxa_pure_virtual, vFv_t) \
 	GO(__stack_chk_fail, vFv_t) \
+	GO(_exit, vFi_t) \
 	GO(exit, vFi_t) \
 	GO(_ITM_deregisterTMCloneTable, vFp_t) \
 	GO(_ZGTtdlPv, vFp_t) \
@@ -143,6 +146,7 @@ typedef int32_t (*iFppipppp_t)(void*, void*, int32_t, void*, void*, void*, void*
 	GO(_ZGTtnam, pFL_t) \
 	GO(__deregister_frame_info, pFp_t) \
 	GO(mallinfo, pFp_t) \
+	GO(mallinfo2, pFp_t) \
 	GO(__longjmp_chk, vFpi_t) \
 	GO(_longjmp, vFpi_t) \
 	GO(_obstack_newchunk, vFpi_t) \
@@ -164,6 +168,7 @@ typedef int32_t (*iFppipppp_t)(void*, void*, int32_t, void*, void*, void*, void*
 	GO(__sigsetjmp, iFpi_t) \
 	GO(backtrace, iFpi_t) \
 	GO(sigsetjmp, iFpi_t) \
+	GO(delete_module, iFpu_t) \
 	GO(munmap, iFpL_t) \
 	GO(__vprintf_chk, iFpp_t) \
 	GO(dl_iterate_phdr, iFpp_t) \
@@ -228,6 +233,7 @@ typedef int32_t (*iFppipppp_t)(void*, void*, int32_t, void*, void*, void*, void*
 	GO(dprintf, iFipV_t) \
 	GO(vdprintf, iFipA_t) \
 	GO(mprotect, iFpLi_t) \
+	GO(init_module, iFpLp_t) \
 	GO(ftw, iFppi_t) \
 	GO(ftw64, iFppi_t) \
 	GO(__cxa_atexit, iFppp_t) \
@@ -302,6 +308,7 @@ typedef int32_t (*iFppipppp_t)(void*, void*, int32_t, void*, void*, void*, void*
 	GO(__vsnprintf, iFpLpA_t) \
 	GO(vsnprintf, iFpLpA_t) \
 	GO(vswprintf, iFpLpA_t) \
+	GO(nftw, iFppii_t) \
 	GO(nftw64, iFppii_t) \
 	GO(__register_atfork, iFpppp_t) \
 	GO(__vsprintf_chk, iFpppp_t) \

@@ -186,6 +186,11 @@ GOW(creat64, iFpu)
 GO(ctermid, pFp)
 GO(ctime, pFp)
 GO(ctime_r, pFpp)
+#ifdef ANDROID
+DATA(_ctype_, 8)
+#else
+//DATA(_ctype_, 8) //is it even used on Linux?
+#endif
 //DATA(__ctype32_b, 
 //DATA(__ctype32_tolower, 
 //DATA(__ctype32_toupper, 
@@ -220,7 +225,7 @@ GOW(dcngettext, pFpppLi)
 //GO(delete_module, 
 //GO(des_setparity, 
 #else
-//GO(delete_module, 
+GOM(delete_module, iFEpu)
 GO(des_setparity, vFp)
 #endif
 GO(__dgettext, pFpp)
@@ -347,7 +352,7 @@ GOM(execv, iFEpp)
 GOM(execve, iFEppp)
 GOM(execvp, iFEpp)
 GOWM(execvpe, iFEppp)
-GO(_exit, vFi)
+GOM(_exit, vFEi)
 GOM(exit, vFEi)
 GOW(_Exit, vFi)
 GO(explicit_bzero, vFpL)
@@ -833,7 +838,7 @@ GO(inet_ntop, pFippu)
 GOW(inet_pton, iFipp)
 //GO(__inet_pton_length, 
 GO(initgroups, iFpu)
-//GO(init_module, 
+GOM(init_module, iFEpLp)
 GO(initstate, pFupL)
 GO(initstate_r, iFupLp)
 GO(innetgr, iFpppp)
@@ -1245,6 +1250,7 @@ GO(__madvise, iFpLi)
 GOW(madvise, iFpLi)
 GOWM(makecontext, vFEppiV)
 GOWM(mallinfo, pFEp)
+GOWM(mallinfo2, pFEp)
 GO(malloc, pFL)
 //GO(malloc_get_state, 
 GOW(malloc_info, iFiS)
@@ -1272,7 +1278,7 @@ GO(mbtowc, iFppL)
 //GOM(mcheck, iFp)
 GO(mcheck_check_all, vFv)
 //GOM(mcheck_pedantic, iFp)
-//GO(_mcleanup, 
+GO(_mcleanup, vFv)
 GO(_mcount, vFpp)
 GO2(mcount, vFpp, _mcount)
 GO(memalign, pFLL)
@@ -1324,8 +1330,8 @@ GOW(modf, dFdp)
 GOW(modff, fFfp)
 GOWD(modfl, DFDp, modf)
 //GOW(modify_ldt, 
-//GOW(moncontrol, 
-//GO(__monstartup, 
+//GOW(moncontrol,
+GO(__monstartup, vFLL)
 #ifdef STATICBUILD
 //GOW(monstartup, vFLL)
 #else
@@ -1365,7 +1371,7 @@ GO(netname2user, iFppppp)
 GO(__newlocale, pFipp)
 GOW(newlocale, pFipp)
 //GO(nfsservctl, 
-//GOM(nftw, iFppii)
+GOM(nftw, iFEppii)
 GOM(nftw64, iFEppii)
 GOW(ngettext, pFppL)
 GO(nice, iFi)

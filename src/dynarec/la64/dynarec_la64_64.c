@@ -252,10 +252,10 @@ uintptr_t dynarec64_64(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                     else
                         i64 = F8S;
                     MOV64xw(x5, i64);
-                    IFXA (X_ALL, !la64_lbt)
+                    IFXA (X_ALL, !cpuext.lbt)
                         ST_D(x6, xEmu, offsetof(x64emu_t, scratch));
                     emit_adc32(dyn, ninst, rex, ed, x5, x3, x4, x6, x7);
-                    IFXA (X_ALL, !la64_lbt) {
+                    IFXA (X_ALL, !cpuext.lbt) {
                         LD_D(x6, xEmu, offsetof(x64emu_t, scratch));
                     }
                     WBACKO(x6);
@@ -444,6 +444,22 @@ uintptr_t dynarec64_64(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
             } else
                 LDXxw(xRAX, x4, x1);
             break;
+        case 0xA3:
+            INST_NAME("MOV FS:Od, EAX");
+            grab_segdata(dyn, addr, ninst, x4, seg, 0);
+            if (rex.is32bits)
+                u64 = F32;
+            else
+                u64 = F64;
+            if (u64 < 0x800) {
+                ADDIz(x1, x4, u64);
+            } else {
+                MOV64z(x1, u64);
+                ADDz(x1, x1, x4);
+            }
+            SDxw(xRAX, x1, 0);
+            SMWRITE2();
+            break;
         case 0xC6:
             INST_NAME("MOV Seg:Eb, Ib");
             nextop = F8;
@@ -500,6 +516,19 @@ uintptr_t dynarec64_64(dynarec_la64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                     SDXxw(ed, wback, x4);
                 }
                 SMWRITE2();
+            }
+            break;
+        case 0xFF:
+            nextop = F8;
+            switch ((nextop >> 3) & 7) {
+                case 6: // Push Ed
+                    INST_NAME("PUSH Ed");
+                    grab_segdata(dyn, addr, ninst, x6, seg, (MODREG));
+                    GETEDOz(x6, 0, x3);
+                    PUSH1z(ed);
+                    break;
+                default:
+                    DEFAULT;
             }
             break;
         default:

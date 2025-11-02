@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <inttypes.h>
 
 #include "os.h"
 #include "debug.h"
@@ -139,8 +140,10 @@ void SetTraceEmu(uintptr_t start, uintptr_t end)
 
 static void internalFreeX64(x64emu_t* emu)
 {
-    if(emu && emu->stack2free)
+    if(emu && emu->stack2free) {
         munmap(emu->stack2free, emu->size_stack);
+        freeProtection((uintptr_t)emu->stack2free, emu->size_stack);
+    }
     #ifdef BOX32
     if(emu->res_state_32)
         actual_free(emu->res_state_32);
@@ -393,7 +396,7 @@ const char* DumpCPURegs(x64emu_t* emu, uintptr_t ip, int is32bits)
         int stack = emu->fpu_stack;
         if(stack>8) stack = 8;
         for (int i=0; i<stack; i++) {
-            sprintf(tmp, "ST%d=%f(0x%llx)", i, ST(i).d, ST(i).q);
+            sprintf(tmp, "ST%d=%f(0x%" PRIx64 ")", i, ST(i).d, ST(i).q);
             strcat(buff, tmp);
             int c = 20-strlen(tmp);
             if(c<1) c=1;
@@ -437,19 +440,21 @@ const char* DumpCPURegs(x64emu_t* emu, uintptr_t ip, int is32bits)
                     strcat(buff, tmp);
 #undef FLAG_CHAR
                 }
+            } else {
+                strcat(buff, " ");
             }
         }
     else
         for (int i=_AX; i<=_R15; ++i) {
 #ifdef HAVE_TRACE
             if (BOX64ENV(trace_regsdiff) && (emu->regs[i].q[0] != emu->oldregs[i].q[0])) {
-                sprintf(tmp, "\e[1;35m%s=%016lx\e[m ", regname[i], emu->regs[i].q[0]);
+                sprintf(tmp, "\e[1;35m%s=%016" PRIx64 "\e[m ", regname[i], emu->regs[i].q[0]);
                 emu->oldregs[i].q[0] = emu->regs[i].q[0];
             } else {
-                sprintf(tmp, "%s=%016lx ", regname[i], emu->regs[i].q[0]);
+                sprintf(tmp, "%s=%016" PRIx64, regname[i], emu->regs[i].q[0]);
             }
 #else
-            sprintf(tmp, "%s=%016lx ", regname[i], emu->regs[i].q[0]);
+            sprintf(tmp, "%s=%016" PRIx64, regname[i], emu->regs[i].q[0]);
 #endif
             strcat(buff, tmp);
 
@@ -469,12 +474,14 @@ const char* DumpCPURegs(x64emu_t* emu, uintptr_t ip, int is32bits)
                 } else {
                     strcat(buff, "\n");
                 }
+            } else {
+                strcat(buff, " ");
             }
     }
     if(is32bits)
-        sprintf(tmp, "EIP=%08lx ", ip);
+        sprintf(tmp, "EIP=%08" PRIx64 " ", ip);
     else
-        sprintf(tmp, "RIP=%016lx ", ip);
+        sprintf(tmp, "RIP=%016" PRIx64 " ", ip);
     strcat(buff, tmp);
     return buff;
 }
@@ -517,8 +524,6 @@ void StopEmu(x64emu_t* emu, const char* reason, int is32bits)
 
 void UnimpOpcode(x64emu_t* emu, int is32bits)
 {
-    R_RIP = emu->old_ip;
-
     int tid = GetTID();
     printf_log(LOG_INFO, "%04d|%p: Unimplemented %sOpcode (%02X %02X %02X %02X) %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
         tid, (void*)emu->old_ip, is32bits?"32bits ":"",
@@ -527,8 +532,6 @@ void UnimpOpcode(x64emu_t* emu, int is32bits)
         Peek(emu, 4), Peek(emu, 5), Peek(emu, 6), Peek(emu, 7),
         Peek(emu, 8), Peek(emu, 9), Peek(emu,10), Peek(emu,11),
         Peek(emu,12), Peek(emu,13), Peek(emu,14));
-    //emu->quit=1;
-    //emu->error |= ERR_UNIMPL;
 }
 
 void EmuCall(x64emu_t* emu, uintptr_t addr)
@@ -606,6 +609,8 @@ void applyFlushTo0(x64emu_t* emu)
     #else
     __builtin_aarch64_set_fpcr(fpcr);
     #endif
+    #else
+    // This does not applies to RISC-V and LoongArch, as they don't have flush to zero
     #endif
 }
 
@@ -1570,7 +1575,7 @@ void UpdateFlags(x64emu_t* emu)
                 CONDITIONAL_SET_FLAG(XOR2(emu->res.u64 >> 62), F_OF);
             else
                 CONDITIONAL_SET_FLAG(((emu->op1.u64 >> 63) ^ emu->op1.u64) & 1, F_OF);
-            CONDITIONAL_SET_FLAG(emu->res.u64 & (1L << 63), F_CF);
+            CONDITIONAL_SET_FLAG(emu->res.u64 & (1LL << 63), F_CF);
             break;
 
         case d_unknown:

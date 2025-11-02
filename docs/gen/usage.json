@@ -228,7 +228,7 @@
       },
       {
         "key": "1",
-        "description": "Generate aligned atomics only, which is faster and smaller code size, but will cause SIGBUS for LOCK prefixed opcodes operating on aligned data addresses.",
+        "description": "Generate aligned atomics only, which is faster and smaller code size, but will cause SIGBUS for LOCK prefixed opcodes operating on unaligned data addresses.",
         "default": false
       }
     ]
@@ -344,6 +344,24 @@
     ]
   },
   {
+    "name": "BOX64_DYNAREC_NOHOTPAGE",
+    "description": "Disable detection of hot page (where code is executed and data written at the same time).",
+    "category": "Performance",
+    "wine": false,
+    "options": [
+      {
+        "key": "0",
+        "description": "Detect hot page",
+        "default": true
+      },
+      {
+        "key": "1",
+        "description": "Do not detect hot page",
+        "default": false
+      }
+    ]
+  },
+  {
     "name": "BOX64_DYNAREC_DIV0",
     "description": "Enable or disable the generation of division-by-zero exception.",
     "category": "Compatibility",
@@ -351,7 +369,7 @@
     "options": [
       {
         "key": "0",
-        "description": "Do not generate thr division-by-zero exception.",
+        "description": "Do not generate the division-by-zero exception.",
         "default": true
       },
       {
@@ -611,7 +629,7 @@
   },
   {
     "name": "BOX64_DYNAREC_SAFEFLAGS",
-    "description": "Behaviour of flags emulation on CALL/RET opcodes.",
+    "description": "Behaviour of flags emulation on CALL/RET opcodes and other edge cases.",
     "category": "Performance",
     "wine": true,
     "options": [
@@ -627,7 +645,7 @@
       },
       {
         "key": "2",
-        "description": "All CALL/RET will need flags.",
+        "description": "All CALL/RET will need flags. All edge cases are also handled.",
         "default": false
       }
     ]
@@ -798,6 +816,60 @@
         "key": "2",
         "description": "Check Precision Control low precision on x87 emulation.",
         "default": false
+      }
+    ]
+  },
+  {
+    "name": "BOX64_DYNACACHE",
+    "description": "Enable/disable the Dynamic Recompiler Cache (a.k.a DynaCache). This option defaults to 2 (to read cache if present but not generate any). DynaCache write file to home folder by default, and can grow without limit.",
+    "category": "Performance",
+    "wine": false,
+    "options": [
+      {
+        "key": "0",
+        "description": "Disable DynaCache.",
+        "default": false
+      },
+      {
+        "key": "1",
+        "description": "Enable DynaCache.",
+        "default": false
+      },
+      {
+        "key": "2",
+        "description": "Use DynaCache files if present, but do not generate new one.",
+        "default": true
+      }
+    ]
+  },
+  {
+    "name": "BOX64_DYNACACHE_FOLDER",
+    "description": "Set the folder for DynaCache files. Default is $XDG_CACHE_HOME/box64 or $HOME/.cache/box64 if $XDG_CACHE_HOME is not set.",
+    "category": "Performance",
+    "wine": false,
+    "options": [
+      {
+        "key": "XXXX",
+        "description": "Use folder XXXX for DynaCache files.",
+        "default": false
+      }
+    ]
+  },
+  {
+    "name": "BOX64_DYNACACHE_MIN",
+    "description": "Minimum size, in KB, for a DynaCache to be written to disk. Default size is 350KB",
+    "category": "Performance",
+    "wine": false,
+    "options": [
+      {
+        "key": "XXXX",
+        "description": "Set a minimum size of XXXX KB of Dynarec code to write the dynacache to disk. Will not be saved to disk else.",
+        "default": false
+      },
+      {
+        "key": "350",
+        "description": "A size of 350 KB is the default value.",
+        "default": true
       }
     ]
   },
@@ -1500,7 +1572,7 @@
   },
   {
     "name": "BOX64_SSE_FLUSHTO0",
-    "description": "Behaviour of SSE Flush to 0 flags.",
+    "description": "Behaviour of SSE Flush to 0 flags. Also tracking SSE exception flags",
     "category": "Compatibility",
     "wine": true,
     "options": [
@@ -1511,7 +1583,7 @@
       },
       {
         "key": "1",
-        "description": "Apply SSE Flush to 0 flag directly.",
+        "description": "Apply SSE Flush to 0 flag directly. Also reflect SSE exception flags in Dynarec (if available)",
         "default": false
       }
     ]
@@ -1625,6 +1697,16 @@
       {
         "key": "1",
         "description": "Enable trace output. Trace starts before the initialization of dependencies.",
+        "default": false
+      },
+      {
+        "key": "symbolname",
+        "description": "Enable trace output for `symbolname` only. Trace starts before the initialization of dependencies.",
+        "default": false
+      },
+      {
+        "key": "0xXXXXXXX-0xYYYYYYY",
+        "description": "Enable trace output for the range of address (inclusive-exclusive). Trace starts before the initialization of dependencies.",
         "default": false
       }
     ]

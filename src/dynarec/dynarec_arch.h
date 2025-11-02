@@ -24,7 +24,7 @@
 #define MAXBLOCK_SIZE ((1<<20)-200)
 
 #define RAZ_SPECIFIC(A, N)      rasNativeState(A, N)
-#define UPDATE_SPECIFICS(A)     updateNativeFlags(A)
+#define UPDATE_SPECIFICS(A)     updateYmm0s(dyn, 0, 0); updateNativeFlags(A); propagateFpuBarrier(A)
 #define PREUPDATE_SPECIFICS(A)
 #define POSTUPDATE_SPECIFICS(A) updateUneeded(A)
 #define ARCH_SIZE(A)    get_size_arch(A)
@@ -33,7 +33,9 @@
 #define STOP_NATIVE_FLAGS(A, B)   A->insts[B].nat_flags_op = NAT_FLAG_OP_UNUSABLE
 #define ARCH_UNALIGNED(A, B) arch_unaligned(A, B)
 extern uint32_t arm64_crc(void* p, uint32_t len);
-#define ARCH_CRC(A, B)  if(arm64_crc32) return arm64_crc(A, B)
+#define ARCH_CRC(A, B)  if(cpuext.crc32) return arm64_crc(A, B)
+extern void* create_updateflags();
+#define ARCH_UPDATEFLAGS()      create_updateflags()
 
 #define ARCH_NOP    0b11010101000000110010000000011111
 #define ARCH_UDF    0xcafe
@@ -102,5 +104,7 @@ extern uint32_t arm64_crc(void* p, uint32_t len);
 #else
 #error Unsupported platform
 #endif
+
+#include "dynacache_reloc.h"
 
 #endif //__DYNAREC_ARCH__H_

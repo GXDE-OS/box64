@@ -17,6 +17,7 @@
 #include "debug.h"
 #include "rv64_emitter.h"
 #include "../emu/x64primop.h"
+#include "dynarec_rv64_consts.h"
 
 #define F8      *(uint8_t*)(addr++)
 #define F8S     *(int8_t*)(addr++)
@@ -209,9 +210,12 @@
     }
 
 // FAKEED like GETED, but doesn't get anything
-#define FAKEED                                   \
-    if (!MODREG) {                               \
-        addr = fakeed(dyn, addr, ninst, nextop); \
+#define FAKEED                                    \
+    if (MODREG) {                                 \
+        ed = TO_NAT((nextop & 7) + (rex.b << 3)); \
+        wback = 0;                                \
+    } else {                                      \
+        addr = fakeed(dyn, addr, ninst, nextop);  \
     }
 
 // GETGW extract x64 register in gd, that is i, Signed extented
@@ -240,7 +244,7 @@
             wback = TO_NAT(wback & 3);                                                          \
         }                                                                                       \
         if (wb2) {                                                                              \
-            if (rv64_xtheadbb) {                                                                \
+            if (cpuext.xtheadbb) {                                                              \
                 TH_EXTU(i, wback, 15, 8);                                                       \
             } else {                                                                            \
                 SRLI(i, wback, wb2);                                                            \
@@ -269,7 +273,7 @@
             wback = TO_NAT(wback & 3);                                                          \
         }                                                                                       \
         if (wb2) {                                                                              \
-            if (rv64_xtheadbb) {                                                                \
+            if (cpuext.xtheadbb) {                                                                \
                 TH_EXTU(i, wback, 15, 8);                                                       \
             } else {                                                                            \
                 SRLI(i, wback, wb2);                                                            \
@@ -323,7 +327,7 @@
             wback = TO_NAT(wback & 3);                                                            \
         }                                                                                         \
         if (wb2) {                                                                                \
-            if (rv64_xtheadbb) {                                                                  \
+            if (cpuext.xtheadbb) {                                                                \
                 TH_EXTU(i, wback, 15, 8);                                                         \
             } else {                                                                              \
                 MV(i, wback);                                                                     \
@@ -354,7 +358,7 @@
     }                                                        \
     gd = i;                                                  \
     if (gb2) {                                               \
-        if (rv64_xtheadbb) {                                 \
+        if (cpuext.xtheadbb) {                               \
             TH_EXTU(gd, gb1, 15, 8);                         \
         } else {                                             \
             SRLI(gd, gb1, 8);                                \
@@ -395,8 +399,6 @@
     }
 
 #define GB_EQ_EB() (MODREG && ((nextop & 0x38) >> 3) == (nextop & 7) && (rex.r == rex.b))
-
-#define YMM0(a) ymm_mark_zero(dyn, ninst, a);
 
 // Get direction with size Z and based of F_DF flag, on register r ready for load/store fetching
 // using s as scratch.
@@ -458,10 +460,19 @@
     gback = xEmu;                               \
     gdoffset = offsetof(x64emu_t, xmm[gd])
 
+#define GETGY()                                 \
+    gd = ((nextop & 0x38) >> 3) + (rex.r << 3); \
+    /* TODO: forget */                          \
+    gyoffset = offsetof(x64emu_t, ymm[gd])
+
 #define GETVX()                            \
     sse_forget_reg(dyn, ninst, x3, vex.v); \
     vback = xEmu;                          \
     vxoffset = offsetof(x64emu_t, xmm[vex.v])
+
+#define GETVY()        \
+    /* TODO: forget */ \
+    vyoffset = offsetof(x64emu_t, ymm[vex.v]);
 
 // Get Ex address in general register a, will purge SS or SD if it's reg and is loaded. May use x3. Use wback as load address!
 #define GETEX(a, D, I12)                                                                         \
@@ -475,6 +486,19 @@
         ed = 16;                                                                                 \
         addr = geted(dyn, addr, ninst, nextop, &wback, a, x3, &fixedaddress, rex, NULL, I12, D); \
     }
+
+
+#define GETEY()                                     \
+    if (MODREG) {                                   \
+        ed = (nextop & 7) + (rex.b << 3);           \
+        /* TODO: forget */                          \
+        wback = xEmu;                               \
+        fixedaddress = offsetof(x64emu_t, ymm[ed]); \
+    } else {                                        \
+        fixedaddress += 16;                         \
+    }
+
+
 #define GETEX32(a, D, I12)                                                                         \
     if (MODREG) {                                                                                  \
         ed = (nextop & 7) + (rex.b << 3);                                                          \
@@ -749,13 +773,13 @@
 #define B_MARKi_nocond Bxx_geni(__, MARK, 0, 0, i)
 // Branch to MARK if reg1<reg2 (use j64)
 #define BLT_MARK(reg1, reg2)  Bxx_gen(LT, MARK, reg1, reg2)
-#define BLT_MARKi(reg1, reg2) Bxx_geni(LT, MARK, reg1, reg2, i)
+#define BLT_MARKi(reg1, reg2, i) Bxx_geni(LT, MARK, reg1, reg2, i)
 // Branch to MARK if reg1<reg2 (use j64)
 #define BLTU_MARK(reg1, reg2)  Bxx_gen(LTU, MARK, reg1, reg2)
-#define BLTU_MARKi(reg1, reg2) Bxx_geni(LTU, MARK, reg1, reg2, i)
+#define BLTU_MARKi(reg1, reg2, i) Bxx_geni(LTU, MARK, reg1, reg2, i)
 // Branch to MARK if reg1>=reg2 (use j64)
 #define BGE_MARK(reg1, reg2)  Bxx_gen(GE, MARK, reg1, reg2)
-#define BGE_MARKi(reg1, reg2) Bxx_geni(GE, MARK, reg1, reg2, i)
+#define BGE_MARKi(reg1, reg2, i) Bxx_geni(GE, MARK, reg1, reg2, i)
 // Branch to MARK2 if reg1==reg2 (use j64)
 #define BEQ_MARK2(reg1, reg2) Bxx_gen(EQ, MARK2, reg1, reg2)
 // Branch to MARK2 if reg1!=reg2 (use j64)
@@ -772,6 +796,8 @@
 #define BNE_MARK3(reg1, reg2) Bxx_gen(NE, MARK3, reg1, reg2)
 // Branch to MARK3 if reg1!>=reg2 (use j64)
 #define BGE_MARK3(reg1, reg2) Bxx_gen(GE, MARK3, reg1, reg2)
+// Branch to MARK if reg1<reg2 (use j64)
+#define BLTU_MARK3(reg1, reg2) Bxx_gen(LTU, MARK3, reg1, reg2)
 // Branch to MARK3 if reg1!=0 (use j64)
 #define BNEZ_MARK3(reg) BNE_MARK3(reg, xZR)
 // Branch to MARK3 if reg1==0 (use j64)
@@ -886,16 +912,16 @@
     LOAD_REG(R14);        \
     LOAD_REG(R15);
 
+#define FORCE_DFNONE() SW(xZR, xEmu, offsetof(x64emu_t, df))
 
-#define SET_DFNONE()                               \
-    do {                                           \
-        if (!dyn->f.dfnone) {                      \
-            SW(xZR, xEmu, offsetof(x64emu_t, df)); \
-        }                                          \
-        if (!dyn->insts[ninst].x64.may_set) {      \
-            dyn->f.dfnone_here = 1;                \
-            dyn->f.dfnone = 1;                     \
-        }                                          \
+#define SET_DFNONE()                          \
+    do {                                      \
+        if (!dyn->f.dfnone) {                 \
+            FORCE_DFNONE();                   \
+        }                                     \
+        if (!dyn->insts[ninst].x64.may_set) { \
+            dyn->f.dfnone = 1;                \
+        }                                     \
     } while (0)
 
 #define SET_DF(S, N)                                                                                                            \
@@ -903,7 +929,7 @@
         MOV_U12(S, (N));                                                                                                        \
         SW(S, xEmu, offsetof(x64emu_t, df));                                                                                    \
         if (dyn->f.pending == SF_PENDING && dyn->insts[ninst].x64.need_after && !(dyn->insts[ninst].x64.need_after & X_PEND)) { \
-            CALL_(UpdateFlags, -1, 0, 0, 0);                                                                                    \
+            CALL_(const_updateflags, -1, 0, 0, 0);                                                                              \
             dyn->f.pending = SF_SET;                                                                                            \
             SET_NODF();                                                                                                         \
         }                                                                                                                       \
@@ -912,15 +938,14 @@
         SET_DFNONE()
 #define SET_NODF() dyn->f.dfnone = 0
 #define SET_DFOK()     \
-    dyn->f.dfnone = 1; \
-    dyn->f.dfnone_here = 1
+    dyn->f.dfnone = 1
 
 #define CLEAR_FLAGS() \
     IFX (X_ALL) { ANDI(xFlags, xFlags, ~((1UL << F_AF) | (1UL << F_CF) | (1UL << F_OF2) | (1UL << F_ZF) | (1UL << F_SF) | (1UL << F_PF))); }
 
 #define SET_FLAGS_NEZ(reg, F, scratch)      \
     do {                                    \
-        if (rv64_xtheadcondmov) {           \
+        if (cpuext.xtheadcondmov) {         \
             ORI(scratch, xFlags, 1 << F);   \
             TH_MVNEZ(xFlags, scratch, reg); \
         } else {                            \
@@ -931,7 +956,7 @@
 
 #define SET_FLAGS_EQZ(reg, F, scratch)      \
     do {                                    \
-        if (rv64_xtheadcondmov) {           \
+        if (cpuext.xtheadcondmov) {         \
             ORI(scratch, xFlags, 1 << F);   \
             TH_MVEQZ(xFlags, scratch, reg); \
         } else {                            \
@@ -942,7 +967,7 @@
 
 #define SET_FLAGS_LTZ(reg, F, scratch1, scratch2) \
     do {                                          \
-        if (rv64_xtheadcondmov) {                 \
+        if (cpuext.xtheadcondmov) {               \
             SLT(scratch1, reg, xZR);              \
             ORI(scratch2, xFlags, 1 << F);        \
             TH_MVNEZ(xFlags, scratch2, scratch1); \
@@ -1043,11 +1068,11 @@
     if (((A) != X_PEND && dyn->f.pending != SF_SET) \
         && (dyn->f.pending != SF_SET_PENDING)) {    \
         if (dyn->f.pending != SF_PENDING) {         \
-            LD(x3, xEmu, offsetof(x64emu_t, df));   \
+            LWU(x3, xEmu, offsetof(x64emu_t, df));  \
             j64 = (GETMARKF) - (dyn->native_size);  \
             BEQ(x3, xZR, j64);                      \
         }                                           \
-        CALL_(UpdateFlags, -1, 0, 0, 0);            \
+        CALL_(const_updateflags, -1, 0, 0, 0);      \
         MARKF;                                      \
         dyn->f.pending = SF_SET;                    \
         SET_DFOK();                                 \
@@ -1148,6 +1173,12 @@
 #ifndef FTABLE64
 #define FTABLE64(A, V)
 #endif
+#ifndef TABLE64C
+#define TABLE64C(A, V)
+#endif
+#ifndef TABLE64_
+#define TABLE64_(A, V)
+#endif
 
 #define ARCH_INIT() \
     SMSTART();      \
@@ -1164,7 +1195,11 @@
     do {                                                          \
         ssize_t _delta_ip = (ssize_t)(A) - (ssize_t)dyn->last_ip; \
         if (!dyn->last_ip) {                                      \
-            MOV64x(xRIP, A);                                      \
+            if (dyn->need_reloc) {                                \
+                TABLE64(xRIP, (A));                               \
+            } else {                                              \
+                MOV64x(xRIP, (A));                                \
+            }                                                     \
         } else if (_delta_ip == 0) {                              \
         } else if (_delta_ip >= -2048 && _delta_ip < 2048) {      \
             ADDI(xRIP, xRIP, _delta_ip);                          \
@@ -1175,7 +1210,11 @@
             MOV32w(scratch, _delta_ip);                           \
             ADD(xRIP, xRIP, scratch);                             \
         } else {                                                  \
-            MOV64x(xRIP, (A));                                    \
+            if (dyn->need_reloc) {                                \
+                TABLE64(xRIP, (A));                               \
+            } else {                                              \
+                MOV64x(xRIP, (A));                                \
+            }                                                     \
         }                                                         \
     } while (0)
 #define GETIP(A, scratch) \
@@ -1210,10 +1249,6 @@
         if (set) dyn->vector_sew = dyn->vector_eew;                                   \
     } while (0)
 #endif
-
-void rv64_epilog(void);
-void rv64_epilog_fast(void);
-void* rv64_next(void);
 
 #ifndef STEPNAME
 #define STEPNAME3(N, M) N##M
@@ -1259,8 +1294,13 @@ void* rv64_next(void);
 #define dynarec64_F20F_vector STEPNAME(dynarec64_F20F_vector)
 #define dynarec64_F30F_vector STEPNAME(dynarec64_F30F_vector)
 
-#define dynarec64_AVX       STEPNAME(dynarec64_AVX)
-#define dynarec64_AVX_F3_0F STEPNAME(dynarec64_AVX_F3_0F)
+#define dynarec64_AVX         STEPNAME(dynarec64_AVX)
+#define dynarec64_AVX_0F      STEPNAME(dynarec64_AVX_0F)
+#define dynarec64_AVX_66_0F   STEPNAME(dynarec64_AVX_66_0F)
+#define dynarec64_AVX_66_0F38 STEPNAME(dynarec64_AVX_66_0F38)
+#define dynarec64_AVX_66_0F3A STEPNAME(dynarec64_AVX_66_0F3A)
+#define dynarec64_AVX_F2_0F   STEPNAME(dynarec64_AVX_F2_0F)
+#define dynarec64_AVX_F3_0F   STEPNAME(dynarec64_AVX_F3_0F)
 
 #define geted               STEPNAME(geted)
 #define geted32             STEPNAME(geted32)
@@ -1398,8 +1438,6 @@ void* rv64_next(void);
 #define sse_purge07cache         STEPNAME(sse_purge07cache)
 #define sse_reflect_reg          STEPNAME(sse_reflect_reg)
 
-#define ymm_mark_zero STEPNAME(ymm_mark_zero)
-
 #define mmx_get_reg_vector       STEPNAME(mmx_get_reg_vector)
 #define mmx_get_reg_empty_vector STEPNAME(mmx_get_reg_empty_vector)
 #define sse_get_reg_empty_vector STEPNAME(sse_get_reg_empty_vector)
@@ -1419,7 +1457,6 @@ void* rv64_next(void);
 #define fpu_unreflectcache  STEPNAME(fpu_unreflectcache)
 #define x87_reflectcount    STEPNAME(x87_reflectcount)
 #define x87_unreflectcount  STEPNAME(x87_unreflectcount)
-#define avx_purge_ymm       STEPNAME(avx_purge_ymm)
 
 #define CacheTransform STEPNAME(CacheTransform)
 #define rv64_move64    STEPNAME(rv64_move64)
@@ -1445,7 +1482,7 @@ void jump_to_next(dynarec_rv64_t* dyn, uintptr_t ip, int reg, int ninst, int is3
 void ret_to_epilog(dynarec_rv64_t* dyn, uintptr_t ip, int ninst, rex_t rex);
 void retn_to_epilog(dynarec_rv64_t* dyn, uintptr_t ip, int ninst, rex_t rex, int n);
 void iret_to_epilog(dynarec_rv64_t* dyn, uintptr_t ip, int ninst, int is64bits);
-void call_c(dynarec_rv64_t* dyn, int ninst, void* fnc, int reg, int ret, int saveflags, int savereg, int arg1, int arg2, int arg3, int arg4, int arg5, int arg6);
+void call_c(dynarec_rv64_t* dyn, int ninst, rv64_consts_t fnc, int reg, int ret, int saveflags, int savereg, int arg1, int arg2, int arg3, int arg4, int arg5, int arg6);
 void call_n(dynarec_rv64_t* dyn, int ninst, void* fnc, int w);
 void grab_segdata(dynarec_rv64_t* dyn, uintptr_t addr, int ninst, int reg, int segment, int modreg);
 void emit_cmp8(dynarec_rv64_t* dyn, int ninst, int s1, int s2, int s3, int s4, int s5, int s6);
@@ -1582,9 +1619,6 @@ void x87_restoreround(dynarec_rv64_t* dyn, int ninst, int s1);
 // Set rounding according to mxcsr flags, return reg to restore flags
 int sse_setround(dynarec_rv64_t* dyn, int ninst, int s1, int s2);
 
-// purge ymm_zero mask according to purge_ymm
-void avx_purge_ymm(dynarec_rv64_t* dyn, int ninst, uint16_t mask, int s1);
-
 void CacheTransform(dynarec_rv64_t* dyn, int ninst, int cacheupd, int s1, int s2, int s3);
 
 void rv64_move64(dynarec_rv64_t* dyn, int ninst, int reg, int64_t val);
@@ -1657,9 +1691,6 @@ void sse_purge07cache(dynarec_rv64_t* dyn, int ninst, int s1);
 // Push current value to the cache
 void sse_reflect_reg(dynarec_rv64_t* dyn, int ninst, int s1, int a);
 
-// mark an ymm upper part has zero (forgetting upper part if needed)
-void ymm_mark_zero(dynarec_rv64_t* dyn, int ninst, int a);
-
 // common coproc helpers
 // reset the cache with n
 void fpu_reset_cache(dynarec_rv64_t* dyn, int ninst, int reset_n);
@@ -1718,6 +1749,11 @@ uintptr_t dynarec64_F20F_vector(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t i
 uintptr_t dynarec64_F30F_vector(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ninst, rex_t rex, int* ok, int* need_epilog);
 
 uintptr_t dynarec64_AVX(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ninst, vex_t vex, int* ok, int* need_epilog);
+uintptr_t dynarec64_AVX_0F(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ninst, vex_t vex, int* ok, int* need_epilog);
+uintptr_t dynarec64_AVX_66_0F(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ninst, vex_t vex, int* ok, int* need_epilog);
+uintptr_t dynarec64_AVX_66_0F38(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ninst, vex_t vex, int* ok, int* need_epilog);
+uintptr_t dynarec64_AVX_66_0F3A(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ninst, vex_t vex, int* ok, int* need_epilog);
+uintptr_t dynarec64_AVX_F2_0F(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ninst, vex_t vex, int* ok, int* need_epilog);
 uintptr_t dynarec64_AVX_F3_0F(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ninst, vex_t vex, int* ok, int* need_epilog);
 
 #if STEP < 2
@@ -1894,7 +1930,7 @@ uintptr_t dynarec64_AVX_F3_0F(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip,
     }                                                            \
     IFX (X_CF | X_PF | X_ZF | X_PEND) {                          \
         MOV32w(s2, 0b01000101);                                  \
-        if (rv64_zbb) {                                          \
+        if (cpuext.zbb) {                                        \
             ANDN(xFlags, xFlags, s2);                            \
         } else {                                                 \
             NOT(s3, s2);                                         \
@@ -1921,20 +1957,27 @@ uintptr_t dynarec64_AVX_F3_0F(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip,
 #define FCOMIS(v1, v2, s1, s2, s3, s4, s5) FCOMI(S, v1, v2, s1, s2, s3, s4, s5)
 #define FCOMID(v1, v2, s1, s2, s3, s4, s5) FCOMI(D, v1, v2, s1, s2, s3, s4, s5)
 
-#define PURGE_YMM() avx_purge_ymm(dyn, ninst, dyn->insts[ninst + 1].purge_ymm, x1)
+#define PURGE_YMM()
 
-// reg = (reg < -32768) ? -32768 : ((reg > 32767) ? 32767 : reg)
-#define SAT16(reg, s)             \
-    LUI(s, 0xFFFF8); /* -32768 */ \
-    BGE(reg, s, 4 + 2 * 4);       \
-    MV(reg, s);                   \
-    J(4 + 4 * 3);                 \
-    LUI(s, 8); /* 32768 */        \
-    BLT(reg, s, 4 + 4);           \
-    ADDIW(reg, s, -1);
+// TODO: zbb?
+#define SATw(reg, min, maxp1)   \
+    do {                        \
+        BGE(reg, min, 4 + 4);   \
+        MV(reg, min);           \
+        BLT(reg, maxp1, 4 + 4); \
+        ADDIW(reg, maxp1, -1);  \
+    } while (0)
+
+#define SATUw(reg, maxu)       \
+    do {                       \
+        BGE(reg, xZR, 4 + 4);  \
+        MV(reg, xZR);          \
+        BLT(reg, maxu, 4 + 4); \
+        ADDIW(reg, maxu, -1);  \
+    } while (0)
 
 #define FAST_8BIT_OPERATION(dst, src, s1, OP)                                        \
-    if (MODREG && (rv64_zbb || rv64_xtheadbb) && !dyn->insts[ninst].x64.gen_flags) { \
+    if (MODREG && (cpuext.zbb || cpuext.xtheadbb) && !dyn->insts[ninst].x64.gen_flags) { \
         if (rex.rex) {                                                               \
             wb = TO_NAT((nextop & 7) + (rex.b << 3));                                \
             wb2 = 0;                                                                 \
@@ -1950,13 +1993,13 @@ uintptr_t dynarec64_AVX_F3_0F(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip,
         }                                                                            \
         if (src##2) { ANDI(s1, src, 0xf00); }                                        \
         SLLI(s1, (src##2 ? s1 : src), 64 - src##2 - 8);                              \
-        if (rv64_zbb) {                                                              \
+        if (cpuext.zbb) {                                                            \
             RORI(dst, dst, 8 + dst##2);                                              \
         } else {                                                                     \
             TH_SRRI(dst, dst, 8 + dst##2);                                           \
         }                                                                            \
         OP;                                                                          \
-        if (rv64_zbb) {                                                              \
+        if (cpuext.zbb) {                                                            \
             RORI(dst, dst, 64 - 8 - dst##2);                                         \
         } else {                                                                     \
             TH_SRRI(dst, dst, 64 - 8 - dst##2);                                      \
@@ -1969,17 +2012,17 @@ uintptr_t dynarec64_AVX_F3_0F(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip,
     }
 
 #define FAST_16BIT_OPERATION(dst, src, s1, OP)                                       \
-    if (MODREG && (rv64_zbb || rv64_xtheadbb) && !dyn->insts[ninst].x64.gen_flags) { \
+    if (MODREG && (cpuext.zbb || cpuext.xtheadbb) && !dyn->insts[ninst].x64.gen_flags) { \
         gd = TO_NAT(((nextop & 0x38) >> 3) + (rex.r << 3));                          \
         ed = TO_NAT((nextop & 7) + (rex.b << 3));                                    \
         SLLI(s1, src, 64 - 16);                                                      \
-        if (rv64_zbb) {                                                              \
+        if (cpuext.zbb) {                                                            \
             RORI(dst, dst, 16);                                                      \
         } else {                                                                     \
             TH_SRRI(dst, dst, 16);                                                   \
         }                                                                            \
         OP;                                                                          \
-        if (rv64_zbb) {                                                              \
+        if (cpuext.zbb) {                                                            \
             RORI(dst, dst, 64 - 16);                                                 \
         } else {                                                                     \
             TH_SRRI(dst, dst, 64 - 16);                                              \
@@ -2009,5 +2052,13 @@ uintptr_t dynarec64_AVX_F3_0F(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip,
 #ifndef SCRATCH_USAGE
 #define SCRATCH_USAGE(usage)
 #endif
+
+// TODO: can be lazy
+#define YMM0(a)                                        \
+    do {                                               \
+        SD(xZR, xEmu, offsetof(x64emu_t, ymm[a]) + 0); \
+        SD(xZR, xEmu, offsetof(x64emu_t, ymm[a]) + 8); \
+    } while (0)
+
 
 #endif //__DYNAREC_RV64_HELPER_H__

@@ -21,6 +21,9 @@
 #ifdef DYNAREC
 #include "dynablock.h"
 #endif
+#ifdef BOX32
+#include "box32context.h"
+#endif
 
 KHASH_MAP_INIT_INT64(bridgemap, uintptr_t)
 
@@ -55,7 +58,7 @@ brick_t* NewBrick(void* old)
     if(ptr == MAP_FAILED) {
         printf_log(LOG_NONE, "Warning, cannot allocate 0x%lx aligned bytes for bridge, will probably crash later\n", NBRICK*sizeof(onebridge_t));
     }
-    setProtection_mmap((uintptr_t)ptr, NBRICK * sizeof(onebridge_t), PROT_READ | PROT_WRITE | PROT_EXEC | PROT_NOPROT);
+    setProtection_box((uintptr_t)ptr, NBRICK * sizeof(onebridge_t), PROT_READ | PROT_WRITE | PROT_EXEC | PROT_NOPROT);
     dynarec_log(LOG_INFO, "New Bridge brick at %p (size 0x%zx)\n", ptr, NBRICK*sizeof(onebridge_t));
     if(box64_is32bits) load_addr_32bits = ptr + NBRICK*sizeof(onebridge_t);
     ret->b = ptr;
@@ -165,6 +168,20 @@ uintptr_t AddAutomaticBridge(bridge_t* bridge, wrapper_t w, void* fnc, int N, co
     return ret;
 }
 
+uintptr_t AddAutomaticBridgeAlt(bridge_t* bridge, wrapper_t w, void* fnc, void* alt, int N, const char* name)
+{
+    if(!fnc)
+        return 0;
+    uintptr_t ret = CheckBridged(bridge, alt);
+    if(!ret)
+        ret = AddBridge(bridge, w, alt, N, name);
+    if(!hasAlternate(fnc)) {
+        printf_log(LOG_DEBUG, "Adding AutomaticBridge for %p to %p\n", fnc, (void*)ret);
+        addAlternate(fnc, (void*)ret);
+    }
+    return ret;
+}
+
 void* GetNativeOrAlt(void* fnc, void* alt)
 {
     if(!fnc) return NULL;
@@ -258,10 +275,42 @@ void fini_bridge_helper()
     cleanAlternate();
 }
 
+#ifdef BOX32
+int isNativeCall32(uintptr_t addr, uintptr_t* calladdress, uint16_t* retn)
+{
+#define PK(a)       *(uint8_t*)(addr+a)
+#define PK32(a)     *(uint32_t*)(addr+a)
+
+    if(!addr || !getProtection(addr))
+        return 0;
+    if(PK(0)==0xff && PK(1)==0x25) {  // absolute jump, maybe the GOT
+        ptr_t a1 = (PK32(2));   // need to add a check to see if the address is from the GOT !
+        addr = (uintptr_t)getAlternate(from_ptrv(a1)); 
+    }
+    if(addr<0x10000 || !getProtection(addr))    // too low, that is suspicious
+        return 0;
+    onebridge_t *b = (onebridge_t*)(addr);
+    if(b->CC==0xCC && b->S=='S' && b->C=='C' && b->w!=(wrapper_t)0 && b->f!=(uintptr_t)PltResolver32) {
+        // found !
+        if(retn) *retn = (b->C3==0xC2)?b->N:0;
+        if(calladdress) *calladdress = addr+1;
+        return 1;
+    }
+    return 0;
+#undef PK32
+#undef PK
+}
+#else
+int isNativeCall32(uintptr_t addr, uintptr_t* calladdress, uint16_t* retn)
+{
+    return 0;
+}
+#endif
+
 int isNativeCallInternal(uintptr_t addr, int is32bits, uintptr_t* calladdress, uint16_t* retn)
 {
     if (is32bits)
-        addr &= 0xFFFFFFFFLL;
+        return isNativeCall32(addr, calladdress, retn);
 
 #define PK(a)   *(uint8_t*)(addr + a)
 #define PK32(a) *(int32_t*)(addr + a)

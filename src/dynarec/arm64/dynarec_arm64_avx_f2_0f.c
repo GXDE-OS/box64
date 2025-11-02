@@ -144,12 +144,12 @@ uintptr_t dynarec64_AVX_F2_0F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, 
             nextop = F8;
             GETGD;
             GETEXSD(q0, 0, 0);
-            if(!BOX64ENV(dynarec_fastround) && !arm64_frintts) {
+            if(!BOX64ENV(dynarec_fastround) && !cpuext.frintts) {
                 MRS_fpsr(x5);
                 BFCw(x5, FPSR_IOC, 1);   // reset IOC bit
                 MSR_fpsr(x5);
             }
-            if(!BOX64ENV(dynarec_fastround) && arm64_frintts) {
+            if(!BOX64ENV(dynarec_fastround) && cpuext.frintts) {
                 v0 = fpu_get_scratch(dyn, ninst);
                 if(rex.w) {
                     FRINT64ZD(v0, q0);
@@ -160,7 +160,7 @@ uintptr_t dynarec64_AVX_F2_0F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, 
             } else {
                 FCVTZSxwD(gd, q0);
             }
-            if(!BOX64ENV(dynarec_fastround) && !arm64_frintts) {
+            if(!BOX64ENV(dynarec_fastround) && !cpuext.frintts) {
                 MRS_fpsr(x5);   // get back FPSR to check the IOC bit
                 TBZ_NEXT(x5, FPSR_IOC);
                 if(rex.w) {
@@ -175,14 +175,14 @@ uintptr_t dynarec64_AVX_F2_0F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, 
             nextop = F8;
             GETGD;
             GETEXSD(q0, 0, 0);
-            if(!BOX64ENV(dynarec_fastround) && !arm64_frintts) {
+            if(!BOX64ENV(dynarec_fastround) && !cpuext.frintts) {
                 MRS_fpsr(x5);
                 BFCw(x5, FPSR_IOC, 1);   // reset IOC bit
                 MSR_fpsr(x5);
             }
             u8 = sse_setround(dyn, ninst, x1, x2, x3);
             d1 = fpu_get_scratch(dyn, ninst);
-            if(!BOX64ENV(dynarec_fastround) && arm64_frintts) {
+            if(!BOX64ENV(dynarec_fastround) && cpuext.frintts) {
                 if(rex.w) {
                     FRINT64XD(d1, q0);
                 } else {
@@ -193,7 +193,7 @@ uintptr_t dynarec64_AVX_F2_0F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, 
             }
             x87_restoreround(dyn, ninst, u8);
             FCVTZSxwD(gd, d1);
-            if(!BOX64ENV(dynarec_fastround) && !arm64_frintts) {
+            if(!BOX64ENV(dynarec_fastround) && !cpuext.frintts) {
                 MRS_fpsr(x5);   // get back FPSR to check the IOC bit
                 TBZ_NEXT(x5, FPSR_IOC);
                 if(rex.w) {
@@ -496,9 +496,9 @@ uintptr_t dynarec64_AVX_F2_0F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, 
                 case 0x09: CSETMx(x2, cHI); break;  // Less than or unordered
                 case 0x0a: CSETMx(x2, cCS); break;  // Less or equal or unordered
                 case 0x0b: MOV32w(x2, 0); break;    // false
-                case 0x0c: CSETMw(x2, cNE); CSETMx(x3, cVS); BICx(x2, x2, x3); break;  // Not Equal not unordered
-                case 0x0d: CSETMw(x2, cLS); break;  // Greater or equal not unordered
-                case 0x0e: CSETMw(x2, cCC); break;  // Greater not unordered
+                case 0x0c: CSETMx(x2, cNE); CSETMx(x3, cVS); BICx(x2, x2, x3); break;  // Not Equal not unordered
+                case 0x0d: CSETMx(x2, cLS); break;  // Greater or equal not unordered
+                case 0x0e: CSETMx(x2, cCC); break;  // Greater not unordered
                 case 0x0f: MOV64x(x2, 0xffffffffffffffffLL); break; // true
             }
             VMOVQDfrom(v0, 0, x2);
@@ -509,9 +509,7 @@ uintptr_t dynarec64_AVX_F2_0F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, 
             INST_NAME("VADDSUBPS Gx, Vx, Ex");
             nextop = F8;
             q0 = fpu_get_scratch(dyn, ninst);
-            static float addsubps[4] = {-1.f, 1.f, -1.f, 1.f};
-            MAYUSE(addsubps);
-            MOV64x(x2, (uintptr_t)&addsubps);
+            TABLE64C(x2, const_4f_m1_1_m1_1);
             VLDR128_U12(q0, x2, 0);
             for(int l=0; l<1+vex.l; ++l) {
                 if(!l) { GETGX_empty_VXEX(v0, v2, v1, 0); } else { GETGY_empty_VYEY(v0, v2, v1); }
@@ -550,7 +548,7 @@ uintptr_t dynarec64_AVX_F2_0F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, 
                     else
                         SQXTN2_32(v0, d0);   // convert int64 -> int32 with saturation in higher part
                 } else {
-                    if(arm64_frintts) {
+                    if(cpuext.frintts) {
                         VFRINT32XDQ(l?d0:v0, v1);    // round, handling of overflow and Nan to 0x80000000
                         VFCVTNSQD(l?d0:v0, l?d0:v0);  // convert double -> int64
                         if(!l)
@@ -598,11 +596,16 @@ uintptr_t dynarec64_AVX_F2_0F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, 
                     VMOVQ(v0, v1);
                 }
             } else {
-                v0 = sse_get_reg_empty(dyn, ninst, x1, gd);
-                v1 = ymm_get_reg_empty(dyn, ninst, x1, gd, -1, -1, -1);
                 SMREAD();
-                addr = geted(dyn, addr, ninst, nextop, &ed, x2, &fixedaddress, NULL, 0x3f<<4, 15, rex, NULL, 1, 0);
-                VLDP128_I7(v0, v1, ed, fixedaddress);
+                v0 = sse_get_reg_empty(dyn, ninst, x1, gd);
+                if (vex.l) {
+                    v1 = ymm_get_reg_empty(dyn, ninst, x1, gd, -1, -1, -1);
+                    addr = geted(dyn, addr, ninst, nextop, &ed, x2, &fixedaddress, NULL, 0x3f << 4, 15, rex, NULL, 1, 0);
+                    VLDP128_I7(v0, v1, ed, fixedaddress);
+                } else {
+                    addr = geted(dyn, addr, ninst, nextop, &ed, x1, &fixedaddress, &unscaled, 0xfff << 4, 15, rex, NULL, 0, 0);
+                    VLD128(v0, ed, fixedaddress);
+                }
             }
             if(!vex.l) YMM0(gd);
             break;

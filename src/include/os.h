@@ -11,6 +11,7 @@
 #include <windows.h>
 typedef __int64 ssize_t;
 #define dlsym(a, b) NULL
+#define box_strdup(a) strdup(a)
 
 #define PROT_READ  0x1
 #define PROT_WRITE 0x2
@@ -107,6 +108,7 @@ void* GetEnv(const char* name);
 
 // 0 : doesn't exist, 1: does exist.
 int FileExist(const char* filename, int flags);
+int MakeDir(const char* folder);    // return 1 for success, 0 else
 
 #ifdef _WIN32
 #define BOXFILE_BUFSIZE 4096

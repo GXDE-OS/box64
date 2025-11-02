@@ -5,10 +5,10 @@
 #include <math.h>
 #include <fenv.h>
 #include <string.h>
-#include <signal.h>
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "x64_signals.h"
 #include "os.h"
 #include "debug.h"
 #include "box64stack.h"
@@ -96,19 +96,19 @@ uintptr_t Run0F(x64emu_t *emu, rex_t rex, uintptr_t addr, int *step)
                 case 0xC8:  /* MONITOR */
                     // this is a privilege opcode...
                     #ifndef TEST_INTERPRETER
-                    EmitSignal(emu, SIGSEGV, (void*)R_RIP, 0);
+                    EmitSignal(emu, X64_SIGSEGV, (void*)R_RIP, 0);
                     #endif
                     break;
                 case 0xC9:  /* MWAIT */
                     // this is a privilege opcode...
                     #ifndef TEST_INTERPRETER
-                    EmitSignal(emu, SIGSEGV, (void*)R_RIP, 0);
+                    EmitSignal(emu, X64_SIGSEGV, (void*)R_RIP, 0);
                     #endif
                     break;
                 case 0xD0:
                     if(R_RCX) {
                         #ifndef TEST_INTERPRETER
-                        EmitSignal(emu, SIGILL, (void*)R_RIP, 0);
+                        EmitSignal(emu, X64_SIGILL, (void*)R_RIP, 0);
                         #endif
                     } else {
                         R_RAX = 0b111;   // x87 & SSE & AVX for now
@@ -162,6 +162,20 @@ uintptr_t Run0F(x64emu_t *emu, rex_t rex, uintptr_t addr, int *step)
             }
             break;
 
+        case 0x03:                      /* LSL */
+            nextop = F8;
+            GETED(0);
+            GETGD;
+            CHECK_FLAGS(emu);
+            tmp8u = ED->word[0]>>3;
+            if (tmp8u>0x10 || !my_context->segtls[tmp8u].present) {
+                CLEAR_FLAG(F_ZF);
+            } else {
+                GD->dword[0] = my_context->segtls[tmp8u].limit;
+                SET_FLAG(F_ZF);
+            }
+            break;
+
         case 0x05:                      /* SYSCALL */
             #ifndef TEST_INTERPRETER
             R_RIP = addr;
@@ -171,7 +185,7 @@ uintptr_t Run0F(x64emu_t *emu, rex_t rex, uintptr_t addr, int *step)
         case 0x06:                      /* CLTS */
             // this is a privilege opcode...
             #ifndef TEST_INTERPRETER
-            EmitSignal(emu, SIGSEGV, (void*)R_RIP, 0);
+            EmitSignal(emu, X64_SIGSEGV, (void*)R_RIP, 0);
             #endif
             break;
 
@@ -179,13 +193,13 @@ uintptr_t Run0F(x64emu_t *emu, rex_t rex, uintptr_t addr, int *step)
         case 0x09:                      /* WBINVD */
             // this is a privilege opcode...
             #ifndef TEST_INTERPRETER
-            EmitSignal(emu, SIGSEGV, (void*)R_RIP, 0);
+            EmitSignal(emu, X64_SIGSEGV, (void*)R_RIP, 0);
             #endif
             break;
 
         case 0x0B:                      /* UD2 */
             #ifndef TEST_INTERPRETER
-            EmitSignal(emu, SIGILL, (void*)R_RIP, 0);
+            EmitSignal(emu, X64_SIGILL, (void*)R_RIP, 0);
             #endif
             break;
 
@@ -208,7 +222,7 @@ uintptr_t Run0F(x64emu_t *emu, rex_t rex, uintptr_t addr, int *step)
             break;
         case 0x0E:                      /* FEMMS */
             #ifndef TEST_INTERPRETER
-            EmitSignal(emu, SIGILL, (void*)R_RIP, 0);
+            EmitSignal(emu, X64_SIGILL, (void*)R_RIP, 0);
             #endif
             break;
 
@@ -288,6 +302,11 @@ uintptr_t Run0F(x64emu_t *emu, rex_t rex, uintptr_t addr, int *step)
             break;
 
         case 0x19:
+        case 0x1A:
+        case 0x1B:
+        case 0x1C:
+        case 0x1D:
+        case 0x1E:
         case 0x1F:                      /* NOP (multi-byte) */
             nextop = F8;
             FAKEED(0);
@@ -298,7 +317,7 @@ uintptr_t Run0F(x64emu_t *emu, rex_t rex, uintptr_t addr, int *step)
         case 0x23:                      /* MOV drX, REG */
             // this is a privilege opcode...
             #ifndef TEST_INTERPRETER
-            EmitSignal(emu, SIGSEGV, (void*)R_RIP, 0);
+            EmitSignal(emu, X64_SIGSEGV, (void*)R_RIP, 0);
             #endif
             break;
 
@@ -399,7 +418,7 @@ uintptr_t Run0F(x64emu_t *emu, rex_t rex, uintptr_t addr, int *step)
         case 0x30:                      /* WRMSR */
             // this is a privilege opcode...
             #ifndef TEST_INTERPRETER
-            EmitSignal(emu, SIGSEGV, (void*)R_RIP, 0);
+            EmitSignal(emu, X64_SIGSEGV, (void*)R_RIP, 0);
             #endif
             break;
         case 0x31:                   /* RDTSC */
@@ -412,20 +431,20 @@ uintptr_t Run0F(x64emu_t *emu, rex_t rex, uintptr_t addr, int *step)
         case 0x32:                   /* RDMSR */
             // priviledge instruction
             #ifndef TEST_INTERPRETER
-            EmitSignal(emu, SIGSEGV, (void*)R_RIP, 0xbad0);
+            EmitSignal(emu, X64_SIGSEGV, (void*)R_RIP, 0xbad0);
             STEP;
             #endif
             break;
 
         case 0x34:                  /* SYSENTER */
             #ifndef TEST_INTERPRETER
-            EmitSignal(emu, SIGSEGV, (void*)R_RIP, 0xbad0);
+            EmitSignal(emu, X64_SIGSEGV, (void*)R_RIP, 0xbad0);
             STEP;
             #endif
             break;
         case 0x35:                  /* SYSEXIT */
             #ifndef TEST_INTERPRETER
-            EmitSignal(emu, SIGSEGV, (void*)R_RIP, 0xbad0);
+            EmitSignal(emu, X64_SIGSEGV, (void*)R_RIP, 0xbad0);
             STEP;
             #endif
             break;
@@ -699,7 +718,7 @@ uintptr_t Run0F(x64emu_t *emu, rex_t rex, uintptr_t addr, int *step)
 
         case 0x3F:
             #ifndef TEST_INTERPRETER
-            EmitSignal(emu, SIGILL, (void*)R_RIP, 0);
+            EmitSignal(emu, X64_SIGILL, (void*)R_RIP, 0);
             #endif
             break;
         GOCOND(0x40
@@ -725,7 +744,10 @@ uintptr_t Run0F(x64emu_t *emu, rex_t rex, uintptr_t addr, int *step)
             GETEX(0);
             GETGX;
             for(int i=0; i<4; ++i)
-                GX->f[i] = sqrtf(EX->f[i]);
+                if (isnan(EX->f[i]))
+                    GX->f[i] = EX->f[i];
+                else
+                    GX->f[i] = (EX->f[i] < 0) ? (-NAN) : sqrtf(EX->f[i]);
             break;
         case 0x52:                      /* RSQRTPS Gx, Ex */
             nextop = F8;
@@ -749,7 +771,10 @@ uintptr_t Run0F(x64emu_t *emu, rex_t rex, uintptr_t addr, int *step)
             GETEX(0);
             GETGX;
             for(int i=0; i<4; ++i)
-                GX->f[i] = 1.0f/EX->f[i];
+                if (isnan(EX->f[i]))
+                    GX->f[i] = EX->f[i];
+                else
+                    GX->f[i] = 1.0f / EX->f[i];
             break;
         case 0x54:                      /* ANDPS Gx, Ex */
             nextop = F8;
@@ -1393,7 +1418,6 @@ uintptr_t Run0F(x64emu_t *emu, rex_t rex, uintptr_t addr, int *step)
                         ED->q[0] = GD->dword[0];
                     else
                         ED->dword[0] = GD->dword[0];
-                    R_RAX = R_EAX;   // to erase upper part of RAX
                 } else {
                     R_RAX = ED->dword[0];
                 }
@@ -1599,7 +1623,8 @@ uintptr_t Run0F(x64emu_t *emu, rex_t rex, uintptr_t addr, int *step)
                 } else {
                     SET_FLAG(F_ZF);
                 }
-                GD->q[0] = tmp8u;
+                if(tmp64u || !MODREG)
+                    GD->q[0] = tmp8u;
             } else {
                 tmp32u = ED->dword[0];
                 if(tmp32u) {
@@ -1608,7 +1633,8 @@ uintptr_t Run0F(x64emu_t *emu, rex_t rex, uintptr_t addr, int *step)
                 } else {
                     SET_FLAG(F_ZF);
                 }
-                GD->q[0] = tmp8u;
+                if(tmp32u || !MODREG)
+                    GD->q[0] = tmp8u;
             }
             if(!BOX64ENV(cputype)) {
                 CONDITIONAL_SET_FLAG(PARITY(tmp8u), F_PF);
@@ -1633,7 +1659,8 @@ uintptr_t Run0F(x64emu_t *emu, rex_t rex, uintptr_t addr, int *step)
                 } else {
                     SET_FLAG(F_ZF);
                 }
-                GD->q[0] = tmp8u;
+                if(tmp64u || !MODREG)
+                    GD->q[0] = tmp8u;
             } else {
                 tmp32u = ED->dword[0];
                 if(tmp32u) {
@@ -1643,7 +1670,8 @@ uintptr_t Run0F(x64emu_t *emu, rex_t rex, uintptr_t addr, int *step)
                     GD->q[0] = tmp8u;
                 } else {
                     SET_FLAG(F_ZF);
-                    GD->q[0] = tmp8u;
+                    if(!MODREG)
+                        GD->q[0] = tmp8u;
                 }
             }
             if(!BOX64ENV(cputype)) {
@@ -1773,8 +1801,8 @@ uintptr_t Run0F(x64emu_t *emu, rex_t rex, uintptr_t addr, int *step)
                         tmp64u2= ED->q[1];
                         if(R_RAX == tmp64u && R_RDX == tmp64u2) {
                             SET_FLAG(F_ZF);
-                            ED->q[0] = R_EBX;
-                            ED->q[1] = R_ECX;
+                            ED->q[0] = R_RBX;
+                            ED->q[1] = R_RCX;
                         } else {
                             CLEAR_FLAG(F_ZF);
                             R_RAX = tmp64u;

@@ -5,7 +5,7 @@
 #include <unistd.h>
 
 #define BOX64ENV(name)            (box64env.name)
-#define BOX64DRENV(name)          (GetCurEnvByAddr(dyn->start)->name)
+#define BOX64DRENV(name)          ((dyn->env && dyn->env->is_##name##_overridden)?dyn->env->name:box64env.name)
 #define SET_BOX64ENV(name, value)            \
     {                                        \
         box64env.name = (value);             \
@@ -47,6 +47,7 @@ extern char* ftrace_name;
     INTEGER(BOX64_DYNAREC_CALLRET, dynarec_callret, 0, 0, 2, 1)               \
     BOOLEAN(BOX64_DYNAREC_DF, dynarec_df, 1, 1)                               \
     INTEGER(BOX64_DYNAREC_DIRTY, dynarec_dirty, 0, 0, 2, 0)                   \
+    BOOLEAN(BOX64_DYNAREC_NOHOTPAGE, dynarec_nohotpage, 0, 0)                 \
     BOOLEAN(BOX64_DYNAREC_DIV0, dynarec_div0, 0, 1)                           \
     INTEGER(BOX64_DYNAREC_DUMP, dynarec_dump, 0, 0, 2, 1)                     \
     STRING(BOX64_DYNAREC_DUMP_RANGE, dynarec_dump_range, 1)                   \
@@ -125,9 +126,12 @@ extern char* ftrace_name;
     BOOLEAN(BOX64_X11GLX, x11glx, 1, 0)                                       \
     BOOLEAN(BOX64_X11SYNC, x11sync, 0, 0)                                     \
     BOOLEAN(BOX64_X11THREADS, x11threads, 0, 0)                               \
-    BOOLEAN(BOX64_X87_NO80BITS, x87_no80bits, 0, 1)
+    BOOLEAN(BOX64_X87_NO80BITS, x87_no80bits, 0, 1)                           \
+    INTEGER(BOX64_DYNACACHE, dynacache, 2, 0, 2, 0)                           \
+    STRING(BOX64_DYNACACHE_FOLDER, dynacache_folder, 0)                       \
+    INTEGER(BOX64_DYNACACHE_MIN, dynacache_min, 350, 0, 10240, 0)
 
-#ifdef ARM64
+#if defined(ARM64)
 #define ENVSUPER2() \
     INTEGER(BOX64_AVX, avx, 2, 0, 2, 1)
 #else
@@ -193,6 +197,17 @@ typedef struct box64env_s {
     uint64_t is_dynarec_perf_map_fd_overridden : 1;
 } box64env_t;
 
+typedef struct mmaplist_s mmaplist_t;
+#ifdef DYNAREC
+typedef struct blocklist_s blocklist_t;
+
+typedef struct DynaCacheBlock_s {
+    blocklist_t*    block;
+    size_t          size;
+    size_t          free_size;
+} DynaCacheBlock_t;
+#endif
+
 void InitializeEnvFiles();
 void ApplyEnvFileEntry(const char* name);
 const char* GetLastApplyEntryName();
@@ -200,9 +215,16 @@ void InitializeEnv();
 void LoadEnvVariables();
 void PrintEnvVariables(box64env_t* env, int level);
 void RecordEnvMappings(uintptr_t addr, size_t length, int fd);
+void WillRemoveMapping(uintptr_t addr, size_t length);
 void RemoveMapping(uintptr_t addr, size_t length);
 box64env_t* GetCurEnvByAddr(uintptr_t addr);
 int IsAddrFileMapped(uintptr_t addr, const char** filename, uintptr_t* start);
 size_t SizeFileMapped(uintptr_t addr);
+mmaplist_t* GetMmaplistByAddr(uintptr_t addr);
+int IsAddrNeedReloc(uintptr_t addr);
+void SerializeAllMapping();
+void DynaCacheList(const char* name);
+void DynaCacheClean();
+int IsAddrMappingLoadAndClean(uintptr_t addr);
 
 #endif // __ENV_H

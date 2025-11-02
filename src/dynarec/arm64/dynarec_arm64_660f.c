@@ -18,7 +18,6 @@
 #include "dynarec_arm64_private.h"
 #include "dynarec_arm64_functions.h"
 #include "../dynarec_helper.h"
-#include "emu/x64compstrings.h"
 
 uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int ninst, rex_t rex, int* ok, int* need_epilog)
 {
@@ -47,9 +46,6 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
     MAYUSE(eb2);
     MAYUSE(j64);
     #if STEP > 1
-    static const int8_t mask_shift8[] = { -7, -6, -5, -4, -3, -2, -1, 0 };
-    static const int8_t mask_string8[] = { 7, 6, 5, 4, 3, 2, 1, 0 };
-    static const int8_t mask_string16[] = { 15, 14, 13, 12, 11, 10, 9, 8 };
     static const int8_t round_round[] = { 0, 2, 1, 3};
     #endif
 
@@ -168,6 +164,11 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
 
         case 0x18:
         case 0x19:
+        case 0x1A:
+        case 0x1B:
+        case 0x1C:
+        case 0x1D:
+        case 0x1E:
         case 0x1F:
             INST_NAME("NOP (multibyte)");
             nextop = F8;
@@ -233,7 +234,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                 VFCVTZSQD(q0, v1);
                 SQXTN_32(q0, q0);
             } else {
-                if(arm64_frintts) {
+                if(cpuext.frintts) {
                     VFRINT32ZDQ(q0, v1);
                     VFCVTZSQD(q0, q0);
                     SQXTN_32(q0, q0);
@@ -273,7 +274,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                 VFCVTZSS(q0, q0);
             } else {
                 u8 = sse_setround(dyn, ninst, x1, x2, x3);
-                if(arm64_frintts) {
+                if(cpuext.frintts) {
                     VFRINT32XDQ(q0, v1);
                     VFCVTZSQD(q0, q0);
                     SQXTN_32(q0, q0);
@@ -309,7 +310,9 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
             nextop = F8;
             GETGX(v0, 0);
             GETEXSD(q0, 0, 0);
-            FCMPD(v0, q0);
+            IFX(X_CF|X_PF|X_ZF) {
+                FCMPD(v0, q0);
+            }
             FCOMI(x1, x2);
             break;
 
@@ -631,7 +634,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                     } else {
                         GETGX_empty(v0);
                         SMREAD();
-                        addr = geted32(dyn, addr, ninst, nextop, &ed, x1, &fixedaddress, &unscaled, 0xfff << 4, 15, rex, NULL, 0, 0);
+                        addr = geted(dyn, addr, ninst, nextop, &ed, x1, &fixedaddress, &unscaled, 0xfff << 4, 15, rex, NULL, 0, 0);
                         VLD128(v0, ed, fixedaddress);
                     }
                     break;
@@ -769,7 +772,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                 case 0xDB:
                     INST_NAME("AESIMC Gx, Ex");  // AES-NI
                     nextop = F8;
-                    if(arm64_aes) {
+                    if(cpuext.aes) {
                         GETEX(q1, 0, 0);
                         GETGX_empty(q0);
                         AESIMC(q0, q1);
@@ -781,13 +784,13 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                         }
                         sse_forget_reg(dyn, ninst, gd);
                         MOV32w(x1, gd);
-                        CALL(native_aesimc, -1);
+                        CALL(const_native_aesimc, -1);
                     }
                     break;
                 case 0xDC:
                     INST_NAME("AESENC Gx, Ex");  // AES-NI
                     nextop = F8;
-                    if(arm64_aes) {
+                    if(cpuext.aes) {
                         GETEX(q1, 0, 0);
                         GETGX(q0, 1);
                         v0 = fpu_get_scratch(dyn, ninst);  // ARM64 internal operation differs a bit from x86_64
@@ -804,7 +807,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                         } else d0 = -1;
                         sse_forget_reg(dyn, ninst, gd);
                         MOV32w(x1, gd);
-                        CALL(native_aese, -1);
+                        CALL(const_native_aese, -1);
                         GETGX(q0, 1);
                         VEORQ(q0, q0, (d0!=-1)?d0:q1);
                     }
@@ -812,7 +815,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                 case 0xDD:
                     INST_NAME("AESENCLAST Gx, Ex");  // AES-NI
                     nextop = F8;
-                    if(arm64_aes) {
+                    if(cpuext.aes) {
                         GETEX(q1, 0, 0);
                         GETGX(q0, 1);
                         v0 = fpu_get_scratch(dyn, ninst);  // ARM64 internal operation differs a bit from x86_64
@@ -828,7 +831,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                         } else d0 = -1;
                         sse_forget_reg(dyn, ninst, gd);
                         MOV32w(x1, gd);
-                        CALL(native_aeselast, -1);
+                        CALL(const_native_aeselast, -1);
                         GETGX(q0, 1);
                         VEORQ(q0, q0, (d0!=-1)?d0:q1);
                     }
@@ -836,7 +839,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                 case 0xDE:
                     INST_NAME("AESDEC Gx, Ex");  // AES-NI
                     nextop = F8;
-                    if(arm64_aes) {
+                    if(cpuext.aes) {
                         GETEX(q1, 0, 0);
                         GETGX(q0, 1);
                         v0 = fpu_get_scratch(dyn, ninst);  // ARM64 internal operation differs a bit from x86_64
@@ -853,7 +856,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                         } else d0 = -1;
                         sse_forget_reg(dyn, ninst, gd);
                         MOV32w(x1, gd);
-                        CALL(native_aesd, -1);
+                        CALL(const_native_aesd, -1);
                         GETGX(q0, 1);
                         VEORQ(q0, q0, (d0!=-1)?d0:q1);
                     }
@@ -861,7 +864,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                 case 0xDF:
                     INST_NAME("AESDECLAST Gx, Ex");  // AES-NI
                     nextop = F8;
-                    if(arm64_aes) {
+                    if(cpuext.aes) {
                         GETEX(q1, 0, 0);
                         GETGX(q0, 1);
                         v0 = fpu_get_scratch(dyn, ninst);  // ARM64 internal operation differs a bit from x86_64
@@ -877,7 +880,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                         } else d0 = -1;
                         sse_forget_reg(dyn, ninst, gd);
                         MOV32w(x1, gd);
-                        CALL(native_aesdlast, -1);
+                        CALL(const_native_aesdlast, -1);
                         GETGX(q0, 1);
                         VEORQ(q0, q0, (d0!=-1)?d0:q1);
                     }
@@ -907,10 +910,10 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                         REV16x(x1, gd);
                         BFIx(ed, x1, 0, 16);
                     } else {
-                        SMREAD();
                         addr = geted(dyn, addr, ninst, nextop, &ed, x2, &fixedaddress, &unscaled, 0xfff<<1, (1<<1)-1, rex, NULL, 0, 0);
                         REV16x(x1, gd);
                         STH(x1, ed, fixedaddress);
+                        SMWRITE();
                     }
                     break;
 
@@ -923,7 +926,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                     GETGD;
                     IFNATIVE_BEFORE(NF_CF) {
                         if(INVERTED_CARRY_BEFORE) {
-                            if(arm64_flagm)
+                            if(cpuext.flagm)
                                 CFINV();
                             else {
                                 MRS_nzcv(x3);
@@ -1151,7 +1154,15 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                     INST_NAME("PINSRB Gx, ED, Ib");
                     nextop = F8;
                     GETGX(q0, 1);
-                    GETED(1);
+                    if (MODREG) {
+                        ed = TO_NAT((nextop & 7) + (rex.b << 3));
+                        wback = 0;
+                    } else {
+                        SMREAD();
+                        addr = geted(dyn, addr, ninst, nextop, &wback, x2, &fixedaddress, &unscaled, 0xfff, 0, rex, NULL, 0, 1);
+                        LDB(x1, wback, fixedaddress);
+                        ed = x1;
+                    }
                     u8 = F8;
                     VMOVQBfrom(q0, (u8&15), ed);
                     break;
@@ -1238,7 +1249,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                 case 0x44:
                     INST_NAME("PCLMULQDQ Gx, Ex, Ib");
                     nextop = F8;
-                    if(arm64_pmull) {
+                    if(cpuext.pmull) {
                         GETGX(q0, 1);
                         GETEX(q1, 0, 1);
                         u8 = F8;
@@ -1276,7 +1287,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                         }
                         u8 = F8;
                         MOV32w(x4, u8);
-                        CALL(native_pclmul, -1);
+                        CALL(const_native_pclmul, -1);
                     }
                     break;
 
@@ -1302,7 +1313,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                     MOVx_REG(x4, xRAX);
                     u8 = F8;
                     MOV32w(x5, u8);
-                    CALL(sse42_compare_string_explicit_len, x1);
+                    CALL(const_sse42_compare_string_explicit_len, x1);
                     q0 = sse_get_reg_empty(dyn, ninst, x2, 0);
                     if(u8&0b1000000) {
                         q1 = fpu_get_scratch(dyn, ninst);
@@ -1312,7 +1323,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                                 LSRw_IMM(x1, x1, 8);
                                 VDUPQB(q1, x1); // load the high 8bits of the mask
                                 VEXTQ_8(q0, q0, q1, 8); // low and hig bits mask
-                                TABLE64(x2, (uintptr_t)&mask_string8);
+                                TABLE64C(x2, const_8b_7_6_5_4_3_2_1_0);
                                 VLDR64_U12(q1, x2, 0);     // load shift
                                 VDUPQ_64(q1, q1, 0);
                                 USHLQ_8(q0, q0, q1); // extract 1 bit
@@ -1322,7 +1333,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                                 break;
                             case 0b01:
                                 VDUPQH(q0, x1); // load the 8bits of the mask
-                                TABLE64(x2, (uintptr_t)&mask_string16);
+                                TABLE64C(x2, const_8b_15_14_13_12_11_10_9_8);
                                 VLDR64_U12(q1, x2, 0);     // load shift
                                 UXTL_8(q1, q1);     // extend mask to 16bits
                                 USHLQ_16(q0, q0, q1); // extract 1 bit
@@ -1354,7 +1365,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                             // transform that a mask in x1
                             q1 = fpu_get_scratch(dyn, ninst);
                             VSHL_8(q0, q0, 7);  // keep only bit 0x80
-                            TABLE64(x1, (uintptr_t)&mask_shift8);
+                            TABLE64C(x1, const_8b_m7_m6_m5_m4_m3_m2_m1_0);
                             VLDR64_U12(q1, x1, 0);     // load shift
                             USHL_8(q0, q0, q1); // shift
                             UADDLV_8(q0, q0);   // accumulate
@@ -1366,7 +1377,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                             q1 = fpu_get_scratch(dyn, ninst);
                             d0 = fpu_get_scratch(dyn, ninst);
                             VSHL_8(d0, q0, 7);  // keep only bit 0x80
-                            TABLE64(x1, (uintptr_t)&mask_shift8);
+                            TABLE64C(x1, const_8b_m7_m6_m5_m4_m3_m2_m1_0);
                             VLDR64_U12(q1, x1, 0);     // load shift
                             USHL_8(d0, d0, q1); // shift
                             UADDLV_8(d0, d0);   // accumulate
@@ -1390,10 +1401,10 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                         CMPSw_REG(x3, x4);
                         CSELw(x3, x3, x4, cLT); // x3 is lmem
                         CMPSw_REG(x2, x4);
-                        CSELw(x2, x2, x4, cLT); // x2 is lreg
-                        CMPSw_REG(x2, x3);
-                        CSELw(x5, x3, x2, cLT); // x5 is max(lmem, lreg)
-                        CSELw(x2, x2, x3, cLT); // x2 is min(lmem, lreg)
+                        CSELw(x6, x2, x4, cLT); // x6 is lreg
+                        CMPSw_REG(x6, x3);
+                        CSELw(x5, x3, x6, cLT); // x5 is max(lmem, lreg)
+                        CSELw(x2, x6, x3, cLT); // x2 is min(lmem, lreg)
                         // x2 is min length 0-n_packed
                         MVNw_REG(x4, xZR);
                         LSLw_REG(x87pc, x4, x2);
@@ -1429,7 +1440,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                                     BFIw(xFlags, x5, F_ZF, 1);
                                 }
                                 IFX(X_SF) {
-                                    CMPSw_REG(x2, x4);
+                                    CMPSw_REG(x6, x4);
                                     CSETw(x5, cLT);
                                     BFIw(xFlags, x5, F_SF, 1);
                                 }
@@ -1471,7 +1482,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                         MOVw_REG(x4, xRAX);
                         u8 = F8;
                         MOV32w(x5, u8);
-                        CALL(sse42_compare_string_explicit_len, x1);
+                        CALL(const_sse42_compare_string_explicit_len, x1);
                     }
                     if(u8&0b1000000) {
                         CBNZw_MARK(x1);
@@ -1507,7 +1518,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                     }
                     u8 = F8;
                     MOV32w(x3, u8);
-                    CALL(sse42_compare_string_implicit_len, x1);
+                    CALL(const_sse42_compare_string_implicit_len, x1);
                     q0 = sse_get_reg_empty(dyn, ninst, x2, 0);
                     if(u8&0b1000000) {
                         q1 = fpu_get_scratch(dyn, ninst);
@@ -1517,7 +1528,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                                 LSRw_IMM(x1, x1, 8);
                                 VDUPQB(q1, x1); // load the high 8bits of the mask
                                 VEXTQ_8(q0, q0, q1, 8); // low and hig bits mask
-                                TABLE64(x2, (uintptr_t)&mask_string8);
+                                TABLE64C(x2, const_8b_7_6_5_4_3_2_1_0);
                                 VLDR64_U12(q1, x2, 0);     // load shift
                                 VDUPQ_64(q1, q1, 0);
                                 USHLQ_8(q0, q0, q1); // extract 1 bit
@@ -1527,7 +1538,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                                 break;
                             case 0b01:
                                 VDUPQH(q0, x1); // load the 8bits of the mask
-                                TABLE64(x2, (uintptr_t)&mask_string16);
+                                TABLE64C(x2, const_8b_15_14_13_12_11_10_9_8);
                                 VLDR64_U12(q1, x2, 0);     // load shift
                                 UXTL_8(q1, q1);     // extend mask to 16bits
                                 USHLQ_16(q0, q0, q1); // extract 1 bit
@@ -1561,7 +1572,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                     }
                     u8 = F8;
                     MOV32w(x3, u8);
-                    CALL(sse42_compare_string_implicit_len, x1);
+                    CALL(const_sse42_compare_string_implicit_len, x1);
                     CBNZw_MARK(x1);
                     MOV32w(xRCX, (u8&1)?8:16);
                     B_NEXT_nocond;
@@ -1596,7 +1607,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                     }
                     u8 = F8;
                     MOV32w(x4, u8);
-                    CALL(native_aeskeygenassist, -1);
+                    CALL(const_native_aeskeygenassist, -1);
                     break;
 
                 default:
@@ -1752,7 +1763,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                 x87_restoreround(dyn, ninst, u8);
                 VFCVTZSQS(v0, v0);
             } else {
-                if(arm64_frintts) {
+                if(cpuext.frintts) {
                     u8 = sse_setround(dyn, ninst, x1, x2, x3);
                     VFRINT32XSQ(v0, v1); // handle overflow
                     VFCVTZSQS(v0, v0);
@@ -1807,13 +1818,9 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
             GETEX(v1, 0, 0);
             // FMIN/FMAX wll not copy the value if v0[x] is NaN
             // but x86 will copy if either v0[x] or v1[x] is NaN, so lets force a copy if source is NaN
-            if(BOX64ENV(dynarec_fastnan)) {
-                VFMINQD(v0, v0, v1);
-            } else {
-                q0 = fpu_get_scratch(dyn, ninst);
-                VFCMGTQD(q0, v1, v0);   // 0 is NaN or v1 GT v0, so invert mask for copy
-                VBIFQ(v0, v1, q0);
-            }
+            q0 = fpu_get_scratch(dyn, ninst);
+            VFCMGTQD(q0, v1, v0);   // 0 is NaN or v1 GT v0, so invert mask for copy
+            VBIFQ(v0, v1, q0);
             break;
         case 0x5E:
             INST_NAME("DIVPD Gx, Ex");
@@ -1842,13 +1849,9 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
             GETEX(v1, 0, 0);
             // FMIN/FMAX wll not copy the value if v0[x] is NaN
             // but x86 will copy if either v0[x] or v1[x] is NaN, or if values are equals, so lets force a copy if source is NaN
-            if(BOX64ENV(dynarec_fastnan)) {
-                VFMAXQD(v0, v0, v1);
-            } else {
-                q0 = fpu_get_scratch(dyn, ninst);
-                VFCMGTQD(q0, v0, v1);   // 0 is NaN or v0 GT v1, so invert mask for copy
-                VBIFQ(v0, v1, q0);
-            }
+            q0 = fpu_get_scratch(dyn, ninst);
+            VFCMGTQD(q0, v0, v1);   // 0 is NaN or v0 GT v1, so invert mask for copy
+            VBIFQ(v0, v1, q0);
             break;
         case 0x60:
             INST_NAME("PUNPCKLBW Gx, Ex");
@@ -2514,7 +2517,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                         if(ed!=x1) {
                             MOVx_REG(x1, ed);
                         }
-                        CALL_(native_clflush, -1, 0);
+                        CALL_(const_native_clflush, -1, 0);
                         break;
                     case 7:
                         INST_NAME("CLFLUSHOPT Ed");
@@ -2523,7 +2526,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                         if(ed!=x1) {
                             MOVx_REG(x1, ed);
                         }
-                        CALL_(native_clflush, -1, 0);
+                        CALL_(const_native_clflush, -1, 0);
                         break;
                     default:
                         DEFAULT;
@@ -2757,8 +2760,9 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
             }
             RBITw(x1, x1);   // reverse
             CLZw(x1, x1);    // x2 gets leading 0 == BSF
-            MARK;
+            if(!MODREG) MARK;   // value gets written on 0 input only if input is a memory it seems
             BFIx(gd, x1, 0, 16);
+            if(MODREG) MARK;
             IFX(X_ZF) {
                 IFNATIVE(NF_EQ) {} else {
                     CSETw(x2, cEQ);    //ZF not set
@@ -2794,8 +2798,9 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
             CLZw(x2, x1);       // x2 gets leading 0
             SUBw_U12(x2, x2, 15);
             NEGw_REG(x1, x2);   // complement
-            MARK;
+            if(!MODREG) MARK;
             BFIx(gd, x1, 0, 16);
+            if(MODREG) MARK;
             IFX(X_ZF) {
                 IFNATIVE(NF_EQ) {} else {
                     CSETw(x2, cEQ);    //ZF not set
@@ -3042,7 +3047,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                 q1 = fpu_get_scratch(dyn, ninst);
                 GETEX(q0, 0, 0);
                 GETGD;
-                TABLE64(x2, 0x0706050403020100LL);
+                TABLE64_(x2, 0x0706050403020100LL);
                 VDUPQD(v0, x2);
                 VSHRQ_8(q1, q0, 7);
                 USHLQ_8(q1, q1, v0); // shift
@@ -3188,7 +3193,7 @@ uintptr_t dynarec64_660F(dynarec_arm_t* dyn, uintptr_t addr, uintptr_t ip, int n
                 VFCVTZSQD(v0, v1);  // convert double -> int64
                 SQXTN_32(v0, v0);   // convert int64 -> int32 with saturation in lower part, RaZ high part
             } else {
-                if(arm64_frintts) {
+                if(cpuext.frintts) {
                     VFRINT32ZDQ(v0, v1); // handle overflow
                     VFCVTZSQD(v0, v0);  // convert double -> int64
                     SQXTN_32(v0, v0);   // convert int64 -> int32 with saturation in lower part, RaZ high part

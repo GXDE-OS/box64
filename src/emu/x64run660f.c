@@ -5,10 +5,10 @@
 #include <math.h>
 #include <fenv.h>
 #include <string.h>
-#include <signal.h>
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "x64_signals.h"
 #include "os.h"
 #include "debug.h"
 #include "box64stack.h"
@@ -183,6 +183,11 @@ uintptr_t Run660F(x64emu_t *emu, rex_t rex, uintptr_t addr)
 
     case 0x18:
     case 0x19:
+    case 0x1A:
+    case 0x1B:
+    case 0x1C:
+    case 0x1D:
+    case 0x1E:
     case 0x1F:                      /* NOP (multi-byte) */
         nextop = F8;
         FAKEED(0);
@@ -720,7 +725,7 @@ uintptr_t Run660F(x64emu_t *emu, rex_t rex, uintptr_t addr)
                 GETED(0);
                 // this is a privilege opcode...
                 #ifndef TEST_INTERPRETER
-                EmitSignal(emu, SIGSEGV, (void*)R_RIP, 0);
+                EmitSignal(emu, X64_SIGSEGV, (void*)R_RIP, 0);
                 #endif
                 break;
 
@@ -1700,7 +1705,7 @@ uintptr_t Run660F(x64emu_t *emu, rex_t rex, uintptr_t addr)
         nextop = F8;
         if(!BOX64ENV(cputype) || (nextop&0xC0)>>3) {
             #ifndef TEST_INTERPRETER
-            EmitSignal(emu, SIGILL, (void*)R_RIP, 0);
+            EmitSignal(emu, X64_SIGILL, (void*)R_RIP, 0);
             #endif
         } else {
             //TODO: test /0
@@ -1716,7 +1721,7 @@ uintptr_t Run660F(x64emu_t *emu, rex_t rex, uintptr_t addr)
         nextop = F8;
         if(!BOX64ENV(cputype) || !(MODREG)) {
             #ifndef TEST_INTERPRETER
-            EmitSignal(emu, SIGILL, (void*)R_RIP, 0);
+            EmitSignal(emu, X64_SIGILL, (void*)R_RIP, 0);
             #endif
         } else {
             //TODO: test/r
@@ -1794,7 +1799,15 @@ uintptr_t Run660F(x64emu_t *emu, rex_t rex, uintptr_t addr)
         tmp32s >>= (rex.w?6:4);
         if(!MODREG)
         {
+            #ifdef TEST_INTERPRETER
+            test->memaddr=((test->memaddr)+(tmp32s<<(rex.w?3:1)));
+            if(rex.w)
+                *(uint64_t*)test->mem = *(uint64_t*)test->memaddr;
+            else
+                *(uint16_t*)test->mem = *(uint16_t*)test->memaddr;
+            #else
             EW=(reg64_t*)(((uintptr_t)(EW))+(tmp32s<<(rex.w?3:1)));
+            #endif
         }
         if(rex.w) {
             if(EW->q[0] & (1LL<<tmp8u))
@@ -1833,7 +1846,15 @@ uintptr_t Run660F(x64emu_t *emu, rex_t rex, uintptr_t addr)
         tmp32s >>= (rex.w?6:4);
         if(!MODREG)
         {
+            #ifdef TEST_INTERPRETER
+            test->memaddr=((test->memaddr)+(tmp32s<<(rex.w?3:1)));
+            if(rex.w)
+                *(uint64_t*)test->mem = *(uint64_t*)test->memaddr;
+            else
+                *(uint16_t*)test->mem = *(uint16_t*)test->memaddr;
+            #else
             EW=(reg64_t*)(((uintptr_t)(EW))+(tmp32s<<(rex.w?3:1)));
+            #endif
         }
         if(rex.w) {
             if(EW->q[0] & (1LL<<tmp8u))
@@ -2075,12 +2096,20 @@ uintptr_t Run660F(x64emu_t *emu, rex_t rex, uintptr_t addr)
         nextop = F8;
         GETEW(0);
         GETGW;
-        tmp64s = rex.w?GW->sq[0]:GW->sword[0];
-        tmp8u=tmp64s&(rex.w?63:15);
-        tmp64s >>= (rex.w?6:4);
+        tmp32s = rex.w?GW->sdword[0]:GW->sword[0];
+        tmp8u=tmp32s&(rex.w?63:15);
+        tmp32s >>= (rex.w?6:4);
         if(!MODREG)
         {
-            EW=(reg64_t*)(((uintptr_t)(EW))+(tmp64s<<(rex.w?3:1)));
+            #ifdef TEST_INTERPRETER
+            test->memaddr=((test->memaddr)+(tmp32s<<(rex.w?3:1)));
+            if(rex.w)
+                *(uint64_t*)test->mem = *(uint64_t*)test->memaddr;
+            else
+                *(uint16_t*)test->mem = *(uint16_t*)test->memaddr;
+            #else
+            EW=(reg64_t*)(((uintptr_t)(EW))+(tmp32s<<(rex.w?3:1)));
+            #endif
         }
         if(rex.w) {
             if(EW->q[0] & (1LL<<tmp8u))
@@ -2110,7 +2139,8 @@ uintptr_t Run660F(x64emu_t *emu, rex_t rex, uintptr_t addr)
             } else {
                 SET_FLAG(F_ZF);
             }
-            GW->q[0] = tmp8u;
+            if(tmp64u || !MODREG)
+                GW->q[0] = tmp8u;
         } else {
             tmp16u = EW->word[0];
             if(tmp16u) {
@@ -2119,7 +2149,8 @@ uintptr_t Run660F(x64emu_t *emu, rex_t rex, uintptr_t addr)
             } else {
                 SET_FLAG(F_ZF);
             }
-            GW->word[0] = tmp8u;
+            if(tmp16u || !MODREG)
+                GW->word[0] = tmp8u;
         }
         if(!BOX64ENV(cputype)) {
             CONDITIONAL_SET_FLAG(PARITY(tmp8u), F_PF);
@@ -2144,7 +2175,8 @@ uintptr_t Run660F(x64emu_t *emu, rex_t rex, uintptr_t addr)
             } else {
                 SET_FLAG(F_ZF);
             }
-            GW->q[0] = tmp8u;
+            if(tmp64u || !MODREG)
+                GW->q[0] = tmp8u;
         } else {
             tmp16u = EW->word[0];
             if(tmp16u) {
@@ -2154,7 +2186,8 @@ uintptr_t Run660F(x64emu_t *emu, rex_t rex, uintptr_t addr)
             } else {
                 SET_FLAG(F_ZF);
             }
-            GW->word[0] = tmp8u;
+            if(tmp16u || !MODREG)
+                GW->word[0] = tmp8u;
         }
         if(!BOX64ENV(cputype)) {
             CONDITIONAL_SET_FLAG(PARITY(tmp8u), F_PF);

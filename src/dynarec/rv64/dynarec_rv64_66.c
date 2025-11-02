@@ -129,7 +129,7 @@ uintptr_t dynarec64_66(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
         case 0x0F:
             switch (rep) {
                 case 0: {
-                    if (rv64_vector)
+                    if (cpuext.vector)
                         retaddr = dynarec64_660F_vector(dyn, addr, ip, ninst, rex, ok, need_epilog);
                     addr = retaddr ? retaddr : dynarec64_660F(dyn, addr, ip, ninst, rex, ok, need_epilog);
                     break;
@@ -630,7 +630,6 @@ uintptr_t dynarec64_66(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
             } else {
                 GETGD;
                 addr = geted(dyn, addr, ninst, nextop, &ed, x2, x1, &fixedaddress, rex, LOCK_LOCK, 0, 0);
-                SMDMB();
 
                 ANDI(x3, ed, 1);
                 BNEZ_MARK(x3);
@@ -670,7 +669,6 @@ uintptr_t dynarec64_66(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                 SH(gd, ed, 0);
 
                 MARK2;
-                SMDMB();
                 INSHz(gd, x1, x3, x4, 1, 0);
             }
             break;
@@ -768,7 +766,6 @@ uintptr_t dynarec64_66(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
             break;
         case 0x9C:
             INST_NAME("PUSHF");
-            NOTEST(x1);
             READFLAGS(X_ALL);
             FLAGS_ADJUST_TO11(x3, xFlags, x2);
             PUSH1_16(x3);
@@ -781,7 +778,7 @@ uintptr_t dynarec64_66(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
             LUI(x2, 0xffff0);
             AND(xFlags, xFlags, x2);
             OR(xFlags, xFlags, x1);
-            MOV32w(x1, 0x3F7FD7);
+            MOV32w(x1, 0x3F7FF7);
             AND(xFlags, xFlags, x1);
             ORI(xFlags, xFlags, 0x2);
             SET_DFNONE();
@@ -1090,8 +1087,7 @@ uintptr_t dynarec64_66(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
             switch ((nextop >> 3) & 7) {
                 case 0:
                     INST_NAME("ROL Ew, Ib");
-                    u8 = geted_ib(dyn, addr, ninst, nextop) & 15;
-                    if (u8) {
+                    if (geted_ib(dyn, addr, ninst, nextop) & 0x1f) {
                         // removed PENDING on purpose
                         SETFLAGS(X_OF | X_CF, SF_SUBSET, NAT_FLAGS_FUSION);
                         GETEW(x1, 1);
@@ -1105,7 +1101,7 @@ uintptr_t dynarec64_66(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                     break;
                 case 1:
                     INST_NAME("ROR Ew, Ib");
-                    if (geted_ib(dyn, addr, ninst, nextop) & 15) {
+                    if (geted_ib(dyn, addr, ninst, nextop) & 0x1f) {
                         // removed PENDING on purpose
                         SETFLAGS(X_OF | X_CF, SF_SUBSET, NAT_FLAGS_FUSION);
                         GETEW(x1, 1);
@@ -1119,7 +1115,7 @@ uintptr_t dynarec64_66(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                     break;
                 case 2:
                     INST_NAME("RCL Ew, Ib");
-                    if (geted_ib(dyn, addr, ninst, nextop) & 31) {
+                    if (geted_ib(dyn, addr, ninst, nextop) & 0x1f) {
                         READFLAGS(X_CF);
                         // removed PENDING on purpose
                         SETFLAGS(X_OF | X_CF, SF_SUBSET, NAT_FLAGS_FUSION);
@@ -1134,7 +1130,7 @@ uintptr_t dynarec64_66(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                     break;
                 case 3:
                     INST_NAME("RCR Ew, Ib");
-                    if (geted_ib(dyn, addr, ninst, nextop) & 31) {
+                    if (geted_ib(dyn, addr, ninst, nextop) & 0x1f) {
                         READFLAGS(X_CF);
                         // removed PENDING on purpose
                         SETFLAGS(X_OF | X_CF, SF_SUBSET, NAT_FLAGS_FUSION);
@@ -1294,7 +1290,7 @@ uintptr_t dynarec64_66(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                     SETFLAGS(X_OF | X_CF, SF_SET_DF, NAT_FLAGS_NOFUSION);
                     if (BOX64DRENV(dynarec_safeflags) > 1) MAYSETFLAGS();
                     GETEW(x1, 1);
-                    CALL_(rol16, x1, x3, x1, x2);
+                    CALL_(const_rol16, x1, x3, x1, x2);
                     EWBACK;
                     break;
                 case 1:
@@ -1304,7 +1300,7 @@ uintptr_t dynarec64_66(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                     SETFLAGS(X_OF | X_CF, SF_SET_DF, NAT_FLAGS_NOFUSION);
                     if (BOX64DRENV(dynarec_safeflags) > 1) MAYSETFLAGS();
                     GETEW(x1, 1);
-                    CALL_(ror16, x1, x3, x1, x2);
+                    CALL_(const_ror16, x1, x3, x1, x2);
                     EWBACK;
                     break;
                 case 2:
@@ -1315,7 +1311,7 @@ uintptr_t dynarec64_66(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                     SETFLAGS(X_OF | X_CF, SF_SET_DF, NAT_FLAGS_NOFUSION);
                     if (BOX64DRENV(dynarec_safeflags) > 1) MAYSETFLAGS();
                     GETEW(x1, 1);
-                    CALL_(rcl16, x1, x3, x1, x2);
+                    CALL_(const_rcl16, x1, x3, x1, x2);
                     EWBACK;
                     break;
                 case 3:
@@ -1326,7 +1322,7 @@ uintptr_t dynarec64_66(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                     SETFLAGS(X_OF | X_CF, SF_SET_DF, NAT_FLAGS_NOFUSION);
                     if (BOX64DRENV(dynarec_safeflags) > 1) MAYSETFLAGS();
                     GETEW(x1, 1);
-                    CALL_(rcr16, x1, x3, x1, x2);
+                    CALL_(const_rcr16, x1, x3, x1, x2);
                     EWBACK;
                     break;
                 case 5:
@@ -1436,7 +1432,7 @@ uintptr_t dynarec64_66(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                         BNE_MARK3(ed, xZR);
                         GETIP_(ip, x7);
                         STORE_XEMU_CALL(x6);
-                        CALL(native_div0, -1, 0, 0);
+                        CALL(const_native_div0, -1, 0, 0);
                         CLEARIP();
                         LOAD_XEMU_CALL();
                         jump_to_epilog(dyn, 0, xRIP, ninst);
@@ -1457,7 +1453,7 @@ uintptr_t dynarec64_66(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                         BNE_MARK3(ed, xZR);
                         GETIP_(ip, x7);
                         STORE_XEMU_CALL(x6);
-                        CALL(native_div0, -1, 0, 0);
+                        CALL(const_native_div0, -1, 0, 0);
                         CLEARIP();
                         LOAD_XEMU_CALL();
                         jump_to_epilog(dyn, 0, xRIP, ninst);
@@ -1493,6 +1489,11 @@ uintptr_t dynarec64_66(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip, int ni
                     GETEW(x1, 0);
                     emit_dec16(dyn, ninst, x1, x2, x4, x5, x6);
                     EWBACK;
+                    break;
+                case 6: // Push Ew
+                    INST_NAME("PUSH Ew");
+                    GETEW(x1, 0);
+                    PUSH1_16(ed);
                     break;
                 default:
                     DEFAULT;

@@ -7,6 +7,7 @@
 typedef struct x64emu_s x64emu_t;
 typedef struct dynablock_s dynablock_t;
 typedef struct instsize_s instsize_t;
+typedef struct box64env_s box64env_t;
 
 #define BARRIER_MAYBE   8
 
@@ -20,9 +21,7 @@ typedef struct instsize_s instsize_t;
 #define EXT_CACHE_SCR    7
 #define EXT_CACHE_XMMW   8
 #define EXT_CACHE_XMMR   9
-#define EXT_CACHE_YMMW   10
-#define EXT_CACHE_YMMR   11
-#define EXT_CACHE_MMV    12
+#define EXT_CACHE_MMV    10
 
 #define EXT_CACHE_OLD_SD   0
 #define EXT_CACHE_OLD_SS   1
@@ -90,14 +89,11 @@ typedef struct extcache_s {
     int8_t              x87stack;       // cache stack counter
     int8_t              mmxcount;       // number of mmx register used (not both mmx and x87 at the same time)
     int8_t              fpu_scratch;    // scratch counter
-    int8_t              fpu_extra_qscratch; // some opcode need an extra quad scratch register
-    int8_t              fpu_reg;        // x87/sse/mmx reg counter
 } extcache_t;
 
 typedef struct flagcache_s {
     int                 pending;    // is there a pending flags here, or to check?
     uint8_t             dfnone;     // if deferred flags is already set to df_none
-    uint8_t             dfnone_here;// defered flags is cleared in this opcode
 } flagcache_t;
 
 typedef struct callret_s callret_t;
@@ -118,18 +114,12 @@ typedef struct instruction_rv64_s {
     int                 pass2choice;// value for choices that are fixed on pass2 for pass3
     uintptr_t           natcall;
     uint16_t            retn;
-    uint16_t            purge_ymm;  // need to purge some ymm
-    uint16_t            ymm0_in;    // bitmap of ymm to zero at purge
-    uint16_t            ymm0_add;   // the ymm0 added by the opcode
-    uint16_t            ymm0_sub;   // the ymm0 removed by the opcode
-    uint16_t            ymm0_out;   // the ymm0 at th end of the opcode
     uint16_t            ymm0_pass2, ymm0_pass3;
     int                 barrier_maybe;
     uint8_t             will_write:2;    // [strongmem] will write to memory
     uint8_t             will_read:1;     // [strongmem] will read from memory
     uint8_t             last_write:1;    // [strongmem] the last write in a SEQ
     uint8_t             lock:1;          // [strongmem] lock semantic
-    uint8_t             lock_prefixed:1; // [strongmem] the opcode is lock prefixed
     uint8_t             df_notneeded;
     uint8_t             nat_flags_fusion:1;
     uint8_t             nat_flags_nofusion:1;
@@ -154,6 +144,7 @@ typedef struct dynarec_rv64_s {
     int32_t             size;
     int32_t             cap;
     uintptr_t           start;      // start of the block
+    uintptr_t           end;        // maximum end of the block (only used in pass0)
     uint32_t            isize;      // size in byte of x64 instructions included
     void*               block;      // memory pointer where next instruction is emitted
     uintptr_t           native_start;  // start of the riscv code
@@ -194,6 +185,10 @@ typedef struct dynarec_rv64_s {
     void*               gdbjit_block;
     uint32_t            need_x87check; // x87 low precision check
     uint32_t            need_dump;     // need to dump the block
+    int                 need_reloc; // does the dynablock need relocations
+    int                 reloc_size;
+    uint32_t*           relocs;
+    box64env_t*         env;
 } dynarec_rv64_t;
 
 // v0 is hardware wired to vector mask register, which should be always reserved
@@ -210,16 +205,17 @@ int get_first_jump_addr(dynarec_rv64_t *dyn, uintptr_t next);
 int is_nops(dynarec_rv64_t *dyn, uintptr_t addr, int n);
 int is_instructions(dynarec_rv64_t *dyn, uintptr_t addr, int n);
 
+int isTable64(dynarec_rv64_t *dyn, uint64_t val); // return 1 if val already in Table64
 int Table64(dynarec_rv64_t *dyn, uint64_t val, int pass);  // add a value to table64 (if needed) and gives back the imm19 to use in LDR_literal
 
 void CreateJmpNext(void* addr, void* next);
 
-#define GO_TRACE(A, B, s0) \
-    GETIP(addr, s0);       \
-    MV(x1, xRIP);          \
-    STORE_XEMU_CALL(s0);   \
-    MOV64x(x2, B);         \
-    CALL(A, -1, x1, x2);   \
+#define GO_TRACE(A, B, s0)       \
+    GETIP(addr, s0);             \
+    MV(x1, xRIP);                \
+    STORE_XEMU_CALL(s0);         \
+    MOV64x(x2, B);               \
+    CALL(const_##A, -1, x1, x2); \
     LOAD_XEMU_CALL()
 
 #endif //__DYNAREC_RV64_PRIVATE_H_

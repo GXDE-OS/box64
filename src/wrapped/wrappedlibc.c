@@ -1956,6 +1956,19 @@ EXPORT int32_t my_open(x64emu_t* emu, void* pathname, int32_t flags, uint32_t mo
         return -1;
     }
     #endif
+
+    if (!strcmp((const char*)pathname, "box64-custom-bashrc-file")) {
+        int tmp = shm_open("box64-custom-bashrc-file", O_RDWR | O_CREAT, S_IRWXU);
+        if (tmp < 0) return open(pathname, flags, mode); // error fallback
+        shm_unlink("box64-custom-bashrc-file");
+        const char* content = "if [ -f ~/.bashrc ]\nthen\n. ~/.bashrc\nfi\nexport PS1=\"(box64) \"$PS1\nexport BOX64_NOBANNER=1\nexport BOX64_LOG=0\n";
+        size_t dummy;
+        dummy = write(tmp, content, strlen(content));
+        (void)dummy;
+        lseek(tmp, 0, SEEK_SET);
+        return tmp;
+    }
+
     int ret = open(pathname, flags, mode);
     return ret;
 }
@@ -2171,17 +2184,6 @@ EXPORT int32_t my_ftw(x64emu_t* emu, void* pathname, void* B, int32_t nopenfd)
     return f(pathname, findftwFct(B), nopenfd);
 }
 
-EXPORT int32_t my_nftw(x64emu_t* emu, void* pathname, void* B, int32_t nopenfd, int32_t flags)
-{
-    static iFppii_t f = NULL;
-    if(!f) {
-        library_t* lib = my_lib;
-        if(!lib) return 0;
-        f = (iFppii_t)dlsym(lib->w.lib, "nftw");
-    }
-
-    return f(pathname, findnftwFct(B), nopenfd, flags);
-}
 #endif
 
 #ifndef NOALIGN
@@ -2266,6 +2268,7 @@ EXPORT int32_t my_nftw64(x64emu_t* emu, void* pathname, void* B, int32_t nopenfd
     (void)emu;
     return nftw64(pathname, findnftw64Fct(B), nopenfd, flags);
 }
+EXPORT int my_nftw(x64emu_t* emu, void* pathname, void* B, int32_t nopenfd, int32_t flags) __attribute__((alias("my_nftw64")));
 
 EXPORT char** my_environ = NULL;
 EXPORT char** my__environ = NULL;
@@ -2722,6 +2725,18 @@ EXPORT int32_t my___cxa_thread_atexit_impl(x64emu_t* emu, void* dtor, void* obj,
     return 0;
 }
 
+EXPORT int32_t my_delete_module(x64emu_t* emu, const char* name, unsigned int flags)
+{
+    (void)emu;
+    return syscall(__NR_delete_module, name, flags);
+}
+
+EXPORT int32_t my_init_module(x64emu_t* emu, void* module_image, unsigned long size, const char* param_values)
+{
+    (void)emu;
+    return syscall(__NR_init_module, module_image, size, param_values);
+}
+
 EXPORT int32_t my___register_atfork(x64emu_t *emu, void* prepare, void* parent, void* child, void* handle)
 {
     (void)emu;
@@ -3056,7 +3071,11 @@ EXPORT void* my_mmap64(x64emu_t* emu, void *addr, size_t length, int prot, int f
             }
         }
         // hack to capture full size of the mmap done by wine
-        if(emu && (fd==-1) && (flags==(MAP_PRIVATE|MAP_ANON))) {
+#if defined(ANDROID) || defined(WINLATOR_GLIBC)
+        if(emu && (fd==-1) && (flags&(MAP_PRIVATE|MAP_ANON))==(MAP_PRIVATE|MAP_ANON) && !(flags&MAP_NORESERVE)) {
+#else
+        if(emu && (fd==-1) && (flags&(MAP_PRIVATE|MAP_ANON))==(MAP_PRIVATE|MAP_ANON)) {
+#endif
             last_mmap_addr[last_mmap_idx] = ret;
             last_mmap_len[last_mmap_idx] = length;
         } else {
@@ -3067,7 +3086,7 @@ EXPORT void* my_mmap64(x64emu_t* emu, void *addr, size_t length, int prot, int f
         if(emu)
             setProtection_mmap((uintptr_t)ret, length, prot);
         else
-            setProtection((uintptr_t)ret, length, prot);
+            setProtection_box((uintptr_t)ret, length, prot);
         if(addr && ret!=addr)
             e = EEXIST;
     }
@@ -3133,6 +3152,9 @@ EXPORT int my_munmap(x64emu_t* emu, void* addr, size_t length)
     int ret = box_munmap(addr, length);
     int e = errno;
     #ifdef DYNAREC
+    if(!ret) {
+        WillRemoveMapping((uintptr_t)addr, length);
+    }
     if(!ret && BOX64ENV(dynarec) && length) {
         cleanDBFromAddressRange((uintptr_t)addr, length, 1);
     }
@@ -3156,9 +3178,10 @@ EXPORT int my_mprotect(x64emu_t* emu, void *addr, unsigned long len, int prot)
     int ret = mprotect(addr, len, prot);
     #ifdef DYNAREC
     if(BOX64ENV(dynarec) && !ret && len) {
-        if(prot& PROT_EXEC)
-            addDBFromAddressRange((uintptr_t)addr, len);
-        else
+        if(prot& PROT_EXEC) {
+            if(!IsAddrMappingLoadAndClean((uintptr_t)addr))
+                addDBFromAddressRange((uintptr_t)addr, len);
+        } else
             cleanDBFromAddressRange((uintptr_t)addr, len, (!prot)?1:0);
     }
     #endif
@@ -3181,6 +3204,35 @@ EXPORT void* my_mallinfo(x64emu_t* emu, void* p)
         *(struct mallinfo*)p=f();
     else
         memset(p, 0, sizeof(struct mallinfo));
+    return p;
+}
+
+struct my_mallinfo2_s {
+    size_t arena;
+    size_t ordblks;
+    size_t smblks;
+    size_t hblks;
+    size_t hblkhd;
+    size_t usmblks;
+    size_t fsmblks;
+    size_t uordblks;
+    size_t fordblks;
+    size_t keepcost;
+};
+
+typedef struct my_mallinfo2_s (*mallinfo2_fnc)(void);
+EXPORT void* my_mallinfo2(x64emu_t* emu, void* p)
+{
+    static mallinfo2_fnc f = NULL;
+    static int inited = 0;
+    if(!inited) {
+        inited = 1;
+        f = (mallinfo2_fnc)dlsym(my_lib->w.lib, "mallinfo2");
+    }
+    if(f)
+        *(struct my_mallinfo2_s*)p = f();
+    else
+        memset(p, 0, sizeof(struct my_mallinfo2_s));
     return p;
 }
 
@@ -3825,7 +3877,19 @@ EXPORT void my_exit(x64emu_t* emu, int code)
     exit(code);
 }
 
-EXPORT void my__exit(x64emu_t* emu, int code) __attribute__((alias("my_exit")));
+EXPORT void my__exit(x64emu_t* emu, int code)
+{
+    if(emu->flags.quitonexit || emu->quit) {
+        _exit(code);
+    }
+    printf_log(LOG_INFO, "Fast _exit called\n");
+    emu->quit = 1;
+    box64_exit_code = code;
+    SerializeAllMapping();   // just to be safe
+    // then call all the fini
+    
+    _exit(code);
+}
 
 EXPORT int my_prctl(x64emu_t* emu, int option, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
 {
