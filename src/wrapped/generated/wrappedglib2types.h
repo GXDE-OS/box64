@@ -83,6 +83,7 @@ typedef int32_t (*iFpppuppppppp_t)(void*, void*, void*, uint32_t, void*, void*, 
 	GO(g_main_context_set_poll_func, vFpp_t) \
 	GO(g_ptr_array_set_free_func, vFpp_t) \
 	GO(g_ptr_array_sort, vFpp_t) \
+	GO(g_queue_free_full, vFpp_t) \
 	GO(g_slist_free_full, vFpp_t) \
 	GO(g_source_set_funcs, vFpp_t) \
 	GO(g_thread_foreach, vFpp_t) \
@@ -112,6 +113,8 @@ typedef int32_t (*iFpppuppppppp_t)(void*, void*, void*, uint32_t, void*, void*, 
 	GO(g_array_sort_with_data, vFppp_t) \
 	GO(g_hash_table_foreach, vFppp_t) \
 	GO(g_list_foreach, vFppp_t) \
+	GO(g_log_set_writer_func, vFppp_t) \
+	GO(g_main_context_invoke, vFppp_t) \
 	GO(g_option_context_add_main_entries, vFppp_t) \
 	GO(g_option_group_set_parse_hooks, vFppp_t) \
 	GO(g_ptr_array_foreach, vFppp_t) \

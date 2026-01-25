@@ -3,8 +3,8 @@
 
 #include "regs.h"
 #include "os.h"
+#include "box64context.h"
 
-typedef struct box64context_s box64context_t;
 typedef struct x64_ucontext_s x64_ucontext_t;
 #ifdef BOX32
 typedef struct i386_ucontext_s i386_ucontext_t;
@@ -37,6 +37,7 @@ typedef struct x64emu_s x64emu_t;
 
 typedef struct x64test_s {
     x64emu_t*   emu;
+    x64emu_t*   ref;
     uintptr_t   memaddr;
     int         memsize;
     int         test;
@@ -90,7 +91,6 @@ typedef struct x64emu_s {
     uint16_t    segs[6];        // only 32bits value?
     uint16_t    dummy_seg6, dummy_seg7; // to stay aligned
     uintptr_t   segs_offs[6];   // computed offset associate with segment
-    uint32_t    segs_serial[6];  // are seg offset clean (not 0) or does they need to be re-computed (0)? For GS, serial need to be the same as context->sel_serial
     // parent context
     box64context_t *context;
     // cpu helpers
@@ -127,6 +127,11 @@ typedef struct x64emu_s {
     #ifdef _WIN32
     uint64_t    win64_teb;
     #endif
+    // local selector handling
+    base_segment_t  segldt[16];
+    base_segment_t  seggdt[16];  // hacky
+    tlsdatasize_t  *tlsdata;
+    // other informations
     int         type;       // EMUTYPE_xxx define
     #ifdef BOX32
     int         libc_err;   // copy of errno from libc

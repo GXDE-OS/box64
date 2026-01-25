@@ -67,6 +67,7 @@ int box64_zoom = 0;
 int box64_steam = 0;
 int box64_steamcmd = 0;
 int box64_musl = 0;
+int box64_nolibs = 0;
 char* box64_custom_gstreamer = NULL;
 int box64_tcmalloc_minimal = 0;
 uintptr_t fmod_smc_start = 0;
@@ -74,6 +75,7 @@ uintptr_t fmod_smc_end = 0;
 uint32_t default_gs = 0x53;
 uint32_t default_fs = 0;
 int box64_isglibc234 = 0;
+int box64_unittest_mode = 0;
 
 #ifdef DYNAREC
 cpu_ext_t cpuext = {0};
@@ -135,7 +137,9 @@ static void openFTrace(void)
         p = tmp;
     }
 
-    if (!strcmp(p, "stderr"))
+    if (!strcmp(p, "stdout"))
+        ftrace = stdout;
+    else if (!strcmp(p, "stderr"))
         ftrace = stderr;
     else {
         if (append)
@@ -143,13 +147,12 @@ static void openFTrace(void)
         else
             ftrace = fopen(p, "w");
         if (!ftrace) {
-            ftrace = stdout;
-            printf_log(LOG_INFO, "Cannot open trace file \"%s\" for writing (error=%s), fallback to stdout\n", p, strerror(errno));
+            ftrace = stderr;
+            printf_log(LOG_INFO, "Cannot open trace file \"%s\" for writing (error=%s), fallback to stderr\n", p, strerror(errno));
         } else {
             ftrace_name = box_strdup(p);
             if (!BOX64ENV(nobanner)) {
-                printf("[BOX64] Trace %s to \"%s\" (set BOX64_NOBANNER=1 to suppress this log)\n", append ? "appended" : "redirected", p);
-                box64_stdout_no_w = 1;
+                fprintf(stderr, "[BOX64] Trace %s to \"%s\" (set BOX64_NOBANNER=1 to suppress this log)\n", append ? "appended" : "redirected", p);
             }
             PrintBox64Version(0);
         }
@@ -203,7 +206,7 @@ static void displayMiscInfo()
 {
     openFTrace();
 
-    if ((BOX64ENV(nobanner) || BOX64ENV(log)) && ftrace==stdout)
+    if ((BOX64ENV(nobanner) || BOX64ENV(log)) && ftrace == stdout)
         box64_stdout_no_w = 1;
 
 #if !defined(DYNAREC) && (defined(ARM64) || defined(RV64) || defined(LA64))
@@ -322,14 +325,19 @@ void AddNewLibs(const char* list)
 }
 
 void PrintHelp() {
-    PrintfFtrace(0, "This is Box64, the Linux x86_64 emulator with a twist.\n");
-    PrintfFtrace(0, "Usage is 'box64 [options] path/to/software [args]' to launch x86_64 software.\n");
-    PrintfFtrace(0, " options are:\n");
-    PrintfFtrace(0, "    '-v'|'--version' to print box64 version and quit\n");
-    PrintfFtrace(0, "    '-h'|'--help' to print this and quit\n");
-    PrintfFtrace(0, "    '-k'|'--kill-all' to kill all box64 instances\n");
-    PrintfFtrace(0, "    '--dynacache-list' to list of DynaCache file and their validity\n");
-    PrintfFtrace(0, "    '--dynacache-clean' to remove invalide DynaCache files\n");
+    PrintfFtrace(0, "%s\n", BOX64_BUILD_INFO_STRING);
+    PrintfFtrace(0, "Linux userspace x86-64 emulator with a twist.\n");
+    PrintfFtrace(0, "There are many environment variables to control Box64's behaviour, checkout the documentation here: https://github.com/ptitSeb/box64/blob/main/docs/USAGE.md\n\n");
+    PrintfFtrace(0, "USAGE:\n");
+    PrintfFtrace(0, "\tbox64 [options] path/to/x86_64/executable [args]\n");
+    PrintfFtrace(0, "\tbox64-bash\n");
+    PrintfFtrace(0, "OPTIONS:\n");
+    PrintfFtrace(0, "\t-v, --version          print box64 version and quit\n");
+    PrintfFtrace(0, "\t-h, --help             print this and quit\n");
+    PrintfFtrace(0, "\t-k, --kill-all         kill all box64 instances\n");
+    PrintfFtrace(0, "\t-t, --test             run a unit test\n");
+    PrintfFtrace(0, "\t--dynacache-list       list of DynaCache file and their validity\n");
+    PrintfFtrace(0, "\t--dynacache-clean      remove invalid DynaCache files\n");
 }
 
 void KillAllInstances()
@@ -410,7 +418,8 @@ static void addLibPaths(box64context_t* context)
     AddPath("libunwind.so.8", &context->box64_emulated_libs, 0);
     AddPath("libpng12.so.0", &context->box64_emulated_libs, 0);
     AddPath("libcurl.so.4", &context->box64_emulated_libs, 0);
-    //AddPath("libgnutls.so.30", &context->box64_emulated_libs, 0);
+    if(getenv("BOX64_PRESSURE_VESSEL_FILES"))   // use emulated gnutls in this case, it's safer
+        AddPath("libgnutls.so.30", &context->box64_emulated_libs, 0);
     AddPath("libtbbmalloc.so.2", &context->box64_emulated_libs, 0);
     AddPath("libtbbmalloc_proxy.so.2", &context->box64_emulated_libs, 0);
 
@@ -428,7 +437,7 @@ static void addLibPaths(box64context_t* context)
         AppendList(&context->box64_path, getenv("PATH"), 1);   // in case some of the path are for x86 world
 }
 
-void setupZydis(box64context_t* context)
+static void setupZydis(box64context_t* context)
 {
 #ifdef HAVE_TRACE
     if ((BOX64ENV(trace_init) && strcmp(BOX64ENV(trace_init), "0")) || (BOX64ENV(trace) && strcmp(BOX64ENV(trace), "0"))) {
@@ -728,13 +737,17 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
     if(argc>1 && !strcmp(argv[1], "/usr/bin/gdb") && BOX64ENV(trace_file))
         exit(0);
     // uname -m is redirected to box64 -m
-    if(argc==2 && (!strcmp(argv[1], "-m") || !strcmp(argv[1], "-p") || !strcmp(argv[1], "-i")))
-    {
+    if (argc == 2 && (!strcmp(argv[1], "-m") || !strcmp(argv[1], "-p") || !strcmp(argv[1], "-i"))) {
         printf("x86_64\n");
         exit(0);
     }
 
-    ftrace = stdout;
+    if (argc >= 3 && (!strcmp(argv[1], "--test") || !strcmp(argv[1], "-t"))) {
+        box64_unittest_mode = 1;
+        exit(unittest(argc, argv));
+    }
+
+    ftrace = stderr;
 
     // grab pagesize
     box64_pagesize = sysconf(_SC_PAGESIZE);
@@ -799,6 +812,18 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
             }
         }
     }
+    char* pythonpath = NULL;
+    {
+        char* p = BOX64ENV(python3);
+        if(p) {
+            if(FileIsX64ELF(p)) {
+                pythonpath = p;
+                printf_log(LOG_INFO, "Using python3 \"%s\"\n", pythonpath);
+            } else {
+                printf_log(LOG_INFO, "The x86_64 python3 \"%s\" is not an x86_64 binary.\n", p);
+            }
+        }
+    }
 
     // precheck, for win-preload
     const char* prog_ = strrchr(prog, '/');
@@ -823,6 +848,7 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
     // pre-check for pressure-vessel-wrap
     if(!strcmp(prog_, "pressure-vessel-wrap")) {
         printf_log(LOG_INFO, "pressure-vessel-wrap detected\n");
+        unsetenv("BOX64_ARG0");
         pressure_vessel(argc, argv, nextarg+1, prog);
     }
     #endif
@@ -1020,6 +1046,8 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
         bashpath = ResolveFile("box64-bash", &my_context->box64_path);
     if(bashpath)
         my_context->bashpath = box_strdup(bashpath);
+    if(pythonpath)
+        my_context->pythonpath = box_strdup(pythonpath);
 
     ApplyEnvFileEntry(box64_guest_name);
     if (box64_wine && box64_wine_guest_name) {
@@ -1027,7 +1055,7 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
         box64_wine_guest_name = NULL;
     }
     // Try to open ftrace again after applying rcfile.
-    openFTrace();
+    displayMiscInfo();
     setupZydis(my_context);
     PrintEnvVariables(&box64env, LOG_INFO);
 
@@ -1049,14 +1077,6 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
     if(BOX64ENV(inprocessgpu))
     {
         add_argv("--in-process-gpu");
-    }
-    if(BOX64ENV(cefdisablegpu))
-    {
-        add_argv("-cef-disable-gpu");
-    }
-    if(BOX64ENV(cefdisablegpucompositor))
-    {
-        add_argv("-cef-disable-gpu-compositor");
     }
     // add new args only if there is no args already
     if(BOX64ENV(args)) {
@@ -1125,8 +1145,10 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
     }
     if(!(my_context->fullpath = box_realpath(my_context->argv[0], NULL)))
         my_context->fullpath = box_strdup(my_context->argv[0]);
-    if(getenv("BOX64_ARG0"))
+    if (getenv("BOX64_ARG0")) {
         my_context->argv[0] = box_strdup(getenv("BOX64_ARG0"));
+        unsetenv("BOX64_ARG0");
+    }
     FILE *f = fopen(my_context->fullpath, "rb");
     if(!f) {
         printf_log(LOG_NONE, "Error: Cannot open %s\n", my_context->fullpath);
@@ -1138,7 +1160,7 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
     #ifdef BOX32
     box64_is32bits = FileIsX86ELF(my_context->fullpath);
     // try to switch personality, but only if not already tried
-    if(box64_is32bits) {
+    if(box64_is32bits && !box64env.nopersona32bits) {
         int tried = getenv("BOX32_PERSONA32BITS")?1:0;
         if(tried) {
             unsetenv("BOX32_PERSONA32BITS");
@@ -1175,6 +1197,7 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
     if(!elf_header) {
         int x86 = my_context->box86path?FileIsX86ELF(my_context->fullpath):0;
         int script = my_context->bashpath?FileIsShell(my_context->fullpath):0;
+        int python3 = my_context->pythonpath?FileIsPython(my_context->fullpath):0;
         printf_log(LOG_NONE, "Error: Reading elf header of %s, Try to launch %s instead\n", my_context->fullpath, x86?"using box86":(script?"using bash":"natively"));
         fclose(f);
         FreeCollection(&ld_preload);
@@ -1191,6 +1214,14 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
             const char** newargv = (const char**)box_calloc(my_context->argc+3, sizeof(char*));
             newargv[0] = my_context->box64path;
             newargv[1] = my_context->bashpath;
+            for(int i=0; i<my_context->argc; ++i)
+                newargv[i+2] = my_context->argv[i];
+            ret = execvp(newargv[0], (char * const*)newargv);
+        } else if (python3) {
+            // duplicate the array and insert 1st arg as box64, 2nd is python3
+            const char** newargv = (const char**)box_calloc(my_context->argc+3, sizeof(char*));
+            newargv[0] = my_context->box64path;
+            newargv[1] = my_context->pythonpath;
             for(int i=0; i<my_context->argc; ++i)
                 newargv[i+2] = my_context->argv[i];
             ret = execvp(newargv[0], (char * const*)newargv);
@@ -1316,6 +1347,8 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
         my_context->orig_argc = argc;
         my_context->orig_argv = (char**)argv;
     }
+    box64_nolibs = (NeededLibs(elf_header)==0);
+    if(box64_nolibs) printf_log(LOG_INFO, "Warning, box64 is not really compatible with staticaly linked binaries. Expect crash!\n");
     box64_isglibc234 = GetNeededVersionForLib(elf_header, "libc.so.6", "GLIBC_2.34");
     if(box64_isglibc234)
         printf_log(LOG_DEBUG, "Program linked with GLIBC 2.34+\n");
@@ -1399,7 +1432,7 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
     setupTraceInit();
     RunDeferredElfInit(emu);
     // update TLS of main elf
-    RefreshElfTLS(elf_header);
+    RefreshElfTLS(elf_header, emu);
     // do some special case check, _IO_2_1_stderr_ and friends, that are setup by libc, but it's already done here, so need to do a copy
     ResetSpecialCaseMainElf(elf_header);
     // init...

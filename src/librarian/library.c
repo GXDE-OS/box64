@@ -263,11 +263,13 @@ static void initWrappedLib(library_t *lib, box64context_t* context) {
     for (int i=0; i<nb; ++i) {
         wrappedlib_t* w = box64_is32bits?(&wrappedlibs32[i]):(&wrappedlibs[i]);
         if(strcmp(lib->name, w->name)==0) {
-            if(w->init(lib, context)) {
-                // error!
-                const char* error_str = dlerror();
-                if(error_str)   // don't print the message if there is no error string from last error
-                    printf_log(LOG_NONE, "Error initializing native %s (last dlerror is %s)\n", lib->name, error_str);
+            int err = w->init(lib, context);
+            if (err) {
+                if (err == -1) {
+                    const char* error_str = dlerror();
+                    if (error_str) // don't print the message if there is no error string from last error
+                        printf_log(LOG_NONE, "Error initializing native %s (last dlerror is %s)\n", lib->name, error_str);
+                }
                 return; // non blocker...
             }
             printf_dump(LOG_INFO, "Using native(wrapped) %s\n", lib->name);
@@ -362,6 +364,11 @@ static int loadEmulatedLib(const char* libname, library_t *lib, box64context_t* 
             printf_dump(LOG_INFO, "MonoBleedingEdge detected, disable Dynarec BigBlock and enable Dynarec StrongMem\n");
             SET_BOX64ENV(dynarec_bigblock, 0);
             SET_BOX64ENV(dynarec_strongmem, 1);
+            env_changed = 1;
+        }
+        if(libname && BOX64ENV(unityplayer) && strstr(libname, "UnityPlayer.so")) {
+            printf_dump(LOG_INFO, "UnityPlayer detected, applying Unity settings\n");
+            SET_BOX64ENV(unity, 1);
             env_changed = 1;
         }
         if(libname && BOX64ENV(dynarec_tbb) && strstr(libname, "libtbb.so")) {

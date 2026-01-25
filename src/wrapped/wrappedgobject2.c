@@ -858,6 +858,11 @@ EXPORT void my_g_object_set_qdata_full(x64emu_t* emu, void* o, uint32_t q, void*
     my->g_object_set_qdata_full(o, q, data, findDestroyFct(d));
 }
 
+EXPORT int my_g_object_replace_qdata(x64emu_t* emu, void* o, uint32_t q, void* ov, void* nv, void* d, void* od)
+{
+    return my->g_object_replace_qdata(o, q, ov, nv, findDestroyFct(d), findDestroyFct(od));
+}
+
 EXPORT void my_g_object_class_install_properties(x64emu_t* emu, void* klass, uint32_t n, void* specs)
 {
     unwrapGTKClass(klass, my->g_object_get_type());
@@ -947,9 +952,8 @@ EXPORT size_t my_g_type_module_register_type(x64emu_t* emu, my_GTypeModule_t* mo
     return my->g_type_module_register_type(module, parent_type, type_name, type_info, flags);
 }
 
-#define PRE_INIT    \
-    if(BOX64ENV(nogtk)) \
-        return -1;
+#define PRE_INIT \
+    if (BOX64ENV(nogtk)) return -2;
 
 #define CUSTOM_INIT \
     SetGObjectID(my->g_object_get_type());  \

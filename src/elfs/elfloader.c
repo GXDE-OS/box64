@@ -296,7 +296,8 @@ int AllocLoadElfMemory(box64context_t* context, elfheader_t* head, int mainbin)
             head->multiblocks[n].paddr = e->p_paddr + offs;
             head->multiblocks[n].size = e->p_filesz;
             head->multiblocks[n].align = e->p_align;
-            uint8_t prot = ((e->p_flags & PF_R)?PROT_READ:0)|((e->p_flags & PF_W)?PROT_WRITE:0)|((e->p_flags & PF_X)?PROT_EXEC:0);
+            // HACK: Mark all the code pages writable in unittest mode because some tests mix code and (writable) data...
+            uint8_t prot = ((e->p_flags & PF_R)?PROT_READ:0)|(((e->p_flags & PF_W) || box64_unittest_mode)?PROT_WRITE:0)|((e->p_flags & PF_X)?PROT_EXEC:0);
             // check if alignment is correct
             uintptr_t balign = head->multiblocks[n].align-1;
             if (balign < (box64_pagesize - 1)) balign = box64_pagesize - 1;
@@ -313,7 +314,7 @@ int AllocLoadElfMemory(box64context_t* context, elfheader_t* head, int mainbin)
             if(e->p_align<box64_pagesize)
                 try_mmap = 0;
             if(try_mmap) {
-                printf_dump(log_level, "Mmaping 0x%lx(0x%lx) bytes @%p for Elf \"%s\"\n", head->multiblocks[n].size, head->multiblocks[n].asize, (void*)head->multiblocks[n].paddr, head->name);
+                printf_dump(log_level, "Mmaping 0x%lx(0x%lx) bytes @%p with prot %x for Elf \"%s\"\n", head->multiblocks[n].size, head->multiblocks[n].asize, (void*)head->multiblocks[n].paddr, prot, head->name);
                 void* p = InternalMmap(
                     (void*)head->multiblocks[n].paddr,
                     head->multiblocks[n].size,
@@ -647,7 +648,7 @@ static int RelocateElfRELA(lib_t *maplib, lib_t *local_maplib, int bindnow, int 
                 break;
             case R_X86_64_PC32:
                 // should be "S + A - P" with S=symbol offset, A=addend and P=place of the storage unit, write a word32
-                // can be ignored
+                // can be ignored (so *p = offs + addend - p)
                 break;
             case R_X86_64_RELATIVE:
                 printf_dump(LOG_NEVER, "Apply %s R_X86_64_RELATIVE @%p (%p -> %p)\n", BindSym(bind), p, *(void**)p, (void*)(head->delta+ rela[i].r_addend));
@@ -717,7 +718,7 @@ static int RelocateElfRELA(lib_t *maplib, lib_t *local_maplib, int bindnow, int 
                         if(bind==STB_WEAK) {
                             printf_log(LOG_INFO, "Warning: Weak Symbol %s not found, cannot apply R_X86_64_JUMP_SLOT @%p (%p)\n", symname, p, *(void**)p);
                         } else {
-                            printf_log(LOG_NONE, "Error: Symbol %s not found, cannot apply R_X86_64_JUMP_SLOT @%p (%p) in %s\n", symname, p, *(void**)p, head->name);
+                            printf_log(LOG_NONE, "Error: Symbol %s not found, cannot apply R_X86_64_JUMP_SLOT @%p (%p) in %s (%sver=%d / %s)\n", symname, p, *(void**)p, head->name, veropt?"opt":"", version, vername?vername:"(none)");
                             ret_ok = 1;
                         }
                         // return -1;
@@ -1115,6 +1116,11 @@ int LoadNeededLibs(elfheader_t* h, lib_t *maplib, int local, int bindnow, int de
     return 0;
 }
 
+needed_libs_t* GetELfNeededLibs(elfheader_t* h)
+{
+    return h?h->needed:NULL;
+}
+
 int ElfCheckIfUseTCMallocMinimal(elfheader_t* h)
 {
     if(!h)
@@ -1132,14 +1138,15 @@ int ElfCheckIfUseTCMallocMinimal(elfheader_t* h)
     return 0;
 }
 
-void RefreshElfTLS(elfheader_t* h)
+void RefreshElfTLS(elfheader_t* h, x64emu_t* emu)
 {
+    refreshTLSData(emu);
     if(h->tlsfilesize) {
         char* dest = (char*)(my_context->tlsdata+my_context->tlssize+h->tlsbase);
         printf_dump(LOG_DEBUG, "Refreshing main TLS block @%p from %p:0x%lx\n", dest, (void*)h->tlsaddr, h->tlsfilesize);
         memcpy(dest, (void*)(h->tlsaddr+h->delta), h->tlsfilesize);
-        if (pthread_getspecific(my_context->tlskey)) {
-            tlsdatasize_t* ptr = getTLSData(my_context);
+        if (emu->tlsdata) {
+            tlsdatasize_t* ptr = emu->tlsdata;
             // refresh in tlsdata too
             dest = (char*)(ptr->data+h->tlsbase);
             printf_dump(LOG_DEBUG, "Refreshing active TLS block @%p from %p:0x%lx\n", dest, (void*)h->tlsaddr, h->tlssize-h->tlsfilesize);
@@ -1162,10 +1169,9 @@ void RunElfInit(elfheader_t* h, x64emu_t *emu)
     if(!h || h->init_done)
         return;
     // reset Segs Cache
-    memset(emu->segs_serial, 0, sizeof(emu->segs_serial));
     uintptr_t p = h->initentry + h->delta;
     // Refresh no-file part of TLS in case default value changed
-    RefreshElfTLS(h);
+    RefreshElfTLS(h, emu);
     // check if in deferredInit
     if(my_context->deferredInit) {
         if(my_context->deferredInitSz==my_context->deferredInitCap) {
@@ -1437,9 +1443,9 @@ int SameVersionedSymbol(const char* name1, int ver1, const char* vername1, int v
     return 0;
 }
 
-void* GetDTatOffset(box64context_t* context, unsigned long int index, unsigned long int offset)
+void* GetDTatOffset(x64emu_t* emu, unsigned long int index, unsigned long int offset)
 {
-    return (void*)((char*)GetTLSPointer(context, context->elfs[index])+offset);
+    return (void*)((char*)GetTLSPointer(emu, emu->context->elfs[index])+offset);
 }
 
 int32_t GetTLSBase(elfheader_t* h)
@@ -1452,11 +1458,12 @@ uint32_t GetTLSSize(elfheader_t* h)
     return h?h->tlssize:0;
 }
 
-void* GetTLSPointer(box64context_t* context, elfheader_t* h)
+void* GetTLSPointer(x64emu_t* emu, elfheader_t* h)
 {
     if(!h || !h->tlssize)
         return NULL;
-    tlsdatasize_t* ptr = getTLSData(context);
+    refreshTLSData(emu);    // needed?
+    tlsdatasize_t* ptr = emu->tlsdata;
     return ptr->data+h->tlsbase;
 }
 
@@ -1775,6 +1782,19 @@ int ElfGetSymTabStartEnd(elfheader_t* head, uintptr_t *offs, uintptr_t *end, con
     return box64_is32bits?ElfGetSymTabStartEnd32(head, offs, end, symname):ElfGetSymTabStartEnd64(head, offs, end, symname);
 }
 
+int NeededLibs(elfheader_t* h)
+{
+    if(!h) return 0;
+    int cnt = 0;
+    // count the number of needed libs, and also grab soname
+    for (size_t i=0; i<h->numDynamic; ++i) {
+        int tag = box64_is32bits?h->Dynamic._32[i].d_tag:h->Dynamic._64[i].d_tag;
+        if(tag==DT_NEEDED)
+            ++cnt;
+    }
+    return cnt;
+}
+
 typedef struct search_symbol_s{
     const char* name;
     void*       addr;
@@ -1899,11 +1919,17 @@ EXPORT void PltResolver64(x64emu_t* emu)
             GetGlobalSymbolStartEnd(local_maplib, symname, &offs, &end, h, version, vername, veropt, (void**)&elfsym);
     }
     if (!offs) {
-        printf_log(LOG_NONE, "Error: PltResolver: Symbol %s %s(%sver %d: %s%s%s) not found, cannot apply R_X86_64_JUMP_SLOT %p (%p) in %s (local_maplib=%p, global maplib=%p, deepbind=%d)\n", (bind==STB_LOCAL)?"Local":((bind==STB_WEAK)?"Weak":""), symname, veropt?"opt":"", version, symname, vername?"@":"", vername?vername:"", p, *(void**)p, h->name, local_maplib, my_context->maplib, deepbind);
+        printf_log(LOG_NONE, "Error: PltResolver: Symbol %s %s(%sver %d: %s%s%s) not found, cannot apply R_X86_64_JUMP_SLOT %p in %s (local_maplib=%p, global maplib=%p, deepbind=%d)\n", (bind==STB_LOCAL)?"Local":((bind==STB_WEAK)?"Weak":""), symname, veropt?"opt":"", version, symname, vername?"@":"", vername?vername:"", p, (h && h->name)?h->name:"???", local_maplib, my_context->maplib, deepbind);
         emu->quit = 1;
+        R_RIP = 0; //stop....
         return;
     } else {
         elfheader_t* sym_elf = FindElfSymbol(my_context, elfsym);
+        if(elfsym && (elfsym->st_info&0xf)==STT_GNU_IFUNC) {
+            // this is an IFUNC, needs to evaluate the function first!
+            printf_dump(LOG_DEBUG, "            Indirect function, will call the resolver now at %p\n", (void*)offs);
+            offs = RunFunction(offs, 0);
+        }
         offs = (uintptr_t)getAlternate((void*)offs);
 
         if(p) {
@@ -1930,7 +1956,7 @@ const char* getAddrFunctionName(uintptr_t addr)
     elfheader_t* elf = FindElfAddress(my_context, addr);
     const char* symbname = FindNearestSymbolName(elf, (void*)addr, &start, &sz);
     if (!sz) sz = 0x100; // arbitrary value...
-    if (symbname && addr >= start && (addr < (start + sz) || !sz)) {
+    if (symbname && (addr >= start) && (addr < (start + sz))) {
         if (symbname[0] == '\0')
             sprintf(ret, "%s + 0x%lx + 0x%lx", ElfName(elf), start - (uintptr_t)GetBaseAddress(elf), addr - start);
         else if (addr == start)

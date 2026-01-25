@@ -70,6 +70,11 @@ GO(6)   \
 GO(7)   \
 GO(8)   \
 GO(9)   \
+GO(10)  \
+GO(11)  \
+GO(12)  \
+GO(13)  \
+GO(14)  \
 
 // GCopyFct
 #define GO(A)   \
@@ -756,6 +761,34 @@ static void* findGTraverseFuncFct(void* fct)
     return NULL;
 }
 
+// GLogWriterFunc ...
+#define GO(A)                                                         \
+    static uintptr_t my_GLogWriterFunc_fct_##A = 0;                   \
+    static int my_GLogWriterFunc_##A(void* a, void* b)                \
+    {                                                                 \
+        return RunFunctionFmt(my_GLogWriterFunc_fct_##A, "pp", a, b); \
+    }
+SUPER()
+#undef GO
+static void* findLogWriterFct(void* fct)
+{
+    if (!fct) return fct;
+    if (GetNativeFnc((uintptr_t)fct)) return GetNativeFnc((uintptr_t)fct);
+#define GO(A) \
+    if (my_GLogWriterFunc_fct_##A == (uintptr_t)fct) return my_GLogWriterFunc_##A;
+    SUPER()
+#undef GO
+#define GO(A)                                       \
+    if (my_GLogWriterFunc_fct_##A == 0) {           \
+        my_GLogWriterFunc_fct_##A = (uintptr_t)fct; \
+        return my_GLogWriterFunc_##A;               \
+    }
+    SUPER()
+#undef GO
+    printf_log(LOG_NONE, "Warning, no more slot for glib2 GLogWriterFunc callback\n");
+    return NULL;
+}
+
 #undef SUPER
 
 EXPORT void* my_g_markup_vprintf_escaped(x64emu_t *emu, void* fmt, void* b) {
@@ -1083,6 +1116,11 @@ EXPORT void my_g_source_set_callback(x64emu_t* emu, void* source, void* func, vo
     my->g_source_set_callback(source, findGSourceFuncFct(func), data, findFreeFct(notify));
 }
 
+EXPORT void my_g_main_context_invoke(x64emu_t* emu, void* context, void* func, void* data)
+{
+    my->g_main_context_invoke(context, findGSourceFuncFct(func), data);
+}
+
 EXPORT void* my_g_slist_insert_sorted(x64emu_t* emu, void* list, void* d, void* comp)
 {
 
@@ -1110,24 +1148,24 @@ EXPORT uint32_t my_g_idle_add(x64emu_t* emu, void* func, void* data)
 
 EXPORT void* my_g_variant_new_va(x64emu_t* emu, char* fmt, void* endptr, x64_va_list_t* b)
 {
-    #ifdef CONVERT_VALIST
+#ifdef CONVERT_VALIST
     CONVERT_VALIST(*b);
-    #else
-      #if defined(__loongarch64) || defined(__riscv)
-        va_list sysv_varargs;
-        myStackAlignGVariantNewVa(emu, fmt, emu->scratch, b);
-        sysv_varargs = (va_list)emu->scratch;
-      #else
-        CREATE_VALIST_FROM_VALIST(*b, emu->scratch);
-      #endif
-    #endif
+#else
+#if defined(__loongarch64) || defined(__riscv)
+    va_list sysv_varargs;
+    myStackAlignGVariantNewVa(emu, fmt, emu->scratch, b);
+    sysv_varargs = (va_list)emu->scratch;
+#else
+    CREATE_VALIST_FROM_VALIST(*b, emu->scratch);
+#endif
+#endif
     return my->g_variant_new_va(fmt, endptr, &sysv_varargs);
 }
 
 EXPORT void* my_g_variant_new(x64emu_t* emu, char* fmt, uint64_t* V)
 {
 #if defined(__loongarch64) || defined(__riscv)
-    myStackAlignGVariantNew(emu, fmt, V, emu->scratch, R_EAX);
+    myStackAlignGVariantNew(emu, fmt, V, emu->scratch, 1);
     PREPARE_VALIST;
 #else
     CREATE_VALIST_FROM_VAARG(V, emu->scratch, 1);
@@ -1243,6 +1281,11 @@ EXPORT uint32_t my_g_timeout_add_seconds_full(x64emu_t *emu, int priority, uint3
 EXPORT uint32_t my_g_log_set_handler(x64emu_t *emu, void* domain, int level, void* f, void* data)
 {
     return my->g_log_set_handler(domain, level, findGLogFuncFct(f), data);
+}
+
+EXPORT void my_g_log_set_writer_func(x64emu_t* emu, void* f, void* data, void* notify)
+{
+    my->g_log_set_writer_func(findLogWriterFct(f), data, findDestroyFct(notify));
 }
 
 EXPORT void my_g_set_error(x64emu_t *emu, void* err, void* domain, uint32_t code, void* fmt, uintptr_t* stack)
@@ -1561,8 +1604,12 @@ EXPORT void my_g_thread_pool_set_sort_function(x64emu_t* emu, void* pool, void* 
     my->g_thread_pool_set_sort_function(pool, findGCompareDataFuncFct(func), user_data);
 }
 
-#define PRE_INIT    \
-    if(BOX64ENV(nogtk)) \
-        return -1;
+EXPORT void my_g_queue_free_full(x64emu_t* emu, void* queue, void* d)
+{
+    my->g_queue_free_full(queue, findGDestroyNotifyFct(d));
+}
+
+#define PRE_INIT \
+    if (BOX64ENV(nogtk)) return -2;
 
 #include "wrappedlib_init.h"
