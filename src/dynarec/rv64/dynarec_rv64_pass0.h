@@ -67,7 +67,8 @@
     dyn->inst_vlmul = VECTOR_LMUL1;                              \
     dyn->inst_vl = 0;                                            \
     if (ninst)                                                   \
-        dyn->insts[ninst - 1].x64.size = dyn->insts[ninst].x64.addr - dyn->insts[ninst - 1].x64.addr;
+        dyn->insts[ninst - 1].x64.size = dyn->insts[ninst].x64.addr - dyn->insts[ninst - 1].x64.addr;\
+    AREFLAGSNEEDED()
 
 #define INST_EPILOG                                      \
     dyn->insts[ninst].f_exit = dyn->f;                   \
@@ -81,17 +82,7 @@
     if (ninst) { dyn->insts[ninst - 1].x64.size = ip - dyn->insts[ninst - 1].x64.addr; }                                      \
     if (BOX64ENV(dynarec_log) >= LOG_INFO || dyn->need_dump || BOX64ENV(dynarec_missing))                                     \
         if (!dyn->size || BOX64ENV(dynarec_log) > LOG_INFO || dyn->need_dump) {                                               \
-            dynarec_log(LOG_NONE, "%p: Dynarec stopped because of %s Opcode ", (void*)ip, rex.is32bits ? "x86" : "x64");      \
-            zydis_dec_t* dec = rex.is32bits ? my_context->dec32 : my_context->dec;                                            \
-            if (dec) {                                                                                                        \
-                dynarec_log_prefix(0, LOG_NONE, "%s", DecodeX64Trace(dec, dyn->insts[ninst].x64.addr, 1));                    \
-            } else {                                                                                                          \
-                dynarec_log_prefix(0, LOG_NONE, "%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X", \
-                    PKip(0), PKip(1), PKip(2), PKip(3), PKip(4), PKip(5), PKip(6), PKip(7), PKip(8), PKip(9),                 \
-                    PKip(10), PKip(11), PKip(12), PKip(13), PKip(14));                                                        \
-            }                                                                                                                 \
-            PrintFunctionAddr(ip, " => ");                                                                                    \
-            dynarec_log_prefix(0, LOG_NONE, "\n");                                                                            \
+            dynarec_stopped(dyn->insts[ninst].x64.addr, rex.is32bits);                                                        \
         }
 
 #define SET_ELEMENT_WIDTH(s1, sew, set)                    \

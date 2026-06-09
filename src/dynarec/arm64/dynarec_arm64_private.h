@@ -14,6 +14,7 @@ typedef struct box64env_s box64env_t;
 #define NF_SF   (1<<1)
 #define NF_VF   (1<<2)
 #define NF_CF   (1<<3)
+#define NF_PF_V (1<<4)
 
 // Nothing happens to the native flags
 #define NAT_FLAG_OP_NONE        0
@@ -49,6 +50,8 @@ typedef union sse_cache_s {
     };
 } sse_cache_t;
 typedef struct callret_s callret_t;
+typedef struct sep_s sep_t;
+
 typedef struct neoncache_s {
     // Neon cache
     neon_cache_t        neoncache[32];
@@ -79,6 +82,8 @@ typedef struct neoncache_s {
     uint16_t            ymm_used;       // mask of the ymm regs used in this opcode
     uint16_t            ymm_write;      // 1bit of ymmXX removed write
     uint16_t            ymm_removed;    // 1bit if ymmXX was removed
+    uint16_t            xmm_needed;     // 1bit for xmmXX were value is needed
+    uint16_t            ymm_needed;     // 1bit for ymmXX were value is needed 
     uint16_t            xmm_unneeded;   // 1bit for xmmXX were value is not needed
     uint16_t            ymm_unneeded;   // 1bit for ymmXX were value is not needed 
     uint64_t            ymm_regs;       // 4bits (0-15) position of 16 ymmXX regs removed
@@ -121,7 +126,8 @@ typedef struct instruction_arm64_s {
     uint8_t             will_read:1;     // [strongmem] will read from memory
     uint8_t             last_write:1;    // [strongmem] the last write in a SEQ
     uint8_t             lock:1;          // [strongmem] lock semantic
-    uint8_t             wfe:1;        // opcode uses sevl + wfe
+    uint8_t             wfe:1;           // opcode uses sevl + wfe
+    uint8_t             sep:1;           // opcode is a secondary entry point
     uint8_t             set_nat_flags;  // 0 or combinaison of native flags define
     uint8_t             use_nat_flags;  // 0 or combinaison of native flags define
     uint8_t             use_nat_flags_before;  // 0 or combinaison of native flags define
@@ -133,6 +139,7 @@ typedef struct instruction_arm64_s {
     unsigned            normal_carry:1;
     unsigned            normal_carry_before:1;
     unsigned            invert_carry:1; // this opcode force an inverted carry
+    unsigned            df_needed:1;
     unsigned            df_notneeded:1;
     unsigned            unaligned:1;    // this opcode can be re-generated for unaligned special case
     unsigned            x87precision:1; // this opcode can handle x87pc
@@ -178,7 +185,9 @@ typedef struct dynarec_arm_s {
     instsize_t*         instsize;
     size_t              insts_size; // size of the instruction size array (calculated)
     int                 callret_size;   // size of the array
-    callret_t*          callrets;   // arrey of callret return, with NOP / UDF depending if the block is clean or dirty
+    int                 sep_size;   // size of the array
+    callret_t*          callrets;   // array of callret return, with NOP / UDF depending if the block is clean or dirty
+    sep_t*              sep;        // array of secondary entry point
     uintptr_t           forward;    // address of the last end of code while testing forward
     uintptr_t           forward_to; // address of the next jump to (to check if everything is ok)
     int32_t             forward_size;   // size at the forward point
@@ -194,6 +203,7 @@ typedef struct dynarec_arm_s {
     uint8_t             use_xmm:1;
     uint8_t             use_ymm:1;
     uint8_t             have_purge:1;   // set to 1 if block can be purged
+    uint8_t             is_file_mapped:1;   // if the memory is a mapped file (probably binary, not a memory)
     void*               gdbjit_block;
     uint32_t            need_x87check;  // needs x87 precision control check if non-null, or 0 if not
     uint32_t            need_dump;     // need to dump the block

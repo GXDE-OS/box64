@@ -260,7 +260,11 @@ uintptr_t dynarec64_0F_vector(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip,
         case 0x29:
             INST_NAME("MOVAPS Ex, Gx");
             nextop = F8;
-            SET_ELEMENT_WIDTH(x1, VECTOR_SEWANY, 1);
+            // on SteamRT3 with Gameoverlay, repear will crash immediatly on a Milk-V Pioneer machine
+            // doing movaps xmmword ptr ss:[rsp+0x10], xmm4 with rsp that seems 4-bytes aligned
+            // so changed VECTOR_SEWANY to VECTOR_SEW32 instead (to also be coherent with PS size)
+            //TODO: check what is really happening here
+            SET_ELEMENT_WIDTH(x1, VECTOR_SEW32, 1);
             GETGX_vector(v0, 0, dyn->vector_eew);
             if (MODREG) {
                 ed = (nextop & 7) + (rex.b << 3);
@@ -652,17 +656,13 @@ uintptr_t dynarec64_0F_vector(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip,
             SET_ELEMENT_WIDTH(x1, VECTOR_SEW32, 1);
             GETGX_vector(q0, 1, VECTOR_SEW32);
             GETEX_vector(q1, 0, 0, VECTOR_SEW32);
-            if (!BOX64ENV(dynarec_fastnan)) {
-                v0 = fpu_get_scratch(dyn);
-                VMFEQ_VV(VMASK, q0, q0, VECTOR_UNMASKED);
-                VMFEQ_VV(v0, q1, q1, VECTOR_UNMASKED);
-            }
+            v0 = fpu_get_scratch(dyn);
+            VMFEQ_VV(VMASK, q0, q0, VECTOR_UNMASKED);
+            VMFEQ_VV(v0, q1, q1, VECTOR_UNMASKED);
             VFMIN_VV(q0, q0, q1, VECTOR_UNMASKED);
-            if (!BOX64ENV(dynarec_fastnan)) {
-                VMAND_MM(VMASK, v0, VMASK);
-                VXOR_VI(VMASK, VMASK, 0x1F, VECTOR_UNMASKED);
-                VADD_VX(q0, q1, xZR, VECTOR_MASKED);
-            }
+            VMAND_MM(VMASK, v0, VMASK);
+            VXOR_VI(VMASK, VMASK, 0x1F, VECTOR_UNMASKED);
+            VADD_VX(q0, q1, xZR, VECTOR_MASKED);
             break;
         case 0x5E:
             if (!BOX64ENV(dynarec_fastnan)) return 0;
@@ -680,16 +680,12 @@ uintptr_t dynarec64_0F_vector(dynarec_rv64_t* dyn, uintptr_t addr, uintptr_t ip,
             GETGX_vector(q0, 1, VECTOR_SEW32);
             GETEX_vector(q1, 0, 0, VECTOR_SEW32);
             v0 = fpu_get_scratch(dyn);
-            if (!BOX64ENV(dynarec_fastnan)) {
-                VMFEQ_VV(VMASK, q0, q0, VECTOR_UNMASKED);
-                VMFEQ_VV(v0, q1, q1, VECTOR_UNMASKED);
-            }
+            VMFEQ_VV(VMASK, q0, q0, VECTOR_UNMASKED);
+            VMFEQ_VV(v0, q1, q1, VECTOR_UNMASKED);
             VFMAX_VV(q0, q0, q1, VECTOR_UNMASKED);
-            if (!BOX64ENV(dynarec_fastnan)) {
-                VMAND_MM(VMASK, v0, VMASK);
-                VXOR_VI(VMASK, VMASK, 0x1F, VECTOR_UNMASKED);
-                VADD_VX(q0, q1, xZR, VECTOR_MASKED);
-            }
+            VMAND_MM(VMASK, v0, VMASK);
+            VXOR_VI(VMASK, VMASK, 0x1F, VECTOR_UNMASKED);
+            VADD_VX(q0, q1, xZR, VECTOR_MASKED);
             break;
         case 0x60:
             INST_NAME("PUNPCKLBW Gm, Em");

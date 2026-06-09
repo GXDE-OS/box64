@@ -30,6 +30,7 @@ typedef struct arch_flags_s
     uint8_t vf:1;
     uint8_t cf:1;
     uint8_t inv_cf:1;
+    uint8_t pf_v:1;
 } arch_flags_t;
 
 #define X87_ST_D 0
@@ -96,6 +97,7 @@ static int arch_build(dynarec_arm_t* dyn, int ninst, arch_build_t* arch, int noa
         arch->flags_.cf = flags&NF_CF;
         if(arch->flags_.cf)
             arch->flags_.inv_cf = !dyn->insts[ninst].normal_carry;
+        arch->flags_.pf_v = flags&NF_PF_V;
     }
     // opcode can handle unaligned
     arch->unaligned = dyn->insts[ninst].unaligned;
@@ -286,10 +288,10 @@ void adjust_arch(dynablock_t* db, x64emu_t* emu, ucontext_t* p, uintptr_t x64pc)
     SUPER()
     #undef GO
     int i = 0;
-    while(i<ninst-1) {
+    while(i<(ninst)) {  // this will look for ninst-1 state
         arch = next;
+        dynarec_log_prefix(0, (i<(ninst-1))?LOG_DEBUG:LOG_INFO, "[ seq=%d%s%s%s%s%s ] ", arch->seq, arch->flags?" Flags":"", arch->x87?" x87":"", arch->mmx?" MMX":"", arch->sse?" SSE":"", arch->ymm?" YMM":"");
         i += 1+arch->seq;
-        dynarec_log_prefix(0, (i<ninst-1)?LOG_DEBUG:LOG_INFO, "[ seq=%d%s%s%s%s%s ] ", arch->seq, arch->flags?" Flags":"", arch->x87?" x87":"", arch->mmx?" MMX":"", arch->sse?" SSE":"", arch->ymm?" YMM":"");
         next = (arch_arch_t*)((uintptr_t)next + sizeof_arch(arch));
     }
     int sz = sizeof(arch_arch_t);
@@ -321,6 +323,9 @@ void adjust_arch(dynablock_t* db, x64emu_t* emu, ucontext_t* p, uintptr_t x64pc)
             } else {
                 CONDITIONAL_SET_FLAG(p->uc_mcontext.pstate&(1<<NZCV_C), F_CF);
             }
+        }
+        if(flags->pf_v) {
+            CONDITIONAL_SET_FLAG(p->uc_mcontext.pstate&(1<<NZCV_V), F_PF);
         }
     }
     struct fpsimd_context *fpsimd = NULL;

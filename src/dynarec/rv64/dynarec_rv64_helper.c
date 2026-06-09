@@ -72,11 +72,11 @@ uintptr_t geted(dynarec_rv64_t* dyn, uintptr_t addr, int ninst, uint8_t nextop, 
                     }
                 } else {
                     if (rex.seg && !(tmp && ((tmp < -2048) || (tmp > maxval) || !i12))) {
-                        grab_segdata(dyn, addr, ninst, ret, rex.seg, 0);
+                        grab_segdata(dyn, addr, ninst, ret, rex.seg);
                         seg_done = 1;
                         *fixaddress = tmp;
                     } else if (rex.seg && tmp >= -2048 && tmp < 2048) {
-                        grab_segdata(dyn, addr, ninst, ret, rex.seg, 0);
+                        grab_segdata(dyn, addr, ninst, ret, rex.seg);
                         if (tmp) ADDI(ret, ret, tmp);
                         seg_done = 1;
                     } else
@@ -114,7 +114,7 @@ uintptr_t geted(dynarec_rv64_t* dyn, uintptr_t addr, int ninst, uint8_t nextop, 
             if (rex.is32bits) {
                 int tmp = F32S;
                 if (rex.seg && tmp >= -2048 && tmp < 2048) {
-                    grab_segdata(dyn, addr, ninst, ret, rex.seg, 0);
+                    grab_segdata(dyn, addr, ninst, ret, rex.seg);
                     if (tmp) ADDI(ret, ret, tmp);
                     seg_done = 1;
                 } else
@@ -264,7 +264,7 @@ uintptr_t geted(dynarec_rv64_t* dyn, uintptr_t addr, int ninst, uint8_t nextop, 
         if (scratch == ret)
             scratch = ret + 1;
         SCRATCH_USAGE(1);
-        grab_segdata(dyn, addr, ninst, scratch, rex.seg, 0);
+        grab_segdata(dyn, addr, ninst, scratch, rex.seg);
         // seg offset is 64bits, so no truncation here
         ADDxREGy(hint, scratch, ret, hint);
         ret = hint;
@@ -294,61 +294,56 @@ uintptr_t geted16(dynarec_rv64_t* dyn, uintptr_t addr, int ninst, uint8_t nextop
             case 1: offset = F8S; break;
             case 2: offset = F16S; break;
         }
-        if (offset && offset >= -2048 && offset <= 2047) {
+        if (i12 && offset && offset >= -2048 && offset <= 2047) {
             *fixaddress = offset;
             offset = 0;
         }
+        int reg;
         switch (m & 7) {
             case 0: // R_BX + R_SI
-                ZEXTH(ret, xRBX);
-                ZEXTH(scratch, xRSI);
-                ADD(ret, ret, scratch);
-                SCRATCH_USAGE(1);
+                ADD(ret, xRBX, xRSI);
+                reg = ret;
+                if (!IS_GPR(ret)) SCRATCH_USAGE(1);
                 break;
             case 1: // R_BX + R_DI
-                ZEXTH(ret, xRBX);
-                ZEXTH(scratch, xRDI);
-                ADD(ret, ret, scratch);
-                SCRATCH_USAGE(1);
+                ADD(ret, xRBX, xRDI);
+                reg = ret;
+                if (!IS_GPR(ret)) SCRATCH_USAGE(1);
                 break;
             case 2: // R_BP + R_SI
-                ZEXTH(ret, xRBP);
-                ZEXTH(scratch, xRSI);
-                ADD(ret, ret, scratch);
-                SCRATCH_USAGE(1);
+                ADD(ret, xRBP, xRSI);
+                reg = ret;
+                if (!IS_GPR(ret)) SCRATCH_USAGE(1);
                 break;
             case 3: // R_BP + R_DI
-                ZEXTH(ret, xRBP);
-                ZEXTH(scratch, xRDI);
-                ADD(ret, ret, scratch);
-                SCRATCH_USAGE(1);
+                ADD(ret, xRBP, xRDI);
+                reg = ret;
+                if (!IS_GPR(ret)) SCRATCH_USAGE(1);
                 break;
             case 4: // R_SI
-                ZEXTH(ret, xRSI);
-                if (!IS_GPR(ret)) SCRATCH_USAGE(1);
+                reg = xRSI;
                 break;
             case 5: // R_DI
-                ZEXTH(ret, xRDI);
-                if (!IS_GPR(ret)) SCRATCH_USAGE(1);
+                reg = xRDI;
                 break;
             case 6: // R_BP
-                ZEXTH(ret, xRBP);
-                if (!IS_GPR(ret)) SCRATCH_USAGE(1);
+                reg = xRBP;
                 break;
             case 7: // R_BX
-                ZEXTH(ret, xRBX);
-                if (!IS_GPR(ret)) SCRATCH_USAGE(1);
+                reg = xRBX;
                 break;
         }
+        ZEXTH(ret, reg);
+        if (!IS_GPR(ret)) SCRATCH_USAGE(1);
         if (offset) {
             if (offset >= -2048 && offset < 2048) {
                 ADDI(ret, ret, offset);
-                if (!IS_GPR(ret)) SCRATCH_USAGE(1);
             } else {
                 MOV64x(scratch, offset);
                 ADD(ret, ret, scratch);
                 SCRATCH_USAGE(1);
             }
+            ZEXTH(ret, ret);
         }
     }
 
@@ -356,7 +351,7 @@ uintptr_t geted16(dynarec_rv64_t* dyn, uintptr_t addr, int ninst, uint8_t nextop
         if (scratch == ret)
             scratch = ret + 1;
         SCRATCH_USAGE(1);
-        grab_segdata(dyn, addr, ninst, scratch, rex.seg, 0);
+        grab_segdata(dyn, addr, ninst, scratch, rex.seg);
         // seg offset is 64bits, so no truncation here
         if (IS_GPR(ret)) {
             ADD(hint, ret, scratch);
@@ -492,19 +487,18 @@ void jump_to_next(dynarec_rv64_t* dyn, uintptr_t ip, int reg, int ninst, int is3
 #endif
 }
 
-void ret_to_epilog(dynarec_rv64_t* dyn, uintptr_t ip, int ninst, rex_t rex)
+void ret_to_next(dynarec_rv64_t* dyn, uintptr_t ip, int ninst, rex_t rex)
 {
     MAYUSE(dyn);
     MAYUSE(ninst);
-    MESSAGE(LOG_DUMP, "Ret to epilog\n");
-    POP1z(xRIP);
+    MESSAGE(LOG_DUMP, "Ret to next\n");
     MVz(x1, xRIP);
     SMEND();
     if (BOX64DRENV(dynarec_callret)) {
-        // pop the actual return address from RV64 stack
-        LD(xRA, xSP, 0);      // native addr
-        LD(x6, xSP, 8);       // x86 addr
-        ADDI(xSP, xSP, 16);   // pop
+        // pop the actual return address from LA64 stack
+        LD(xRA, xSP, 0);    // native addr
+        LD(x6, xSP, 8);     // x86 addr
+        ADDI(xSP, xSP, 16); // pop
         BNE(x6, xRIP, 2 * 4); // is it the right address?
         BR(xRA);
         // not the correct return address, regular jump, but purge the stack first, it's unsync now...
@@ -517,43 +511,10 @@ void ret_to_epilog(dynarec_rv64_t* dyn, uintptr_t ip, int ninst, rex_t rex)
     CLEARIP();
 }
 
-void retn_to_epilog(dynarec_rv64_t* dyn, uintptr_t ip, int ninst, rex_t rex, int n)
+void iret_to_next(dynarec_rv64_t* dyn, uintptr_t ip, int ninst, int is32bits, int is64bits)
 {
-    MAYUSE(dyn);
     MAYUSE(ninst);
-    MESSAGE(LOG_DUMP, "Retn to epilog\n");
-    POP1z(xRIP);
-    if (n > 0x7ff) {
-        MOV64x(x1, n);
-        ADDz(xRSP, xRSP, x1);
-    } else {
-        ADDIz(xRSP, xRSP, n);
-    }
-    MVz(x1, xRIP);
-    SMEND();
-    if (BOX64DRENV(dynarec_callret)) {
-        // pop the actual return address from RV64 stack
-        LD(xRA, xSP, 0);      // native addr
-        LD(x6, xSP, 8);       // x86 addr
-        ADDI(xSP, xSP, 16);   // pop
-        BNE(x6, xRIP, 2 * 4); // is it the right address?
-        BR(xRA);
-        // not the correct return address, regular jump, but purge the stack first, it's unsync now...
-        LD(xSP, xEmu, offsetof(x64emu_t, xSPSave));
-        ADDI(xSP, xSP, -16);
-    }
-    NOTEST(x2);
-    int dest = indirect_lookup(dyn, ninst, rex.is32bits, x2, x3);
-    BR(dest);
-    CLEARIP();
-}
-
-void iret_to_epilog(dynarec_rv64_t* dyn, uintptr_t ip, int ninst, int is64bits)
-{
-    // #warning TODO: is64bits
-    MAYUSE(ninst);
-    MESSAGE(LOG_DUMP, "IRet to epilog\n");
-    NOTEST(x2);
+    MESSAGE(LOG_DUMP, "IRet to next\n");
     if (is64bits) {
         POP1(xRIP);
         POP1(x2);
@@ -584,13 +545,10 @@ void iret_to_epilog(dynarec_rv64_t* dyn, uintptr_t ip, int ninst, int is64bits)
     // set new RSP
     MV(xRSP, x3);
     // Ret....
-    // epilog on purpose, CS might have changed!
-    if (dyn->need_reloc)
-        TABLE64C(x2, const_epilog);
-    else
-        MOV64x(x2, getConst(const_epilog));
-    SMEND();
-    BR(x2);
+    rex_t dummy = { 0 };
+    dummy.is32bits = is32bits;
+    dummy.w = is64bits;
+    ret_to_next(dyn, ip, ninst, dummy);
     CLEARIP();
 }
 
@@ -617,13 +575,13 @@ void call_c(dynarec_rv64_t* dyn, int ninst, rv64_consts_t fnc, int reg, int ret,
         SD(xRIP, xEmu, offsetof(x64emu_t, ip));
     }
     TABLE64C(reg, fnc);
-    MV(A0, xEmu);
     if (arg1) MV(A1, arg1);
     if (arg2) MV(A2, arg2);
     if (arg3) MV(A3, arg3);
     if (arg4) MV(A4, arg4);
     if (arg5) MV(A5, arg5);
     if (arg6) MV(A6, arg6);
+    MV(A0, xEmu);
     JALR(xRA, reg);
     if (ret >= 0) {
         MV(ret, A0);
@@ -698,12 +656,11 @@ void call_n(dynarec_rv64_t* dyn, int ninst, void* fnc, int w)
     // SET_NODF();
 }
 
-void grab_segdata(dynarec_rv64_t* dyn, uintptr_t addr, int ninst, int reg, int segment, int modreg)
+void grab_segdata(dynarec_rv64_t* dyn, uintptr_t addr, int ninst, int reg, int segment)
 {
     (void)addr;
     int64_t j64;
     MAYUSE(j64);
-    if (modreg) return;
     MESSAGE(LOG_DUMP, "Get %s Offset\n", (segment == _FS) ? "FS" : "GS");
     LD(reg, xEmu, offsetof(x64emu_t, segs_offs[segment]));
     MESSAGE(LOG_DUMP, "----%s Offset\n", (segment == _FS) ? "FS" : "GS");
@@ -1103,7 +1060,6 @@ int x87_get_current_cache(dynarec_rv64_t* dyn, int ninst, int st, int t)
 #endif
             return i;
         }
-        assert(dyn->e.x87cache[i] < 8);
     }
     return -1;
 }
@@ -1150,7 +1106,7 @@ int x87_get_extcache(dynarec_rv64_t* dyn, int ninst, int s1, int s2, int st)
                 || dyn->e.extcache[ii].t == EXT_CACHE_ST_I64)
             && dyn->e.extcache[ii].n == st)
             return ii;
-    assert(0);
+    dynarec_log(LOG_NONE, "Warning: x87_get_extcache didn't find cache for ninst=%d\n", ninst);
     return -1;
 }
 int x87_get_st(dynarec_rv64_t* dyn, int ninst, int s1, int s2, int a, int t)
@@ -2624,16 +2580,16 @@ void fpu_reset_cache(dynarec_rv64_t* dyn, int ninst, int reset_n)
     // for STEP 2 & 3, just need to refresh with current, and undo the changes (push & swap)
     dyn->e = dyn->insts[ninst].e;
     dyn->vector_sew = dyn->insts[ninst].vector_sew_entry;
+    extcacheUnwind(&dyn->e);
 #else
     dyn->e = dyn->insts[reset_n].e;
     dyn->vector_sew = dyn->insts[reset_n].vector_sew_exit;
 #endif
-    extcacheUnwind(&dyn->e);
 #if STEP == 0
-    if (dyn->need_dump) dynarec_log(LOG_NONE, "New x87stack=%d\n", dyn->e.x87stack);
+    if(dyn->need_dump && dyn->e.x87stack) dynarec_log(LOG_NONE, "New x87stack=%d at ResetCache in inst %d with %d\n", dyn->e.x87stack, ninst, reset_n);
 #endif
 #if defined(HAVE_TRACE) && (STEP > 2)
-    if (dyn->need_dump)
+    if (dyn->need_dump && 0) // disable for now
         if (memcmp(&dyn->e, &dyn->insts[reset_n].e, sizeof(ext_cache_t))) {
             MESSAGE(LOG_DEBUG, "Warning, difference in extcache: reset=");
             for (int i = 0; i < 24; ++i)

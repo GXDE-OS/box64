@@ -49,6 +49,7 @@
 #include "cleanup.h"
 #include "freq.h"
 #include "hostext.h"
+#include "sysinfo.h"
 
 box64context_t *my_context = NULL;
 extern box64env_t box64env;
@@ -76,6 +77,7 @@ uint32_t default_gs = 0x53;
 uint32_t default_fs = 0;
 int box64_isglibc234 = 0;
 int box64_unittest_mode = 0;
+sysinfo_t box64_sysinfo = { 0 };
 
 #ifdef DYNAREC
 cpu_ext_t cpuext = {0};
@@ -159,9 +161,6 @@ static void openFTrace(void)
     }
 }
 
-const char* getCpuName();
-int getNCpuUnmasked();
-
 void computeRDTSC()
 {
     int hardware  = 0;
@@ -202,7 +201,7 @@ void computeRDTSC()
     printf_log_prefix(0, LOG_INFO, "\n");
 }
 
-static void displayMiscInfo()
+static void displayMiscInfo(void)
 {
     openFTrace();
 
@@ -222,15 +221,20 @@ static void displayMiscInfo()
         printf_log(LOG_INFO, "Minimum CPU requirements not met, disabling DynaRec\n");
         SET_BOX64ENV(dynarec, 0);
     }
+
+#if defined(LA64)
+    if (box64env.avx && !cpuext.lasx) {
+        box64env.avx = 0;
+        box64env.avx2 = 0;
+    }
+#endif
 #endif
 
-    // grab ncpu and cpu name
-    int ncpu = getNCpuUnmasked();
-    const char* cpuname = getCpuName();
-
-    printf_log(LOG_INFO, "Running on %s with %d core%s, pagesize: %zd\n", cpuname, ncpu, ncpu > 1 ? "s" : "", box64_pagesize);
-
-    // grab and calibrate hardware counter
+    printf_log(LOG_INFO, "Running on %s with %d core%s, pagesize: %zd", box64_sysinfo.cpuname, box64_sysinfo.ncpu, box64_sysinfo.ncpu > 1 ? "s" : "", box64_pagesize);
+    if (BOX64ENV(maxcpu))
+        printf_log_prefix(0, LOG_INFO, ", emulating %d core%s\n", BOX64ENV(maxcpu), BOX64ENV(maxcpu) > 1 ? "s" : "");
+    else
+        printf_log_prefix(0, LOG_INFO, "\n");
     computeRDTSC();
 }
 
@@ -411,17 +415,39 @@ static void addLibPaths(box64context_t* context)
     }
 
     // Add libssl and libcrypto (and a few others) to prefer the emulated version because multiple versions exist
-    AddPath("libssl.so.1", &context->box64_emulated_libs, 0);
-    AddPath("libssl.so.1.0.0", &context->box64_emulated_libs, 0);
-    AddPath("libcrypto.so.1", &context->box64_emulated_libs, 0);
-    AddPath("libcrypto.so.1.0.0", &context->box64_emulated_libs, 0);
-    AddPath("libunwind.so.8", &context->box64_emulated_libs, 0);
-    AddPath("libpng12.so.0", &context->box64_emulated_libs, 0);
-    AddPath("libcurl.so.4", &context->box64_emulated_libs, 0);
+    #define GO(A)   AddPath(A, &context->box64_emulated_libs, 0);
+    GO("libssl.so.1");
+    GO("libssl.so.1.0.0");
+    GO("libcrypto.so.1");
+    GO("libcrypto.so.1.0.0");
+    GO("libunwind.so.8");
+    GO("libpng12.so.0");
+    GO("libpng16.so.16");
+    GO("libcurl.so.4");
     if(getenv("BOX64_PRESSURE_VESSEL_FILES"))   // use emulated gnutls in this case, it's safer
-        AddPath("libgnutls.so.30", &context->box64_emulated_libs, 0);
-    AddPath("libtbbmalloc.so.2", &context->box64_emulated_libs, 0);
-    AddPath("libtbbmalloc_proxy.so.2", &context->box64_emulated_libs, 0);
+        GO("libgnutls.so.30");
+    GO("libtbbmalloc.so.2");
+    GO("libtbbmalloc_proxy.so.2");
+    GO("libicuuc.so.64");
+    GO("libicui18n.so.64");
+    GO("libicuuc.so.66");
+    GO("libicui18n.so.66");
+    GO("libicuuc.so.67");
+    GO("libicui18n.so.67");
+    GO("libicuuc.so.68");
+    GO("libicui18n.so.68");
+    GO("libicuuc.so.72");
+    GO("libicui18n.so.72");
+    GO("libicuuc.so.73");
+    GO("libicui18n.so.73");
+    GO("libicuuc.so.74");
+    GO("libicui18n.so.74");
+    GO("libicuuc.so.75");
+    GO("libicui18n.so.75");
+    GO("libicuuc.so.76");
+    GO("libicui18n.so.76");
+    GO("libSDL3.so.0");
+    #undef GO
 
     if(BOX64ENV(nosigsegv)) {
         context->no_sigsegv = 1;
@@ -471,8 +497,12 @@ void LoadLDPath(box64context_t *context)
             AddPath("/usr/lib/i386-linux-gnu", &context->box64_ld_lib, 1);
         if(FileExist("/usr/i386-linux-gnu/lib", 0))
             AddPath("/usr/i386-linux-gnu/lib", &context->box64_ld_lib, 1);
+        if(FileExist("/usr/i686-linux-gnu/lib", 0))
+            AddPath("/usr/i686-linux-gnu/lib", &context->box64_ld_lib, 1);
         if(FileExist("/usr/lib/box64-i386-linux-gnu", 0))
             AddPath("/usr/lib/box64-i386-linux-gnu", &context->box64_ld_lib, 1);
+        if(FileExist("/opt/box64/lib32", 0))
+            AddPath("/opt/box64/lib32", &context->box64_ld_lib, 1);
         if(FileExist("/data/data/com.termux/files/usr/glibc/lib/i386-linux-gnu", 0))
             AddPath("/data/data/com.termux/files/usr/glibc/lib/i386-linux-gnu", &context->box64_ld_lib, 1);
         if(FileExist("/data/data/com.termux/files/usr/glibc/lib/box64-i386-linux-gnu", 0))
@@ -489,6 +519,8 @@ void LoadLDPath(box64context_t *context)
             AddPath("/usr/x86_64-linux-gnu/lib", &context->box64_ld_lib, 1);
         if(FileExist("/usr/lib/box64-x86_64-linux-gnu", 0))
             AddPath("/usr/lib/box64-x86_64-linux-gnu", &context->box64_ld_lib, 1);
+        if(FileExist("/opt/box64/lib64", 0))
+            AddPath("/opt/box64/lib64", &context->box64_ld_lib, 1);
         if(FileExist("/data/data/com.termux/files/usr/glibc/lib/x86_64-linux-gnu", 0))
             AddPath("/data/data/com.termux/files/usr/glibc/lib/x86_64-linux-gnu", &context->box64_ld_lib, 1);
         if(FileExist("/data/data/com.termux/files/usr/glibc/lib/box64-x86_64-linux-gnu", 0))
@@ -638,6 +670,8 @@ void setupTrace()
 void endMallocHook();
 #endif
 
+void finiPendingDLOpenedNoUnload(x64emu_t* emu);
+
 void endBox64()
 {
     if(!my_context || box64_quit)
@@ -657,9 +691,30 @@ void endBox64()
     //void closeAllDLOpened();
     //closeAllDLOpened();    // close residual dlopened libs. Disabled, seems like a bad idea, better to unload with proper dependancies
     RunElfFini(my_context->elfs[0], emu);
+    printf_log(LOG_DEBUG, "Finished calling fini for dlopened libs\n");
+    finiPendingDLOpenedNoUnload(emu);   // call fini for dlopened libs, but don't unload them, as they might be needed by the main elf fini
     // unload needed libs
     needed_libs_t* needed = my_context->elfs[0]->needed;
     printf_log(LOG_DEBUG, "Unloaded main elf: Will Dec RefCount of %d libs\n", needed?needed->size:0);
+    int workers = get_active_emu_workers();
+    if (workers > 0) {
+        const int sleep_us = 10000;   // 10ms
+        const int max_wait_ms = 2000; // 2s
+        int waited_ms = 0;
+
+        printf_log(LOG_INFO, "endBox64: waiting emu workers to exit (n=%d)\n", workers);
+        while ((workers = get_active_emu_workers()) > 0 && waited_ms < max_wait_ms) {
+            usleep(sleep_us);
+            waited_ms += sleep_us / 1000;
+        }
+
+        if (workers > 0) {
+            printf_log(LOG_INFO,
+                "endBox64: %d emu workers still alive after %dms, skip unload/free to avoid UAF crash\n",
+                workers, waited_ms);
+            return;
+        }
+    }
     if(needed)
         for(int i=0; i<needed->size; ++i)
             DecRefCount(&needed->libs[i], emu);
@@ -716,10 +771,11 @@ extern char** environ;
 
 int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elfheader_t** elfheader, int exec)
 {
-    #ifndef STATICBUILD
+#ifndef STATICBUILD
     init_malloc_hook();
-    #endif
+#endif
     init_auxval(argc, argv, environ?environ:env);
+    ftrace = stderr;    // init early: BOX64_VERSION path below uses PrintfFtrace
     // analogue to QEMU_VERSION in qemu-user-mode emulation
     if(getenv("BOX64_VERSION")) {
         PrintBox64Version(0);
@@ -742,7 +798,14 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
         exit(0);
     }
 
-    if (argc >= 3 && (!strcmp(argv[1], "--test") || !strcmp(argv[1], "-t"))) {
+    int is_test = 0;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--test") || !strcmp(argv[i], "-t")) {
+            is_test = 1;
+            break;
+        }
+    }
+    if (is_test) {
         box64_unittest_mode = 1;
         exit(unittest(argc, argv));
     }
@@ -796,6 +859,7 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
 
     if (!BOX64ENV(nobanner)) PrintBox64Version(1);
 
+    InitializeSystemInfo();
     displayMiscInfo();
 
     hookMangoHud();
@@ -844,14 +908,6 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
             if(!prog_) prog_ = prog; else ++prog_;
         }
     }
-    #ifndef STATICBUILD
-    // pre-check for pressure-vessel-wrap
-    if(!strcmp(prog_, "pressure-vessel-wrap")) {
-        printf_log(LOG_INFO, "pressure-vessel-wrap detected\n");
-        unsetenv("BOX64_ARG0");
-        pressure_vessel(argc, argv, nextarg+1, prog);
-    }
-    #endif
     int ld_libs_args = -1;
     int is_custom_gstreamer = 0;
     // check if this is wine
@@ -948,6 +1004,17 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
     printf_log(LOG_INFO, "Counted %d Env var\n", my_context->envc);
     // allocate extra space for new environment variables such as BOX64_PATH
     my_context->envv = (char**)box_calloc(my_context->envc+1, sizeof(char*));
+
+    #ifndef STATICBUILD
+    // pre-check for pressure-vessel-wrap
+    if(!strcmp(prog_, "pressure-vessel-wrap")) {
+        printf_log(LOG_INFO, "pressure-vessel-wrap detected, bashpath=%s\n", my_context->bashpath?my_context->bashpath:"(nil)");
+        unsetenv("BOX64_ARG0");
+        if(!my_context->bashpath)
+            my_context->bashpath = ResolveFile("box64-bash", &my_context->box64_path);
+        pressure_vessel(argc, argv, nextarg+1, prog);
+    }
+    #endif
 
     path_collection_t ld_preload = {0};
     if(getenv("BOX64_LD_PRELOAD")) {
@@ -1049,15 +1116,17 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
     if(pythonpath)
         my_context->pythonpath = box_strdup(pythonpath);
 
-    ApplyEnvFileEntry(box64_guest_name);
+    int applied = ApplyEnvFileEntry(box64_guest_name);
     if (box64_wine && box64_wine_guest_name) {
-        ApplyEnvFileEntry(box64_wine_guest_name);
+        applied |= ApplyEnvFileEntry(box64_wine_guest_name);
         box64_wine_guest_name = NULL;
     }
-    // Try to open ftrace again after applying rcfile.
-    displayMiscInfo();
+    if (applied) {
+        printf_log(LOG_INFO, "Applied settings from rcfile\n");
+        displayMiscInfo();
+        PrintEnvVariables(&box64env, LOG_INFO);
+    }
     setupZydis(my_context);
-    PrintEnvVariables(&box64env, LOG_INFO);
 
     for(int i=1; i<my_context->argc; ++i) {
         my_context->argv[i] = box_strdup(argv[i+nextarg]);
@@ -1193,6 +1262,11 @@ int initialize(int argc, const char **argv, char** env, x64emu_t** emulator, elf
     }
     #endif
     LoadLDPath(my_context);
+    my_context->video_mem = mmap((void*)0xb0000, 0x10000, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    if(my_context->video_mem != (void*)0xb0000) {
+        my_context->video_mem = NULL;
+        printf_log(LOG_INFO, "Warning, could not allocate text video memory");
+    }
     elfheader_t *elf_header = LoadAndCheckElfHeader(f, my_context->fullpath, 1);
     if(!elf_header) {
         int x86 = my_context->box86path?FileIsX86ELF(my_context->fullpath):0;

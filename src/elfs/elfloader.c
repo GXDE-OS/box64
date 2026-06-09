@@ -10,6 +10,7 @@
 #include <link.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fnmatch.h>
 #ifndef _DLFCN_H
 #include <dlfcn.h>
 #endif
@@ -37,6 +38,8 @@
 #include "dictionnary.h"
 #include "symbols.h"
 #include "cleanup.h"
+#include "globalsymbols.h"
+#include "elfhacks.h"
 #ifdef DYNAREC
 #include "dynablock.h"
 #endif
@@ -265,9 +268,9 @@ int AllocLoadElfMemory(box64context_t* context, elfheader_t* head, int mainbin)
     if(image==MAP_FAILED || image!=(void*)(head->vaddr?head->vaddr:offs)) {
         printf_log(LOG_NONE, "%s cannot create memory map (@%p 0x%zx) for elf \"%s\"", (image==MAP_FAILED)?"Error:":"Warning:", (void*)(head->vaddr?head->vaddr:offs), head->memsz, head->name);
         if(image==MAP_FAILED) {
-            printf_log(LOG_NONE, " error=%d/%s\n", errno, strerror(errno));
+            printf_log_prefix(0, LOG_NONE, " error=%d/%s\n", errno, strerror(errno));
         } else {
-            printf_log(LOG_NONE, " got %p\n", image);
+            printf_log_prefix(0, LOG_NONE, " got %p\n", image);
         }
         if(image==MAP_FAILED)
             return 1;
@@ -396,8 +399,6 @@ int AllocLoadElfMemory(box64context_t* context, elfheader_t* head, int mainbin)
                         return 1;
                     }
                 }
-                if(!(prot&PROT_WRITE) && (paddr==(paddr&(box64_pagesize-1)) && (asize==ALIGN(asize))))
-                    mprotect((void*)paddr, asize, prot);
             }
 #ifdef DYNAREC
             if(BOX64ENV(dynarec) && (e->p_flags & PF_X)) {
@@ -423,6 +424,20 @@ int AllocLoadElfMemory(box64context_t* context, elfheader_t* head, int mainbin)
             // zero'd difference between filesz and memsz
             if(e->p_filesz != e->p_memsz)
                 memset(dest+e->p_filesz, 0, e->p_memsz - e->p_filesz);
+        }
+    }
+    // deferred mprotect: apply final protections after all segments are loaded
+    // this avoids the case where mprotect on a shared host page (e.g. 64KB) strips
+    // PROT_WRITE before a later segment that shares the same page has been read into memory
+    for (int j = 0; j < n; j++) {
+        if(!(head->multiblocks[j].flags & PF_W)) {
+            uintptr_t start = head->multiblocks[j].paddr & ~(box64_pagesize-1);
+            uintptr_t end = ALIGN(head->multiblocks[j].paddr + head->multiblocks[j].asize);
+            for(uintptr_t page = start; page < end; page += box64_pagesize) {
+                uint32_t prot = getProtection(page);
+                if(prot && !(prot & PROT_WRITE))
+                    mprotect((void*)page, box64_pagesize, prot & ~PROT_CUSTOM);
+            }
         }
     }
     // record map
@@ -643,6 +658,7 @@ static int RelocateElfRELA(lib_t *maplib, lib_t *local_maplib, int bindnow, int 
         uint64_t* globp;
         uintptr_t tmp = 0;
         intptr_t delta;
+        int global;
         switch(t) {
             case R_X86_64_NONE:
                 break;
@@ -685,13 +701,17 @@ static int RelocateElfRELA(lib_t *maplib, lib_t *local_maplib, int bindnow, int 
                 }
                 break;
             case R_X86_64_GLOB_DAT:
-                if(GetSymbolStartEnd(my_context->globdata, symname, &globoffs, &globend, version, vername, 1, veropt)) {
+                if((global = GetSymbolStartEnd(my_context->globdata, symname, &globoffs, &globend, version, vername, 1, veropt))) {
                     globp = (uint64_t*)globoffs;
                     printf_dump(LOG_NEVER, "Apply %s R_X86_64_GLOB_DAT with R_X86_64_COPY @%p/%p (%p/%p -> %p/%p) size=%zd on sym=%s (%sver=%d/%s) \n",
                         BindSym(bind), p, globp, (void*)(p?(*p):0),
                         (void*)(globp?(*globp):0), (void*)offs, (void*)globoffs, sym->st_size, symname, veropt?"opt":"", version, vername?vername:"(none)");
                     sym_elf = my_context->elfs[0];
                     *p = globoffs;
+                #ifndef STATICBUILD
+                    if(global==2)
+                        addGlobalRef(p, symname);
+                #endif
                 } else {
                     if (!offs) {
                         if(strcmp(symname, "__gmon_start__") && strcmp(symname, "data_start") && strcmp(symname, "__data_start") && strcmp(symname, "collector_func_load"))
@@ -1018,12 +1038,27 @@ int LoadNeededLibs(elfheader_t* h, lib_t *maplib, int local, int bindnow, int de
     if(h->needed)   // already done
         return 0;
     DumpDynamicRPath(h);
+    path_collection_t* rpathlist = NULL;
     // update RPATH first
     for (size_t i=0; i<h->numDynamic; ++i) {
         int tag = box64_is32bits?h->Dynamic._32[i].d_tag:h->Dynamic._64[i].d_tag;
         if(tag==DT_RPATH || tag==DT_RUNPATH) {
             char *rpathref = h->DynStrTab+h->delta+(box64_is32bits?h->Dynamic._32[i].d_un.d_val:h->Dynamic._64[i].d_un.d_val);
             char* rpath = rpathref;
+            while(strstr(rpath, "$$ORIGIN")) {
+                char* origin = box_strdup(h->path);
+                char* p = strrchr(origin, '/');
+                if(p) *p = '\0';    // remove file name to have only full path, without last '/'
+                char* tmp = (char*)box_calloc(1, strlen(rpath)-strlen("$$ORIGIN")+strlen(origin)+1);
+                p = strstr(rpath, "$$ORIGIN");
+                memcpy(tmp, rpath, p-rpath);
+                strcat(tmp, origin);
+                strcat(tmp, p+strlen("$$ORIGIN"));
+                if(rpath!=rpathref)
+                    box_free(rpath);
+                rpath = tmp;
+                box_free(origin);
+            }
             while(strstr(rpath, "$ORIGIN")) {
                 char* origin = box_strdup(h->path);
                 char* p = strrchr(origin, '/');
@@ -1051,6 +1086,19 @@ int LoadNeededLibs(elfheader_t* h, lib_t *maplib, int local, int bindnow, int de
                     box_free(rpath);
                 rpath = tmp;
                 box_free(origin);
+                if(!FileExist(rpath, 0) && strstr(rpath, "/../../")) {
+                    tmp = (char*)box_calloc(1, strlen(rpath)+1);
+                    strcpy(tmp, rpath);
+                    // check if one "/.." could be removed for the folder to exist
+                    char* p = strstr(tmp, "/../../");
+                    memmove(p, p+3, strlen(p+3)+1);
+                    if(FileExist(tmp, 0)) {
+                        if(rpath!=rpathref)
+                            box_free(rpath);
+                        rpath = tmp;
+                    } else
+                        box_free(tmp);
+                }
             }
             while(strstr(rpath, "${PLATFORM}")) {
                 char* platform = box_strdup("x86_64");
@@ -1070,7 +1118,13 @@ int LoadNeededLibs(elfheader_t* h, lib_t *maplib, int local, int bindnow, int de
                 printf_log(LOG_INFO, "Warning, RPATH with $ variable not supported yet (%s)\n", rpath);
             } else {
                 printf_log(LOG_DEBUG, "Prepending path \"%s\" to BOX64_LD_LIBRARY_PATH\n", rpath);
-                PrependList(&box64->box64_ld_lib, rpath, 1);
+                if(h == box64->elfs[0])
+                    PrependList(&box64->box64_ld_lib, rpath, 1);
+                else {
+                    if(!rpathlist)
+                        rpathlist = box_calloc(1, sizeof(path_collection_t));
+                    PrependList(rpathlist, rpath, 1);
+                }
             }
             if(rpath!=rpathref)
                 box_free(rpath);
@@ -1091,6 +1145,7 @@ int LoadNeededLibs(elfheader_t* h, lib_t *maplib, int local, int bindnow, int de
         ++cnt;
     #endif
     h->needed = new_neededlib(cnt);
+    h->needed->rpath = rpathlist;
     if(h == my_context->elfs[0])
         my_context->neededlibs = h->needed;
     int j=0;
@@ -1168,6 +1223,9 @@ void RunElfInit(elfheader_t* h, x64emu_t *emu)
 {
     if(!h || h->init_done)
         return;
+    // adjust elf Dynamic section header with the delta of the load address if needed
+    // but do not adjust if there is no libs loaded as it will use it's own loader to do similar stuffs
+    if(!box64_nolibs) PatchLoadedDynamicSection(h);
     // reset Segs Cache
     uintptr_t p = h->initentry + h->delta;
     // Refresh no-file part of TLS in case default value changed
@@ -1472,6 +1530,141 @@ void* GetDynamicSection(elfheader_t* h)
     if(!h)
         return NULL;
     return box64_is32bits?((void*)h->Dynamic._32):((void*)h->Dynamic._64);
+}
+
+typedef struct {
+    void*   addr;
+    size_t  size;
+} dynamic_info_t;
+
+static int GetLoadedDynamicInfo(elfheader_t* h, dynamic_info_t* info)
+{
+    if(!h) return 0;
+    if(box64_is32bits) {
+        for(int i = 0; i < h->numPHEntries; i++) {
+            if(h->PHEntries._32[i].p_type == PT_DYNAMIC) {
+                info->addr = (void*)(h->delta + h->PHEntries._32[i].p_vaddr);
+                info->size = h->PHEntries._32[i].p_memsz;
+                return 1;
+            }
+        }
+    } else {
+        for(int i = 0; i < h->numPHEntries; i++) {
+            if(h->PHEntries._64[i].p_type == PT_DYNAMIC) {
+                info->addr = (void*)(h->delta + h->PHEntries._64[i].p_vaddr);
+                info->size = h->PHEntries._64[i].p_memsz;
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+void* GetLoadedDynamicSection(elfheader_t* h)
+{
+    dynamic_info_t info;
+    if(GetLoadedDynamicInfo(h, &info))
+        return info.addr;
+    return NULL;
+}
+
+int isDynamicTagPointer(int tag)
+{
+    switch(tag) {
+        case DT_PLTGOT:
+        case DT_HASH:
+        case DT_STRTAB:
+        case DT_SYMTAB:
+        case DT_RELA:
+        case DT_REL:
+        case DT_RELR:
+        case DT_DEBUG:
+        case DT_JMPREL:
+        case DT_INIT:
+        case DT_FINI:
+        case DT_INIT_ARRAY:
+        case DT_FINI_ARRAY:
+        case DT_PREINIT_ARRAY:
+        case DT_VERNEED:
+        case DT_VERDEF:
+        case DT_VERSYM:
+#ifdef DT_GNU_HASH
+        case DT_GNU_HASH:
+#else
+        case 0x6ffffef5:
+#endif
+#ifdef DT_TLSDESC_PLT
+        case DT_TLSDESC_PLT:
+#else
+        case 0x6ffffef6:
+#endif
+#ifdef DT_TLSDESC_GOT
+        case DT_TLSDESC_GOT:
+#else
+        case 0x6ffffef7:
+#endif
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+void PatchLoadedDynamicSection(elfheader_t* h)
+{
+    if(!h || !h->delta || h->dynamic_patched)
+        return;
+
+    dynamic_info_t dyninfo;
+    if(!GetLoadedDynamicInfo(h, &dyninfo))
+        return;
+
+    uintptr_t dyn_addr = (uintptr_t)dyninfo.addr;
+    uintptr_t dyn_size = dyninfo.size;
+
+    uintptr_t page_addr = dyn_addr & ~(box64_pagesize - 1);
+    uintptr_t page_end = (dyn_addr + dyn_size + box64_pagesize - 1) & ~(box64_pagesize - 1);
+
+    int need_restore = 0;
+    for(uintptr_t page = page_addr; page < page_end; page += box64_pagesize) {
+        uint32_t old_prot = getProtection(page);
+        if(old_prot && !(old_prot & PROT_WRITE)) {
+            if(mprotect((void*)page, box64_pagesize, (old_prot | PROT_WRITE) & ~PROT_CUSTOM)) {
+                for(uintptr_t restore = page_addr; restore < page; restore += box64_pagesize) {
+                    uint32_t restore_prot = getProtection(restore);
+                    if(restore_prot && !(restore_prot & PROT_WRITE))
+                        mprotect((void*)restore, box64_pagesize, restore_prot & ~PROT_CUSTOM);
+                }
+                return;
+            }
+            need_restore = 1;
+        }
+    }
+
+    if(box64_is32bits) {
+        Elf32_Dyn* dyn = (Elf32_Dyn*)dyn_addr;
+        for(int j = 0; dyn[j].d_tag != DT_NULL; j++) {
+            if(isDynamicTagPointer(dyn[j].d_tag) && dyn[j].d_un.d_ptr) {
+                dyn[j].d_un.d_ptr += h->delta;
+            }
+        }
+    } else {
+        Elf64_Dyn* dyn = (Elf64_Dyn*)dyn_addr;
+        for(int j = 0; dyn[j].d_tag != DT_NULL; j++) {
+            if(isDynamicTagPointer(dyn[j].d_tag) && dyn[j].d_un.d_ptr) {
+                dyn[j].d_un.d_ptr += h->delta;
+            }
+        }
+    }
+
+    if(need_restore) {
+        for(uintptr_t page = page_addr; page < page_end; page += box64_pagesize) {
+            uint32_t old_prot = getProtection(page);
+            if(old_prot && !(old_prot & PROT_WRITE))
+                mprotect((void*)page, box64_pagesize, old_prot & ~PROT_CUSTOM);
+        }
+    }
+
+    h->dynamic_patched = 1;
 }
 
 typedef struct my_dl_phdr_info_s {
@@ -1797,29 +1990,32 @@ int NeededLibs(elfheader_t* h)
 
 typedef struct search_symbol_s{
     const char* name;
-    void*       addr;
-    void*       lib;
+    void* addr;
 } search_symbol_t;
-int dl_iterate_phdr_findsymbol(struct dl_phdr_info* info, size_t size, void* data)
-{
-    search_symbol_t* s = (search_symbol_t*)data;
 
-    for(int j = 0; j<info->dlpi_phnum; ++j) {
-        if (info->dlpi_phdr[j].p_type == PT_DYNAMIC) {
-            ElfW(Sym)* sym = NULL;
-            ElfW(Word) sym_cnt = 0;
+int dl_iterate_phdr_findsymbol(eh_obj_t* obj, search_symbol_t* s)
+{
+    // special case for dlsym -- it's not a versionned symbol in libMangoHud_shim.so.
+    if (!fnmatch("*libMangoHud_shim.so*", obj->name, 0) && !strcmp(s->name, "dlsym")) {
+        eh_find_sym(obj, "dlsym", &s->addr);
+        eh_destroy_obj(obj);
+        return !!s->addr;
+    }
+
+    for (int j = 0; j < obj->phnum; ++j) {
+        if (obj->phdr[j].p_type == PT_DYNAMIC) {
             ElfW(Verdef)* verdef = NULL;
             ElfW(Word) verdef_cnt = 0;
-            char *strtab = NULL;
-            ElfW(Dyn)* dyn = (ElfW(Dyn)*)(info->dlpi_addr +  info->dlpi_phdr[j].p_vaddr); //Dynamic Section
+            char* strtab = NULL;
+            ElfW(Dyn)* dyn = (ElfW(Dyn)*)(obj->addr + obj->phdr[j].p_vaddr);
             // grab the needed info
-            while(dyn->d_tag != DT_NULL) {
-                switch(dyn->d_tag) {
+            while (dyn->d_tag != DT_NULL) {
+                switch (dyn->d_tag) {
                     case DT_STRTAB:
-                        strtab = (char *)(dyn->d_un.d_ptr);
+                        strtab = (char*)(dyn->d_un.d_ptr);
                         break;
                     case DT_VERDEF:
-                        verdef = (ElfW(Verdef)*)(info->dlpi_addr +  dyn->d_un.d_ptr);
+                        verdef = (ElfW(Verdef)*)(obj->addr + dyn->d_un.d_ptr);
                         break;
                     case DT_VERDEFNUM:
                         verdef_cnt = dyn->d_un.d_val;
@@ -1827,42 +2023,27 @@ int dl_iterate_phdr_findsymbol(struct dl_phdr_info* info, size_t size, void* dat
                 }
                 ++dyn;
             }
-            if(strtab && verdef && verdef_cnt) {
-                if((uintptr_t)strtab < (uintptr_t)info->dlpi_addr) // this test is need for linux-vdso on PI and some other OS (looks like a bug to me)
-                    strtab=(char*)((uintptr_t)strtab + info->dlpi_addr);
-                // Look fr all defined versions now
-                ElfW(Verdef)* v = verdef;
-                while(v) {
-                    ElfW(Verdaux)* vda = (ElfW(Verdaux)*)(((uintptr_t)v) + v->vd_aux);
-                    if(v->vd_version>0 && !v->vd_flags)
-                        for(int i=0; i<v->vd_cnt; ++i) {
-                            const char* vername = (strtab+vda->vda_name);
-                            if(vername && vername[0] && (s->addr = dlvsym(s->lib, s->name, vername))) {
-                                printf_log(/*LOG_DEBUG*/LOG_INFO, "Found symbol with version %s, value = %p\n", vername, s->addr);
-                                return 1;   // stop searching
-                            }
-                            vda = (ElfW(Verdaux)*)(((uintptr_t)vda) + vda->vda_next);
-                        }
-                    v = v->vd_next?(ElfW(Verdef)*)((uintptr_t)v + v->vd_next):NULL;
+
+            if (strtab && verdef && verdef_cnt) {
+                eh_find_sym(obj, s->name, &s->addr);
+                if (s->addr) {
+                    eh_destroy_obj(obj);
+                    return 1;
                 }
             }
         }
     }
+
+    eh_destroy_obj(obj);
     return 0;
 }
 
 void* GetNativeSymbolUnversioned(void* lib, const char* name)
 {
-    // try to find "name" in loaded elf, whithout checking for the symbol version (like dlsym, but no version check)
     search_symbol_t s;
     s.name = name;
     s.addr = NULL;
-    if(lib)
-        s.lib = lib;
-    else
-        s.lib = my_context->box64lib;
-    printf_log(LOG_INFO, "Look for %s in loaded elfs\n", name);
-    dl_iterate_phdr(dl_iterate_phdr_findsymbol, &s);
+    eh_iterate_obj((eh_iterate_obj_callback_func)dl_iterate_phdr_findsymbol, &s);
     return s.addr;
 }
 

@@ -15,6 +15,7 @@ typedef int32_t (*iFv_t)(void);
 typedef int32_t (*iFi_t)(int32_t);
 typedef int32_t (*iFf_t)(float);
 typedef int32_t (*iFd_t)(double);
+typedef int32_t (*iFp_t)(void*);
 typedef int64_t (*IFf_t)(float);
 typedef int64_t (*IFd_t)(double);
 typedef float (*fFf_t)(float);
@@ -34,9 +35,14 @@ typedef double (*DFDD_t)(double, double);
 
 #define SUPER() ADDED_FUNCTIONS() \
 	GO(fegetround, iFv_t) \
+	GO(feclearexcept, iFi_t) \
+	GO(feraiseexcept, iFi_t) \
 	GO(fesetround, iFi_t) \
+	GO(fetestexcept, iFi_t) \
 	GO(lrintf, iFf_t) \
 	GO(lrint, iFd_t) \
+	GO(fesetenv, iFp_t) \
+	GO(feupdateenv, iFp_t) \
 	GO(llrintf, IFf_t) \
 	GO(llrint, IFd_t) \
 	GO(llrintl, IFD_t) \

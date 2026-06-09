@@ -43,9 +43,8 @@ typedef union sse_cache_s {
 typedef union avx_cache_s {
     int8_t v;
     struct {
-        uint8_t reg : 5;
-        uint8_t width : 1;
-        uint8_t zero_upper : 1;        
+        uint8_t reg : 6;
+        uint8_t dirty : 1;
         uint8_t write : 1;
     };
 } avx_cache_t;
@@ -79,12 +78,15 @@ typedef struct lsxcache_s {
     uint16_t        ymm_used;       // mask of the ymm regs used in this opcode
 } lsxcache_t;
 
-typedef struct flagcache_s {
-    int                 pending;    // is there a pending flags here, or to check?
-    uint8_t             dfnone;     // if deferred flags is already set to df_none
+typedef enum flagcache_s {
+    status_unk = 0,      // unknown deferred flags status
+    status_set,          // deferred flags set to something (not 0)
+    status_none_pending, // deferred flags set to 0, but still pending the write to x64emu_t
+    status_none,         // deferred flags set to 0, written to x64emu_t
 } flagcache_t;
 
 typedef struct callret_s callret_t;
+typedef struct sep_s sep_t;
 
 typedef struct instruction_la64_s {
     instruction_x64_t   x64;
@@ -108,11 +110,14 @@ typedef struct instruction_la64_s {
     uint8_t             will_read:1;     // [strongmem] will read from memory
     uint8_t             last_write:1;    // [strongmem] the last write in a SEQ
     uint8_t             lock:1;          // [strongmem] lock semantic
-    uint8_t             df_notneeded;
+    uint8_t             df_needed:1;
+    uint8_t             df_notneeded:1;
+    uint8_t             sep:1;           // opcode is a secondary entry point
     uint8_t             nat_flags_fusion:1;
     uint8_t             nat_flags_nofusion:1;
     uint8_t             nat_flags_carry:1;
     uint8_t             nat_flags_sign:1;
+    uint8_t             nat_flags_sf:1;
     uint8_t             nat_flags_needsign:1;
     uint8_t             no_scratch_usage : 1; // this opcode does not use scratch register
     uint8_t             nat_flags_op1;
@@ -158,7 +163,9 @@ typedef struct dynarec_la64_s {
     instsize_t*          instsize;
     size_t               insts_size; // size of the instruction size array (calculated)
     int                  callret_size;   // size of the array
-    callret_t*           callrets;   // arrey of callret return, with NOP / UDF depending if the block is clean or dirty
+    int                  sep_size;   // size of the array
+    callret_t*           callrets;   // array of callret return, with NOP / UDF depending if the block is clean or dirty
+    sep_t*               sep;        // array of secondary entry point
     uintptr_t            forward;    // address of the last end of code while testing forward
     uintptr_t            forward_to; // address of the next jump to (to check if everything is ok)
     int32_t              forward_size;   // size at the forward point
@@ -171,6 +178,7 @@ typedef struct dynarec_la64_s {
     uint8_t              use_mmx:1;
     uint8_t              use_xmm:1;
     uint8_t              use_ymm:1;
+    uint8_t              is_file_mapped:1;
     void*                gdbjit_block;
     uint32_t             need_x87check; // x87 low precision check
     uint32_t             need_dump;     // need to dump the block

@@ -11,7 +11,9 @@
 #define ADDED_FUNCTIONS() 
 #endif
 
+typedef void (*vFpp_t)(void*, void*);
 typedef void (*vFppp_t)(void*, void*, void*);
+typedef void* (*pFplp_t)(void*, intptr_t, void*);
 typedef void (*vFippp_t)(int32_t, void*, void*, void*);
 typedef void (*vFppip_t)(void*, void*, int32_t, void*);
 typedef void (*vFpppp_t)(void*, void*, void*, void*);
@@ -45,9 +47,14 @@ typedef uint32_t (*uFppppppuppp_t)(void*, void*, void*, void*, void*, void*, uin
 typedef void (*vFpppppppuippp_t)(void*, void*, void*, void*, void*, void*, void*, uint32_t, int32_t, void*, void*, void*);
 
 #define SUPER() ADDED_FUNCTIONS() \
+	GO(g_task_run_in_thread, vFpp_t) \
+	GO(g_task_run_in_thread_sync, vFpp_t) \
 	GO(g_simple_async_result_set_op_res_gpointer, vFppp_t) \
 	GO(g_task_return_pointer, vFppp_t) \
+	GO(g_task_set_task_data, vFppp_t) \
+	GO(g_memory_input_stream_new_from_data, pFplp_t) \
 	GO(g_bus_get, vFippp_t) \
+	GO(g_action_map_add_action_entries, vFppip_t) \
 	GO(g_simple_async_result_run_in_thread, vFppip_t) \
 	GO(g_dbus_connection_close, vFpppp_t) \
 	GO(g_dbus_connection_flush, vFpppp_t) \

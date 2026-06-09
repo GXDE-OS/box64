@@ -21,6 +21,7 @@ option(SD845 "Set to ON if targeting a Snapdragon 845 based device" ${SD845})
 option(SD865 "Set to ON if targeting a Snapdragon 865 based device" ${SD865})
 option(SD888 "Set to ON if targeting a Snapdragon 888 based device" ${SD888})
 option(SD8G2 "Set to ON if targeting a Snapdragon 8 Gen 2 based device" ${SD8G2})
+option(SD8EG5 "Set to ON if targeting a Snapdragon 8 Elite Gen 5 (SM8850) based device" ${SD8EG5})
 option(SDORYON1 "Set to ON if targeting a Snapdragon Oryon 1 (X1E80100/X1E78100) based device" ${SDORYON1})
 option(ADLINK "Set to ON if targeting an ADLink AmpereAltra based device" ${ADLINK})
 option(M1 "Set to ON if targeting a AppleM1 running on Asahi computer" ${M1})
@@ -68,6 +69,7 @@ if(LARCH64)
     set(ARM_DYNAREC OFF CACHE BOOL "")
     set(RV64_DYNAREC OFF CACHE BOOL "")
     set(LARCH64_DYNAREC ON CACHE BOOL "")
+    set(PPC64LE_DYNAREC OFF CACHE BOOL "")
     set(BAD_PKILL ON CACHE BOOL "")
     if(LARCH64_ABI_1)
         message(STATUS "Build for Loongarch64 ABI 1.0 system")
@@ -80,6 +82,7 @@ if(RV64)
     set(ARM_DYNAREC OFF CACHE BOOL "")
     set(RV64_DYNAREC ON CACHE BOOL "")
     set(LARCH64_DYNAREC OFF CACHE BOOL "")
+    set(PPC64LE_DYNAREC OFF CACHE BOOL "")
 endif()
 if(PPC64LE)
     set(LD80BITS OFF CACHE BOOL "")
@@ -87,13 +90,15 @@ if(PPC64LE)
     set(ARM_DYNAREC OFF CACHE BOOL "")
     set(RV64_DYNAREC OFF CACHE BOOL "")
     set(LARCH64_DYNAREC OFF CACHE BOOL "")
+    set(PPC64LE_DYNAREC ON CACHE BOOL "")
 endif()
-if(RK3399 OR RK3588 OR ODROIDN2 OR RPI3ARM64 OR RPI4ARM64 OR RPI5ARM64 OR RK3326 OR TEGRAX1 OR TEGRA_T194 OR TEGRA_T234 OR NVIDIA_GB10 OR PHYTIUM OR SD845 OR SD865 OR SD888 OR SD8G2 OR SDORYON1 OR LX2160A OR M1 OR ARM64 OR ADLINK)
+if(RK3399 OR RK3588 OR ODROIDN2 OR RPI3ARM64 OR RPI4ARM64 OR RPI5ARM64 OR RK3326 OR TEGRAX1 OR TEGRA_T194 OR TEGRA_T234 OR NVIDIA_GB10 OR PHYTIUM OR SD845 OR SD865 OR SD888 OR SD8G2 OR SDORYON1 OR SD8EG5 OR LX2160A OR M1 OR ARM64 OR ADLINK)
     set(LD80BITS OFF CACHE BOOL "")
     set(NOALIGN OFF CACHE BOOL "")
     set(ARM_DYNAREC ON CACHE BOOL "")
     set(RV64_DYNAREC OFF CACHE BOOL "")
     set(LARCH64_DYNAREC OFF CACHE BOOL "")
+    set(PPC64LE_DYNAREC OFF CACHE BOOL "")
 endif()
 if(RK3399 OR ODROIDN2 OR RPI3ARM64 OR RPI4ARM64 OR RPI5ARM64)
     set(SAVE_MEM ON CACHE BOOL "")
@@ -121,6 +126,7 @@ option(NOALIGN "Set to ON if host device doesn't need re-align (i.e. i386)" ${NO
 option(ARM_DYNAREC "Set to ON to use ARM Dynamic Recompilation" ${ARM_DYNAREC})
 option(RV64_DYNAREC "Set to ON to use RISC-V Dynamic Recompilation" ${RV64_DYNAREC})
 option(LARCH64_DYNAREC "Set to ON to use LOONGARCH64 Dynamic Recompilation" ${LARCH64_DYNAREC})
+option(PPC64LE_DYNAREC "Set to ON to use PPC64LE Dynamic Recompilation" ${PPC64LE_DYNAREC})
 option(STATICBUILD "Set to ON to have a static build (Warning, not working)" ${STATICBUILD})
 option(NO_LIB_INSTALL "Set ON to not install a few x86_64 libs that are used by many program" ${NO_LIB_INSTALL})
 option(NO_CONF_INSTALL "Set ON to not install config files" ${NO_CONF_INSTALL})
@@ -205,6 +211,17 @@ elseif(SD888)
 elseif(SD8G2)
     add_definitions(-DSD8G2)
     set(CFLAGS -pipe -march=armv9-a+i8mm+sm4+sha3+rcpc+crypto+nosve+nosve2)
+elseif(SD8EG5)
+    add_definitions(-DSD8EG5)
+    # NOTE
+    # Even though Qualcomm Snapdragon 8 Elite Gen 5 relies on 3rd generation Oryon cores, it seems like the support for them 
+    # is not yet present in GCC and Clang, so for now we will use mostly the same optimization flags as SDORYON1, which houses
+    # 1st generation Oryon cores. This should still be fine since the main difference between the 
+    # two is the presence of SVE and SVE2, which are not yet used in Box64's ARM64 dynarec.
+    #
+    # As noted in the SDORYON1 section, GCC 14 and Clang 19 support oryon-1 as a -mcpu/-mtune argument, however it seems like 
+    # Fedora does not like them very much, so this option should be taken with a grain of salt. It worked in my test case just fine.
+    set(CFLAGS -pipe -march=armv8.7-a+crypto+sm4+sha3+fp16+sve+sve2 -mtune=oryon-1)
 elseif(SDORYON1)
     add_definitions(-DSDORYON1)
     # NOTE
@@ -239,6 +256,8 @@ elseif(RV64)
     set(ASMFLAGS  -pipe -march=rv64gc)
 elseif(PPC64LE)
     add_definitions(-DPPC64LE)
+    set(CFLAGS -pipe -mcpu=power9)
+    set(ASMFLAGS  -pipe -mcpu=power9)
 elseif(LX2160A)
     add_definitions(-DLX2160A)
     set(CFLAGS -pipe -march=armv8-a+crypto+crc -mcpu=cortex-a72+crypto)
@@ -280,6 +299,9 @@ if(STATICBUILD)
     set(BUILD_SHARED_LIBS OFF)
     set(CMAKE_EXE_LINKER_FLAGS -static)
     set(HAVE_TRACE OFF)
+    if(PPC64LE)
+        add_definitions(-fno-stack-protector)
+    endif()
 endif()
 if(BOX32)
     add_definitions(-DBOX32)
@@ -336,6 +358,12 @@ elseif(LARCH64_DYNAREC)
     enable_language(ASM)
     include_directories("${BOX64_ROOT}/src/dynarec/la64")
     set(DYNAREC ON)
+elseif(PPC64LE_DYNAREC)
+    add_definitions(-DDYNAREC)
+    add_definitions(-DPPC64LE)
+    enable_language(ASM)
+    include_directories("${BOX64_ROOT}/src/dynarec/ppc64le")
+    set(DYNAREC ON)
 else()
     set(DYNAREC OFF)
 endif()
@@ -380,8 +408,9 @@ set(OS_LINUX_SRC
     "${BOX64_ROOT}/src/os/os_linux.c"
     "${BOX64_ROOT}/src/os/perfmap.c"
     "${BOX64_ROOT}/src/os/symbolfuncs_linux.c"
-    "${BOX64_ROOT}/src/os/my_cpuid_linux.c"
-    "${BOX64_ROOT}/src/os/my_cpuid_common.c"
+    "${BOX64_ROOT}/src/os/random_linux.c"
+    "${BOX64_ROOT}/src/os/my_cpuid.c"
+    "${BOX64_ROOT}/src/os/sysinfo.c"
 )
 
 set(ELFLOADER_SRC
@@ -394,6 +423,7 @@ set(ELFLOADER_SRC
     "${BOX64_ROOT}/src/custommmap.c"
     "${BOX64_ROOT}/src/dynarec/dynarec.c"
     "${BOX64_ROOT}/src/elfs/elfloader.c"
+    "${BOX64_ROOT}/src/elfs/elfhacks.c"
     "${BOX64_ROOT}/src/elfs/elfparser.c"
     "${BOX64_ROOT}/src/elfs/elfhash.c"
     "${BOX64_ROOT}/src/elfs/elfload_dump.c"
@@ -417,6 +447,7 @@ set(ELFLOADER_SRC
     "${BOX64_ROOT}/src/libtools/auxval.c"
     "${BOX64_ROOT}/src/libtools/myalign.c"
     "${BOX64_ROOT}/src/libtools/signals.c"
+    "${BOX64_ROOT}/src/libtools/sigtools.c"
     "${BOX64_ROOT}/src/libtools/decopcode.c"
     "${BOX64_ROOT}/src/libtools/threads.c"
     "${BOX64_ROOT}/src/tools/bitutils.c"
@@ -480,6 +511,13 @@ if(NOT ANDROID)
     )
 endif()
 
+if(NOT STATICBUILD AND NOT ANDROID)
+    list(APPEND ELFLOADER_SRC
+        "${BOX64_ROOT}/src/libtools/libdl.c"
+        "${BOX64_ROOT}/src/libtools/vulkanoverlay.c"
+    )
+endif()
+
 set(INTERPRETER
     "${BOX64_ROOT}/src/emu/x64run.c"
     "${BOX64_ROOT}/src/emu/x64run0f.c"
@@ -537,6 +575,10 @@ set(WRAPPEDS
     "${BOX64_ROOT}/src/wrapped/wrappedatomic.c"
     "${BOX64_ROOT}/src/wrapped/wrappedatspi.c"
     "${BOX64_ROOT}/src/wrapped/wrappedayatanaappindicator3.c"
+    "${BOX64_ROOT}/src/wrapped/wrappedayatanaindicator3.c"
+    "${BOX64_ROOT}/src/wrapped/wrappedayatanaido3.c"
+    "${BOX64_ROOT}/src/wrapped/wrappedavahiclient.c"
+    "${BOX64_ROOT}/src/wrapped/wrappedavahicommon.c"
     "${BOX64_ROOT}/src/wrapped/wrappedbz2.c"
     "${BOX64_ROOT}/src/wrapped/wrappedcap.c"
     "${BOX64_ROOT}/src/wrapped/wrappedcuda.c"
@@ -593,6 +635,7 @@ set(WRAPPEDS
     "${BOX64_ROOT}/src/wrapped/wrappedgthread2.c"
     "${BOX64_ROOT}/src/wrapped/wrappedgtk3.c"
     "${BOX64_ROOT}/src/wrapped/wrappedgtkx112.c"
+    "${BOX64_ROOT}/src/wrapped/wrappedharfbuzzsubset.c"
     "${BOX64_ROOT}/src/wrapped/wrappedkrb5.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlcms2.c"
     "${BOX64_ROOT}/src/wrapped/wrappedldlinux.c"
@@ -606,6 +649,7 @@ set(WRAPPEDS
     "${BOX64_ROOT}/src/wrapped/wrappedlibcmusl.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibcrypt.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibcups.c"
+    "${BOX64_ROOT}/src/wrapped/wrappedlibcupsimage.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibdl.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibdrm.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibdrmamdgpu.c"
@@ -618,20 +662,24 @@ set(WRAPPEDS
     "${BOX64_ROOT}/src/wrapped/wrappedlibglu.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibglx.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibglxnvidia.c"
+    "${BOX64_ROOT}/src/wrapped/wrappedlibgpgme.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibharfbuzz.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibibus.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibice.c"
     "${BOX64_ROOT}/src/wrapped/wrappedliblapack.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibm.c"
+    "${BOX64_ROOT}/src/wrapped/wrappedlibmvec.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibncurses.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibncurses6.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibncursesw.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibncursesw6.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibnuma.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibogg.c"
+    "${BOX64_ROOT}/src/wrapped/wrappedlibomp.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibpanel.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibpci.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibpcre.c"
+    "${BOX64_ROOT}/src/wrapped/wrappedlibpcre216.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibpthread.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibresolv.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibrt.c"
@@ -648,6 +696,7 @@ set(WRAPPEDS
     "${BOX64_ROOT}/src/wrapped/wrappedlibvawayland.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibvax11.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibvdpau.c"
+    "${BOX64_ROOT}/src/wrapped/wrappedlibvpx.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibvorbis.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibx11.c"
     "${BOX64_ROOT}/src/wrapped/wrappedlibx11xcb.c"
@@ -728,10 +777,13 @@ set(WRAPPEDS
     "${BOX64_ROOT}/src/wrapped/wrappedsdl2mixer.c"
     "${BOX64_ROOT}/src/wrapped/wrappedsdl2net.c"
     "${BOX64_ROOT}/src/wrapped/wrappedsdl2ttf.c"
+    "${BOX64_ROOT}/src/wrapped/wrappedsdl3.c"
+    "${BOX64_ROOT}/src/wrapped/wrappedsdl3ttf.c"
     "${BOX64_ROOT}/src/wrapped/wrappedselinux.c"
     "${BOX64_ROOT}/src/wrapped/wrappedsmime3.c"
     "${BOX64_ROOT}/src/wrapped/wrappedsmpeg2.c"
     "${BOX64_ROOT}/src/wrapped/wrappedssl3.c"
+    "${BOX64_ROOT}/src/wrapped/wrappedsystemd.c"
     "${BOX64_ROOT}/src/wrapped/wrappedtbbbind.c"
     "${BOX64_ROOT}/src/wrapped/wrappedtbbmalloc.c"
     "${BOX64_ROOT}/src/wrapped/wrappedtbbmallocproxy.c"
@@ -746,6 +798,7 @@ set(WRAPPEDS
     "${BOX64_ROOT}/src/wrapped/wrappedwaylandegl.c"
     "${BOX64_ROOT}/src/wrapped/wrappedxinerama.c"
     "${BOX64_ROOT}/src/wrapped/wrappedxkbcommon.c"
+    "${BOX64_ROOT}/src/wrapped/wrappedxkbfile.c"
     "${BOX64_ROOT}/src/wrapped/wrappedxkbcommonx11.c"
     "${BOX64_ROOT}/src/wrapped/wrappedxkbregistry.c"
     "${BOX64_ROOT}/src/wrapped/wrappedxml2.c"
@@ -761,6 +814,8 @@ set(WRAPPEDS
     "${BOX64_ROOT}/src/wrapped/wrappedicui18n66.c"
     "${BOX64_ROOT}/src/wrapped/wrappedicuuc67.c"
     "${BOX64_ROOT}/src/wrapped/wrappedicui18n67.c"
+    "${BOX64_ROOT}/src/wrapped/wrappedicuuc68.c"
+    "${BOX64_ROOT}/src/wrapped/wrappedicui18n68.c"
     "${BOX64_ROOT}/src/wrapped/wrappedicuuc72.c"
     "${BOX64_ROOT}/src/wrapped/wrappedicui18n72.c"
     "${BOX64_ROOT}/src/wrapped/wrappedicuuc73.c"
@@ -784,6 +839,9 @@ set(WRAPPEDS
     "${BOX64_ROOT}/src/wrapped/wrappedlibtiff5.c"
     "${BOX64_ROOT}/src/wrapped/wrappedbrotlidec.c"
     "${BOX64_ROOT}/src/wrapped/wrappedzstd.c"
+    "${BOX64_ROOT}/src/wrapped/wrappedproxy.c"
+    "${BOX64_ROOT}/src/wrapped/wrappedssh4.c"
+    "${BOX64_ROOT}/src/wrapped/wrappedsmbclient.c"
 )
 endif()
 if(ANDROID)
@@ -817,7 +875,7 @@ if(NOT CI)
         OUTPUT "${BOX64_ROOT}/src/wrapped/generated/functions_list.txt"
         COMMAND "${PYTHON_EXECUTABLE}" "${BOX64_ROOT}/rebuild_wrappers.py"
         "${BOX64_ROOT}"
-        "PANDORA" "HAVE_LD80BITS" "NOALIGN" "HAVE_TRACE" "ANDROID" "TERMUX" "STATICBUILD" "LA64" "--"
+        "PANDORA" "HAVE_LD80BITS" "NOALIGN" "HAVE_TRACE" "ANDROID" "TERMUX" "STATICBUILD" "LA64" "PPC64LE" "--"
         ${WRAPPEDS_HEAD}
         MAIN_DEPENDENCY "${BOX64_ROOT}/rebuild_wrappers.py"
         DEPENDS ${WRAPPEDS} ${WRAPPEDS_HEAD}
@@ -890,6 +948,7 @@ if(BOX32)
         "${BOX64_ROOT}/src/wrapped32/wrappedcairo.c"
         "${BOX64_ROOT}/src/wrapped32/wrappedlibdrm.c"
         "${BOX64_ROOT}/src/wrapped32/wrappedlibvdpau.c"
+        "${BOX64_ROOT}/src/wrapped32/wrappedlibvorbis.c"
         "${BOX64_ROOT}/src/wrapped32/wrappednsl.c"
         "${BOX64_ROOT}/src/wrapped32/wrappedlibcups.c"
         "${BOX64_ROOT}/src/wrapped32/wrappedgbm.c"
@@ -900,6 +959,9 @@ if(BOX32)
         "${BOX64_ROOT}/src/wrapped32/wrappedmount.c"
         "${BOX64_ROOT}/src/wrapped32/wrappeddbus.c"
         "${BOX64_ROOT}/src/wrapped32/wrappedcurl.c"
+        "${BOX64_ROOT}/src/wrapped32/wrappednvml.c"
+         "${BOX64_ROOT}/src/wrapped32/wrappedpulsesimple.c"
+         "${BOX64_ROOT}/src/wrapped32/wrappedlibogg.c"
     )
     endif()
     string(REPLACE ".c" "_private.h" MODROOT ${BOX64_ROOT})
@@ -1118,6 +1180,37 @@ if(LARCH64_DYNAREC)
     )
 endif()
 
+if(PPC64LE_DYNAREC)
+    set(DYNAREC_SRC
+        ${DYNAREC_SRC}
+
+        "${BOX64_ROOT}/src/dynarec/ppc64le/dynarec_ppc64le_functions.c"
+        "${BOX64_ROOT}/src/dynarec/ppc64le/dynarec_ppc64le_arch.c"
+        "${BOX64_ROOT}/src/dynarec/ppc64le/ppc64le_printer.c"
+        "${BOX64_ROOT}/src/dynarec/ppc64le/dynarec_ppc64le_jmpnext.c"
+        "${BOX64_ROOT}/src/dynarec/ppc64le/dynarec_ppc64le_consts.c"
+    )
+    set(DYNAREC_ASM
+        ${DYNAREC_ASM}
+        "${BOX64_ROOT}/src/dynarec/ppc64le/ppc64le_prolog.S"
+        "${BOX64_ROOT}/src/dynarec/ppc64le/ppc64le_epilog.S"
+        "${BOX64_ROOT}/src/dynarec/ppc64le/ppc64le_next.S"
+        "${BOX64_ROOT}/src/dynarec/ppc64le/ppc64le_lock.S"
+    )
+
+     set(DYNAREC_PASS
+     "${BOX64_ROOT}/src/dynarec/ppc64le/dynarec_ppc64le_helper.c"
+     "${BOX64_ROOT}/src/dynarec/ppc64le/dynarec_ppc64le_00.c"
+     "${BOX64_ROOT}/src/dynarec/ppc64le/dynarec_ppc64le_66.c"
+     "${BOX64_ROOT}/src/dynarec/ppc64le/dynarec_ppc64le_f0.c"
+     "${BOX64_ROOT}/src/dynarec/ppc64le/dynarec_ppc64le_66f0.c"
+     "${BOX64_ROOT}/src/dynarec/ppc64le/dynarec_ppc64le_emit_math.c"
+     "${BOX64_ROOT}/src/dynarec/ppc64le/dynarec_ppc64le_emit_logic.c"
+     "${BOX64_ROOT}/src/dynarec/ppc64le/dynarec_ppc64le_emit_tests.c"
+     "${BOX64_ROOT}/src/dynarec/ppc64le/dynarec_ppc64le_emit_shift.c"
+      )
+endif()
+
 
 if(GDBJIT)
 set(GDBJITREADER "${BOX64_ROOT}/gdbjit/reader.c")
@@ -1259,8 +1352,12 @@ string(COMPARE EQUAL "${CMAKE_SYSTEM_PROCESSOR}" "i686"  _x86)
 string(COMPARE EQUAL "${CMAKE_SYSTEM_PROCESSOR}" "x86_64"  _x86_64)
 string(COMPARE EQUAL "${CMAKE_SYSTEM_PROCESSOR}" "aarch64"  _aarch64)
 string(COMPARE EQUAL "${CMAKE_SYSTEM_PROCESSOR}" "riscv64"  _riscv64)
+string(COMPARE EQUAL "${CMAKE_SYSTEM_PROCESSOR}" "ppc64le"  _ppc64le)
+if(NOT _ppc64le)
+  string(COMPARE EQUAL "${CMAKE_SYSTEM_PROCESSOR}" "powerpc64le"  _ppc64le)
+endif()
 
-if(_x86_64 OR _aarch64)
+if(_x86_64 OR _aarch64 OR _ppc64le)
   add_definitions(-DCONFIG_64BIT)
 endif()
 
@@ -1429,6 +1526,8 @@ if(_aarch64)
 	endif()
 elseif(_riscv64)
     set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "riscv64")
+elseif(_ppc64le)
+    set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "ppc64el")
 elseif(_x86_64)
     set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "x86_64")
 else()
@@ -1626,6 +1725,13 @@ add_test(Boundary ${CMAKE_COMMAND} -D TEST_PROGRAM=${CMAKE_BINARY_DIR}/${BOX64}
     -D TEST_REFERENCE=${CMAKE_SOURCE_DIR}/tests/ref33.txt
     -P ${CMAKE_SOURCE_DIR}/runTest.cmake )
 
+#if(NOT CI)
+#    add_test(AppImage ${CMAKE_COMMAND} -D TEST_PROGRAM=${CMAKE_BINARY_DIR}/${BOX64}
+#        -D TEST_ARGS=${CMAKE_SOURCE_DIR}/tests/test01-x64.AppImage -D TEST_OUTPUT=tmpfileAppImage.txt
+#        -D TEST_REFERENCE=${CMAKE_SOURCE_DIR}/tests/ref01.txt
+#        -P ${CMAKE_SOURCE_DIR}/runTest.cmake )
+#endif()
+
 else()
 
 add_test(bootSyscall ${CMAKE_COMMAND} -D TEST_PROGRAM=${CMAKE_BINARY_DIR}/${BOX64}
@@ -1770,6 +1876,10 @@ add_test(lock ${CMAKE_COMMAND} -D TEST_PROGRAM=${CMAKE_BINARY_DIR}/${BOX64}
 #
 #set_tests_properties(avx_intrinsics PROPERTIES ENVIRONMENT "BOX64_DYNAREC_FASTNAN=0;BOX64_DYNAREC_FASTROUND=0 BOX64_AVX=2")
 
+#add_test(AppImage ${CMAKE_COMMAND} -D TEST_PROGRAM=${CMAKE_BINARY_DIR}/${BOX64}
+#    -D TEST_ARGS=${CMAKE_SOURCE_DIR}/tests/hcl-X64.AppImage -D TEST_ARGS2=--help -D TEST_OUTPUT=tmpfileAppImage.txt
+#    -D TEST_REFERENCE=${CMAKE_SOURCE_DIR}/tests/refAppImage.txt
+#    -P ${CMAKE_SOURCE_DIR}/runTest.cmake )
 
 endif()
 

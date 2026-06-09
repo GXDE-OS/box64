@@ -448,8 +448,26 @@ void* my_dlsym_internal(x64emu_t* emu, void *handle, void *symbol, int version, 
 void* my_dlsym(x64emu_t* emu, void *handle, void *symbol)
 {
     printf_dlsym(LOG_DEBUG, "%04d|Call to dlsym(%p, \"%s\")%s", GetTID(), handle, symbol, BOX64ENV(dlsym_error)?"":"\n");
-    return my_dlsym_internal(emu, handle, symbol, -1, NULL);
+    void* ret = my_dlsym_internal(emu, handle, symbol, -1, NULL);
+    #if 0
+    char* symb = symbol;
+    static char* previous = NULL;
+    static char previous_storage[128];
+    if(previous && ret && (!strcmp(previous, symb) || (previous[0]=='_' && !strcmp(&previous[1], symb)) || (symb[0]=='_' && !strcmp(previous, &symb[1]))))
+        previous = NULL;
+    else if(previous && ret) {
+        printf_log(LOG_INFO, "Warning, symbol %s might be missing\n", previous);
+        previous = NULL;
+    } else if(!ret) {
+        if(previous && !(!strcmp(previous, symb) || (previous[0]=='_' && !strcmp(&previous[1], symb)) || (symb[0]=='_' && !strcmp(previous, &symb[1]))))
+            printf_log(LOG_INFO, "Warning, symbol %s might be missing\n", previous);
+        previous = previous_storage;
+        strcpy(previous, symb);
+    }
+    #endif
+    return ret;
 }
+
 void* my_dlvsym(x64emu_t* emu, void *handle, void *symbol, const char *vername)
 {
     int version = (vername)?2:-1;
@@ -592,6 +610,22 @@ void closeAllDLOpened()
                 printf_log(LOG_DEBUG, "  closing %s\n", dl->dllibs[i].lib->name);
                 my_dlclose(emu, (void*)(i+1));
             }
+    }
+}
+
+void finiPendingDLOpenedNoUnload(x64emu_t* emu)
+{
+    if (!my_context || !my_context->dlprivate)
+        return;
+
+    dlprivate_t* dl = my_context->dlprivate;
+    for (size_t i = dl->lib_sz; i-- > MIN_NLIB;) {
+        if (!dl->dllibs[i].full || dl->dllibs[i].count <= 0 || !dl->dllibs[i].lib)
+            continue;
+        elfheader_t* h = GetElf(dl->dllibs[i].lib);
+        if (!h || h == my_context->elfs[0])
+            continue;
+        RunElfFini(h, emu);
     }
 }
 

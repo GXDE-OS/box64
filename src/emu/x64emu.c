@@ -60,7 +60,7 @@ static void internalX64Setup(x64emu_t* emu, box64context_t *context, uintptr_t s
     #ifdef BOX32
     if(box64_is32bits) {
         if(stack>=0x100000000LL) {
-            printf_log(LOG_NONE, "BOX32: Stack pointer too high (%p), aborting\n", (void*)stack);
+            printf_log(LOG_NONE, "Stack pointer too high (%p), aborting\n", (void*)stack);
             abort();
         }
         if(R_RSP>=0x100000000LL) {    // special case, stack is just a bit too high
@@ -88,6 +88,8 @@ static void internalX64Setup(x64emu_t* emu, box64context_t *context, uintptr_t s
     // setup fpu regs
     reset_fpu(emu);
     emu->mxcsr.x32 = 0x1f80;
+    // want some new jmpbuf for error recovery
+    emu->flags.need_jmpbuf = 1;
 }
 
 EXPORTDYN
@@ -578,8 +580,9 @@ void EmuCall(x64emu_t* emu, uintptr_t addr)
         PushExit(emu);
     R_RIP = addr;
     emu->df = d_none;
-    emu->flags.need_jmpbuf = 1;
-    EmuRun(emu, 0);
+    if(emu->flags.quitonlongjmp)
+        emu->flags.need_jmpbuf = 1;
+    EmuRun(emu, 0, 0);
     emu->quit = 0;  // reset Quit flags...
     emu->df = d_none;
     if(emu->flags.quitonlongjmp && emu->flags.longjmp) {
@@ -1449,8 +1452,36 @@ void UpdateFlags(x64emu_t* emu)
             CONDITIONAL_SET_FLAG(XOR2(cc >> 6), F_OF);
             CONDITIONAL_SET_FLAG(cc & 0x8, F_AF);
             break;
+        case d_adc8b:
+            if (emu->res.u8 == (emu->op1.u8 + emu->op2.u8)) {
+                lo = (uint32_t)(emu->op1.u8) + (emu->op2.u8);
+            } else {
+                lo = 1 + (uint32_t)(emu->op1.u8) + (emu->op2.u8);
+            }
+            CONDITIONAL_SET_FLAG(lo & 0x100, F_CF);
+            CONDITIONAL_SET_FLAG(!emu->res.u8, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u8 & 0x80, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            cc = (emu->op1.u8 & emu->op2.u8) | ((~emu->res.u8) & (emu->op1.u8 | emu->op2.u8));
+            CONDITIONAL_SET_FLAG(XOR2(cc >> 6), F_OF);
+            CONDITIONAL_SET_FLAG(cc & 0x8, F_AF);
+            break;
         case d_adc16:
             CONDITIONAL_SET_FLAG(emu->res.u32 & 0x10000, F_CF);
+            CONDITIONAL_SET_FLAG((emu->res.u16 & 0xffff) == 0, F_ZF);
+            CONDITIONAL_SET_FLAG(emu->res.u16 & 0x8000, F_SF);
+            CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);
+            cc = (emu->op1.u16 & emu->op2.u16) | ((~emu->res.u16) & (emu->op1.u16 | emu->op2.u16));
+            CONDITIONAL_SET_FLAG(XOR2(cc >> 14), F_OF);
+            CONDITIONAL_SET_FLAG(cc & 0x8, F_AF);
+            break;
+        case d_adc16b:
+            if (emu->res.u16 == (emu->op1.u16 + emu->op2.u16)) {
+                lo = (uint32_t)(emu->op1.u16) + (emu->op2.u16);
+            } else {
+                lo = 1 + (uint32_t)(emu->op1.u16) + (emu->op2.u16);
+            }
+            CONDITIONAL_SET_FLAG(lo & 0x10000, F_CF);
             CONDITIONAL_SET_FLAG((emu->res.u16 & 0xffff) == 0, F_ZF);
             CONDITIONAL_SET_FLAG(emu->res.u16 & 0x8000, F_SF);
             CONDITIONAL_SET_FLAG(PARITY(emu->res.u8), F_PF);

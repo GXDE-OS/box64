@@ -77,12 +77,12 @@ GO(13)  \
 GO(14)  \
 
 // GCopyFct
-#define GO(A)   \
-static uintptr_t my_copy_fct_##A = 0;                                     \
-static void* my_copy_##A(void* data)                                      \
-{                                                                         \
-    return (void*)RunFunctionFmt(my_copy_fct_##A, "p", data); \
-}
+#define GO(A)                                                           \
+    static uintptr_t my_copy_fct_##A = 0;                               \
+    static void* my_copy_##A(void* src, void* data)                     \
+    {                                                                   \
+        return (void*)RunFunctionFmt(my_copy_fct_##A, "pp", src, data); \
+    }
 SUPER()
 #undef GO
 static void* findCopyFct(void* fct)
@@ -789,6 +789,62 @@ static void* findLogWriterFct(void* fct)
     return NULL;
 }
 
+// GDataForeachFunc ...
+#define GO(A)                                                                      \
+    static uintptr_t my_GDataForeachFunc_fct_##A = 0;                              \
+    static void* my_GDataForeachFunc_##A(uint32_t a, void* b, void* c)             \
+    {                                                                              \
+        return (void*)RunFunctionFmt(my_GDataForeachFunc_fct_##A, "upp", a, b, c); \
+    }
+SUPER()
+#undef GO
+static void* findGDataForeachFuncFct(void* fct)
+{
+    if (!fct) return fct;
+    if (GetNativeFnc((uintptr_t)fct)) return GetNativeFnc((uintptr_t)fct);
+#define GO(A) \
+    if (my_GDataForeachFunc_fct_##A == (uintptr_t)fct) return my_GDataForeachFunc_##A;
+    SUPER()
+#undef GO
+#define GO(A)                                         \
+    if (my_GDataForeachFunc_fct_##A == 0) {           \
+        my_GDataForeachFunc_fct_##A = (uintptr_t)fct; \
+        return my_GDataForeachFunc_##A;               \
+    }
+    SUPER()
+#undef GO
+    printf_log(LOG_NONE, "Warning, no more slot for glib2 GDataForeachFunc callback\n");
+    return NULL;
+}
+
+// GUnixFDSourceFunc ...
+#define GO(A)                                                                \
+    static uintptr_t my_GUnixFDSourceFunc_fct_##A = 0;                       \
+    static int my_GUnixFDSourceFunc_##A(int a, uint32_t b, void* c)          \
+    {                                                                        \
+        return RunFunctionFmt(my_GUnixFDSourceFunc_fct_##A, "iup", a, b, c); \
+    }
+SUPER()
+#undef GO
+static void* findGUnixFDSourceFuncFct(void* fct)
+{
+    if (!fct) return fct;
+    if (GetNativeFnc((uintptr_t)fct)) return GetNativeFnc((uintptr_t)fct);
+#define GO(A) \
+    if (my_GUnixFDSourceFunc_fct_##A == (uintptr_t)fct) return my_GUnixFDSourceFunc_##A;
+    SUPER()
+#undef GO
+#define GO(A)                                          \
+    if (my_GUnixFDSourceFunc_fct_##A == 0) {           \
+        my_GUnixFDSourceFunc_fct_##A = (uintptr_t)fct; \
+        return my_GUnixFDSourceFunc_##A;               \
+    }
+    SUPER()
+#undef GO
+    printf_log(LOG_NONE, "Warning, no more slot for glib2 GUnixFDSourceFunc callback\n");
+    return NULL;
+}
+
 #undef SUPER
 
 EXPORT void* my_g_markup_vprintf_escaped(x64emu_t *emu, void* fmt, void* b) {
@@ -832,6 +888,11 @@ EXPORT void my_g_datalist_id_set_data_full(x64emu_t* emu, void* datalist, uintpt
 {
     void* fc = findFreeFct(freecb);
     my->g_datalist_id_set_data_full(datalist, key, data, fc);
+}
+
+EXPORT void my_g_datalist_foreach(x64emu_t* emu, void* datalist, void* func, void* data)
+{
+    my->g_datalist_foreach(datalist, findGDataForeachFuncFct(func), data);
 }
 
 EXPORT void* my_g_datalist_id_dup_data(x64emu_t* emu, void* datalist, uintptr_t key, void* dupcb, void* data)
@@ -973,6 +1034,15 @@ EXPORT void my_g_main_context_set_poll_func(x64emu_t* emu, void* context, void* 
     my->g_main_context_set_poll_func(context, findPollFct(func));
 }
 
+EXPORT int my_g_markup_collect_attributes(x64emu_t* emu, void* element_name,
+                                          void* attribute_names, void* attribute_values,
+                                          void* error, int first_type, void* first_attr,
+                                          uintptr_t* b)
+{
+    CREATE_VALIST_FROM_VAARG(b, emu->scratch, 6);
+    return my->g_markup_collect_attributes(element_name, attribute_names, attribute_values, error, first_type, first_attr, VARARGS);
+}
+
 EXPORT uint32_t my_g_idle_add_full(x64emu_t* emu, int priority, void* f, void* data, void* notify)
 {
     return my->g_idle_add_full(priority, findTimeOutFct(f), data, findGDestroyNotifyFct(notify));
@@ -1068,6 +1138,10 @@ EXPORT void my_g_ptr_array_sort_with_data(x64emu_t* emu, void* array, void* comp
 {
     my->g_ptr_array_sort_with_data(array, findGCompareDataFuncFct(comp), data);
 }
+EXPORT void my_g_ptr_array_sort_values(x64emu_t* emu, void* array, void* comp)
+{
+    my->g_ptr_array_sort_values(array, findGCompareFuncFct(comp));
+}
 
 EXPORT void my_g_qsort_with_data(x64emu_t* emu, void* pbase, int total, unsigned long size, void* comp, void* data)
 {
@@ -1077,6 +1151,11 @@ EXPORT void my_g_qsort_with_data(x64emu_t* emu, void* pbase, int total, unsigned
 EXPORT void my_g_ptr_array_foreach(x64emu_t* emu, void* array, void* func, void* data)
 {
     my->g_ptr_array_foreach(array, findGFuncFct(func), data);
+}
+
+EXPORT int my_g_ptr_array_find_with_equal_func(x64emu_t* emu, void* haystack, void* needle, void* equal_func, void* index_)
+{
+    return my->g_ptr_array_find_with_equal_func(haystack, needle, findEqualFct(equal_func), index_);
 }
 
 EXPORT void* my_g_thread_create(x64emu_t* emu, void* func, void* data, int joinable, void* error)
@@ -1313,6 +1392,13 @@ EXPORT void* my_g_error_new_valist(x64emu_t* emu, uint32_t domain, int code, voi
     return my->g_error_new_valist(domain, code, fmt, VARARGS);
 }
 
+EXPORT void my_g_propagate_prefixed_error(x64emu_t* emu, void* dest, void* src, void* fmt, uintptr_t* b)
+{
+    myStackAlign(emu, fmt, b, emu->scratch, R_EAX, 3);
+    PREPARE_VALIST;
+    my->g_propagate_prefixed_error(dest, src, fmt, VARARGS);
+}
+
 EXPORT int my_g_fprintf(x64emu_t* emu, void* f, void* fmt, uintptr_t* b)
 {
     myStackAlign(emu, fmt, b, emu->scratch, R_EAX, 3);
@@ -1334,6 +1420,13 @@ EXPORT void my_g_log(x64emu_t* emu, void* domain, int level, void* fmt, uintptr_
     myStackAlign(emu, fmt, b, emu->scratch, R_EAX, 3);
     PREPARE_VALIST;
     my->g_logv(domain, level, fmt, VARARGS);
+}
+
+EXPORT void my_g_log_structured_standard(x64emu_t* emu, void* log_domain, uint32_t log_level, void* file, void* line, void* func, void* fmt, uintptr_t* b)
+{
+    myStackAlign(emu, fmt, b, emu->scratch, R_EAX, 6);
+    PREPARE_VALIST;
+    my->g_log_structured_standard(log_domain, log_level, file, line, func, fmt, VARARGS);
 }
 
 EXPORT int my_g_printf(x64emu_t* emu, void* fmt, uintptr_t* b)
@@ -1502,6 +1595,11 @@ EXPORT void* my_g_node_copy_deep(x64emu_t* emu, void* node, void* f, void* data)
     return my->g_node_copy_deep(node, findCopyFct(f), data);
 }
 
+EXPORT void* my_g_slist_copy_deep(x64emu_t* emu, void* list, void* f, void* data)
+{
+    return my->g_slist_copy_deep(list, findCopyFct(f), data);
+}
+
 EXPORT void* my_g_thread_try_new(x64emu_t* emu, void* name, void* f, void* data, void* err)
 {
     return my->g_thread_try_new(name, findGThreadFuncFct(f), data, err);
@@ -1520,6 +1618,13 @@ EXPORT void* my_g_list_insert_sorted_with_data(x64emu_t* emu, void* list, void* 
 EXPORT void my_g_option_group_set_parse_hooks(x64emu_t* emu, void* group, void* preparse, void* postparse)
 {
     my->g_option_group_set_parse_hooks(group, findGOptionParseFct(preparse), findGOptionParseFct(postparse));
+}
+
+EXPORT void my_g_prefix_error(x64emu_t* emu, void* err, void* fmt, uintptr_t* b)
+{
+    myStackAlign(emu, fmt, b, emu->scratch, R_EAX, 2);
+    PREPARE_VALIST;
+    my->g_prefix_error(err, fmt, VARARGS);
 }
 
 EXPORT void* my_g_thread_new(x64emu_t* emu, void* name, void* f, void* data)
@@ -1607,6 +1712,16 @@ EXPORT void my_g_thread_pool_set_sort_function(x64emu_t* emu, void* pool, void* 
 EXPORT void my_g_queue_free_full(x64emu_t* emu, void* queue, void* d)
 {
     my->g_queue_free_full(queue, findGDestroyNotifyFct(d));
+}
+
+EXPORT uint32_t my_g_unix_fd_add(x64emu_t* emu, int fd, uint32_t cond, void* f, void* data)
+{
+    return my->g_unix_fd_add(fd, cond, findGUnixFDSourceFuncFct(f), data);
+}
+
+EXPORT uint32_t my_g_unix_fd_add_full(x64emu_t* emu, int priority, int fd, uint32_t cond, void* f, void* data, void* notify)
+{
+    return my->g_unix_fd_add_full(priority, fd, cond, findGUnixFDSourceFuncFct(f), data, findGDestroyNotifyFct(notify));
 }
 
 #define PRE_INIT \

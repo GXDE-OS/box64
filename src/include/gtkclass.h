@@ -429,6 +429,23 @@ typedef struct my_GtkActionClass_s
   void (*_gtk_reserved4) (void);
 } my_GtkActionClass_t;
 
+typedef struct my_GtkDrawingArea3_s
+{
+  my_GtkWidget3_t  parent;
+  void* draw_data;
+} my_GtkDrawingArea3_t;
+
+typedef struct my_GtkDrawingArea3Class_s
+{
+  my_GtkWidget3Class_t parent_class;
+
+  /* Padding for future expansion */
+  void (*_gtk_reserved1) (void);
+  void (*_gtk_reserved2) (void);
+  void (*_gtk_reserved3) (void);
+  void (*_gtk_reserved4) (void);
+} my_GtkDrawingArea3Class_t;
+
 typedef struct my_GtkMisc2_s
 {
   my_GtkWidget2_t  parent;
@@ -574,10 +591,6 @@ typedef struct my_GtkBin2_s
 typedef struct my_GtkBin2Class_s
 {
   my_GtkContainer2Class_t parent_class;
-  void (*_gtk_reserved1) (void);
-  void (*_gtk_reserved2) (void);
-  void (*_gtk_reserved3) (void);
-  void (*_gtk_reserved4) (void);
 } my_GtkBin2Class_t;
 
 typedef struct my_GtkBin3_s
@@ -1287,6 +1300,122 @@ typedef struct my_GtkFixed3Class_s
   void*                   padding[8];
 } my_GtkFixed3Class_t;
 
+typedef struct my_GtkNotebook2_s
+{
+  my_GtkContainer2_t parent;
+  void* cur_page;
+  void* children;
+  void* first_tab;
+  void* focus_tab;
+  void* menu;
+  void* event_window;
+  uint32_t timer;
+  uint16_t tab_hborder;
+  uint16_t tab_vborder;
+  uint32_t show_tabs          : 1;
+  uint32_t homogeneous        : 1;
+  uint32_t show_border        : 1;
+  uint32_t tab_pos            : 2;
+  uint32_t scrollable         : 1;
+  uint32_t in_child           : 3;
+  uint32_t click_child        : 3;
+  uint32_t button             : 2;
+  uint32_t need_timer         : 1;
+  uint32_t child_has_focus    : 1;
+  uint32_t have_visible_child : 1;
+  uint32_t focus_out          : 1;
+  uint32_t has_before_previous: 1;
+  uint32_t has_before_next    : 1;
+  uint32_t has_after_previous : 1;
+  uint32_t has_after_next     : 1;
+} my_GtkNotebook2_t;
+
+typedef struct my_GtkNotebook2Class_s
+{
+  my_GtkContainer2Class_t     parent_class;
+  void (* switch_page)        (void* notebook, void* page, uint32_t page_num);
+  int  (* select_page)        (void* notebook, int move_focus);
+  int  (* focus_tab)          (void* notebook, int type);
+  int  (* change_current_page)(void* notebook, int offset);
+  void (* move_focus_out)     (void* notebook, int direction);
+  int  (* reorder_tab)        (void* notebook, int direction, int move_to_last);
+  int  (* insert_page)        (void* notebook, void* child, void* tab_label, void* menu_label, int position);
+  void*(* create_window)      (void* notebook, void* page, int x, int y);
+  void (*_gtk_reserved1)      (void);
+} my_GtkNotebook2Class_t;
+
+typedef struct my_GtkCellRenderer2_s
+{
+  my_GtkObject_t parent;
+  float xalign;
+  float yalign;
+  int width;
+  int height;
+  uint16_t xpad;
+  uint16_t ypad;
+  uint32_t mode : 2;
+  uint32_t visible : 1;
+  uint32_t is_expander : 1;
+  uint32_t is_expanded : 1;
+  uint32_t cell_background_set : 1;
+  uint32_t sensitive : 1;
+  uint32_t editing : 1;
+} my_GtkCellRenderer2_t;
+
+typedef struct my_GtkCellRenderer2Class_s
+{
+  my_GtkObjectClass_t parent_class;
+  void   (* get_size)         (void* cell, void* widget, void* cell_area, int* x_offset, int* y_offset, int* width, int* height);
+  void   (* render)           (void* cell, void* window, void* widget, void* background_area, void* cell_area, void* expose_area, int flags);
+  int    (* activate)         (void* cell, void* event, void* widget, void* path, void* background_area, void* cell_area, int flags);
+  void*  (* start_editing)    (void* cell, void* event, void* widget, void* path, void* background_area, void* cell_area, int flags);
+  void   (* editing_canceled) (void* cell);
+  void   (* editing_started)  (void* cell, void* editable, void* path);
+  void (*_gtk_reserved1) (void);
+  void (*_gtk_reserved2) (void);
+} my_GtkCellRenderer2Class_t;
+
+typedef struct my_PangoColor_s
+{
+  uint16_t red;
+  uint16_t green;
+  uint16_t blue;
+} my_PangoColor_t;
+
+typedef struct my_GtkCellRendererText2_s
+{
+  my_GtkCellRenderer2_t parent;
+  void* text;
+  void* font;
+  double font_scale;
+  my_PangoColor_t foreground;
+  my_PangoColor_t background;
+  void* extra_attrs;
+  int underline_style;
+  int rise;
+  int fixed_height_rows;
+  uint32_t strikethrough : 1;
+  uint32_t editable  : 1;
+  uint32_t scale_set : 1;
+  uint32_t foreground_set : 1;
+  uint32_t background_set : 1;
+  uint32_t underline_set : 1;
+  uint32_t rise_set : 1;
+  uint32_t strikethrough_set : 1;
+  uint32_t editable_set : 1;
+  uint32_t calc_fixed_height : 1;
+} my_GtkCellRendererText2_t;
+
+typedef struct my_GtkCellRendererText2Class_s
+{
+  my_GtkCellRenderer2Class_t parent_class;
+  void (* edited) (void* cell_renderer_text, void* path, void* new_text);
+  void (*_gtk_reserved1) (void);
+  void (*_gtk_reserved2) (void);
+  void (*_gtk_reserved3) (void);
+  void (*_gtk_reserved4) (void);
+} my_GtkCellRendererText2Class_t;
+
 typedef struct my_GDBusObjectManagerClient_s
 {
   my_GObject_t  parent;
@@ -1300,6 +1429,32 @@ typedef struct my_GDBusObjectManagerClientClass_s
   void    (*interface_proxy_properties_changed) (void* manager, void* object_proxy, void* interface_proxy, void* changed_properties, void* invalidated_properties);
   void* padding[8];
 } my_GDBusObjectManagerClientClass_t;
+
+typedef struct my_GDBusInterfaceSkeleton_s
+{
+  my_GObject_t parent;
+  void*        priv;
+} my_GDBusInterfaceSkeleton_t;
+
+typedef struct my_GDBusInterfaceVTable_s
+{
+  void (*method_call)(void* conn, void* sender, void* path, void* int_name, void* name, void* param, void* inv, void* data);
+  void* (*get_property)(void* conn, void* sender, void* path, void* int_name, void* prop_name, void* error, void* data);
+  int (*set_property)(void* conn, void* sender, void* path, void* int_name, void* prop_name, void* value, void* error, void* data);
+  void* padding[8];
+} my_GDBusInterfaceVTable_t;
+
+typedef struct my_GDBusInterfaceSkeletonClass_s
+{
+  my_GObjectClass_t parent;
+  void* (*get_info)       (void* interface_);
+  my_GDBusInterfaceVTable_t* (*get_vtable)     (void* interface_);
+  void* (*get_properties) (void* interface_);
+  void  (*flush)          (void* interface_);
+  void*  vfunc_padding[8];
+  int   (*g_authorize_method) (void* interface_, void* invocation);
+  void*  signal_padding[8];
+} my_GDBusInterfaceSkeletonClass_t;
 
 typedef struct my_AtkObject_s
 {
@@ -2085,6 +2240,40 @@ typedef struct my_GstAudioDecoderClass_s
   void*   _gst_reserved[20 - 4];
 } my_GstAudioDecoderClass_t;
 
+typedef struct my_GstAudioEncoder_s {
+  my_GstElement_t     parent;
+  void*               sinkpad;
+  void*               srcpad;
+  my_GRecMutex_t      stream_lock;
+  my_GstSegment_t     input_segment;
+  my_GstSegment_t     output_segment;
+  void*               priv;
+  void*              _gst_reserved[20];
+} my_GstAudioEncoder_t;
+
+typedef struct my_GstAudioEncoderClass_s {
+  my_GstElementClass_t  parent_class;
+  int       (*start)              (void* enc);
+  int       (*stop)               (void* enc);
+  int       (*set_format)         (void* enc, void* info);
+  int       (*handle_frame)       (void* enc, void* buffer);
+  void      (*flush)              (void* enc);
+  int       (*pre_push)           (void* enc, void* *buffer);
+  int       (*sink_event)         (void* enc, void* event);
+  int       (*src_event)          (void* enc, void* event);
+  void*     (*getcaps)            (void* enc, void* filter);
+  int       (*open)               (void* enc);
+  int       (*close)              (void* enc);
+  int       (*negotiate)          (void* enc);
+  int       (*decide_allocation)  (void* enc, void* query);
+  int       (*propose_allocation) (void* enc, void*  query);
+  int       (*transform_meta)     (void* enc, void* outbuf, void* meta, void* inbuf);
+  int       (*sink_query)         (void* encoder, void* query);
+  int       (*src_query)          (void* encoder, void* query);
+  void*     gst_reserved[20-3];
+} my_GstAudioEncoderClass_t;
+
+
 typedef struct my_GstVideoFilter_s {
   my_GstBaseTransform_t parent;
   int                   negotiated;
@@ -2184,6 +2373,16 @@ typedef struct my_GstURIHandlerInterface_s {
   int    (* set_uri)            (void* handler, void* uri, void* error);
 } my_GstURIHandlerInterface_t;
 
+typedef struct my_GInitableInterface_s {
+  my_GTypeInterface_t parent;
+  int    (* init) (void* initable, void* cancellable, void*error);
+} my_GInitableInterface_t;
+
+typedef struct my_GAsyncInitableInterface_s {
+  my_GTypeInterface_t parent;
+  void     (* init_async)  (void* initable, int io_priority, void* cancellable, void* callback, void* user_data);
+  int      (* init_finish) (void* initable, void* res, void* error);
+} my_GAsyncInitableInterface_t;
 
 // GTypeValueTable
 typedef struct my_GTypeValueTable_s {
@@ -2235,7 +2434,8 @@ typedef struct my_GtkTypeInfo_s {
 my_GTypeValueTable_t* findFreeGTypeValueTable(my_GTypeValueTable_t* fcts);
 my_GTypeInfo_t* findFreeGTypeInfo(my_GTypeInfo_t* fcts, size_t parent);
 my_GtkTypeInfo_t* findFreeGtkTypeInfo(my_GtkTypeInfo_t* fcts, size_t parent);
-void* find_class_init_Fct(void* fct, size_t parent);
+// defined in wrappedgio2.c
+my_GDBusInterfaceVTable_t* findFreeGDBusInterfaceVTable(my_GDBusInterfaceVTable_t* fcts);
 
 void InitGTKClass(bridge_t *bridge);
 void FiniGTKClass(void);
@@ -2245,6 +2445,7 @@ GTKCLASS(GObject)                   \
 GTKCLASS(GInitiallyUnowned)         \
 GTKCLASS(GApplication)              \
 GTKCLASS(GtkApplication)            \
+GTKCLASS(GtkDrawingArea3)           \
 GTKCLASS(GtkObject)                 \
 GTKCLASS(GtkWidget2)                \
 GTKCLASS(GtkWidget3)                \
@@ -2289,8 +2490,12 @@ GTKCLASS(GtkEventController)        \
 GTKCLASS(GtkGesture)                \
 GTKCLASS(GtkGestureSingle)          \
 GTKCLASS(GtkGestureLongPress)       \
+GTKCLASS(GtkNotebook2)              \
+GTKCLASS(GtkCellRenderer2)          \
+GTKCLASS(GtkCellRendererText2)      \
 GTKCLASS(MetaFrames2)               \
 GTKCLASS(GDBusObjectManagerClient)  \
+GTKCLASS(GDBusInterfaceSkeleton)    \
 GTKCLASS(AtkObject)                 \
 GTKCLASS(AtkUtil)                   \
 GTKCLASS(GstObject)                 \
@@ -2315,11 +2520,14 @@ GTKCLASS(GstBaseSrc)                \
 GTKCLASS(GstPushSrc)                \
 GTKCLASS(GstGLBaseSrc)              \
 GTKCLASS(GstAudioDecoder)           \
+GTKCLASS(GstAudioEncoder)           \
 GTKCLASS(GstVideoFilter)            \
 GTKCLASS(GstAudioFilter)            \
 GTKCLASS(GstBufferPool)             \
 GTKCLASS(GstVideoBufferPool)        \
 GTKIFACE(GstURIHandler)             \
+GTKIFACE(GInitable)                 \
+GTKIFACE(GAsyncInitable)            \
 
 #define GTKCLASS(A) void Set##A##ID(size_t id);
 #define GTKIFACE(A) GTKCLASS(A)

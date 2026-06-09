@@ -79,6 +79,7 @@ int convert_bitmask(uint64_t bitmask);
 #define SUBw_REG(Rd, Rn, Rm)                EMIT(ADDSUB_REG_gen(0, 1, 0, 0b00, Rm, 0, Rn, Rd))
 #define SUBw_REG_LSL(Rd, Rn, Rm, lsl)       EMIT(ADDSUB_REG_gen(0, 1, 0, 0b00, Rm, lsl, Rn, Rd))
 #define SUBw_REG_ASR(Rd, Rn, Rm, asr)       EMIT(ADDSUB_REG_gen(0, 1, 0, 0b10, Rm, asr, Rn, Rd))
+#define SUBx_REG_ASR(Rd, Rn, Rm, asr)       EMIT(ADDSUB_REG_gen(1, 1, 0, 0b10, Rm, asr, Rn, Rd))
 #define SUBSw_REG(Rd, Rn, Rm)              FEMIT(ADDSUB_REG_gen(0, 1, 1, 0b00, Rm, 0, Rn, Rd))
 #define SUBSw_REG_LSL(Rd, Rn, Rm, lsl)     FEMIT(ADDSUB_REG_gen(0, 1, 1, 0b00, Rm, lsl, Rn, Rd))
 #define SUBSw_REG_LSR(Rd, Rn, Rm, lsr)     FEMIT(ADDSUB_REG_gen(0, 1, 1, 0b01, Rm, lsr, Rn, Rd))
@@ -131,6 +132,12 @@ int convert_bitmask(uint64_t bitmask);
 #define ADDSUB_ext(sf, op, S, Rm, option, imm3, Rn, Rd)    ((sf)<<31 | (op)<<30 | (S)<<29 | 0b01011<<24 | 1<<21 | (Rm)<<16 | (option)<<13 | (imm3)<<10 | (Rn)<<5 | (Rd))
 #define SUBxw_UXTB(Rd, Rn, Rm)      EMIT(ADDSUB_ext(rex.w, 1, 0, Rm, 0b000, 0, Rn, Rd))
 #define SUBw_UXTB(Rd, Rn, Rm)       EMIT(ADDSUB_ext(0, 1, 0, Rm, 0b000, 0, Rn, Rd))
+#define SUBw_SXTB(Rd, Rn, Rm)       EMIT(ADDSUB_ext(0, 1, 0, Rm, 0b100, 0, Rn, Rd))
+#define SUBw_UXTH(Rd, Rn, Rm)       EMIT(ADDSUB_ext(0, 1, 0, Rm, 0b001, 0, Rn, Rd))
+#define SUBx_UXTW(Rd, Rn, Rm)       EMIT(ADDSUB_ext(1, 1, 0, Rm, 0b010, 0, Rn, Rd))
+#define SUBw_SXTH(Rd, Rn, Rm)       EMIT(ADDSUB_ext(0, 1, 0, Rm, 0b101, 0, Rn, Rd))
+#define SUBx_SXTW(Rd, Rn, Rm)       EMIT(ADDSUB_ext(1, 1, 0, Rm, 0b110, 0, Rn, Rd))
+#define ADDz_UXTB(Rd, Rn, Rm)       EMIT(ADDSUB_ext(rex.is32bits?0:1, 0, 0, Rm, 0b000, 0, Rn, Rd))
 #define ADDw_UXTH(Rd, Rn, Rm)       EMIT(ADDSUB_ext(0, 0, 0, Rm, 0b001, 0, Rn, Rd))
 #define ADDx_UXTW(Rd, Rn, Rm)       EMIT(ADDSUB_ext(1, 0, 0, Rm, 0b010, 0, Rn, Rd))
 #define ADDx_SXTW(Rd, Rn, Rm)       EMIT(ADDSUB_ext(1, 0, 0, Rm, 0b110, 0, Rn, Rd))
@@ -556,7 +563,7 @@ int convert_bitmask(uint64_t bitmask);
 #define BICw_LSL(Rd, Rn, Rm, lsl)       EMIT(LOGIC_REG_gen(0, 0b00, 0b00, 1, Rm, lsl, Rn, Rd))
 #define BICSx(Rd, Rn, Rm)              FEMIT(LOGIC_REG_gen(1, 0b11, 0b00, 1, Rm, 0, Rn, Rd))
 #define BICSw(Rd, Rn, Rm)              FEMIT(LOGIC_REG_gen(0, 0b11, 0b00, 1, Rm, 0, Rn, Rd))
-#define BICxw(Rd, Rn, Rm)              FEMIT(LOGIC_REG_gen(rex.w, 0b00, 0b00, 1, Rm, 0, Rn, Rd))
+#define BICxw(Rd, Rn, Rm)               EMIT(LOGIC_REG_gen(rex.w, 0b00, 0b00, 1, Rm, 0, Rn, Rd))
 #define BICSxw(Rd, Rn, Rm)             FEMIT(LOGIC_REG_gen(rex.w, 0b11, 0b00, 1, Rm, 0, Rn, Rd))
 #define BICx_REG    BICx
 #define BICw_REG    BICw
@@ -1213,6 +1220,11 @@ int convert_bitmask(uint64_t bitmask);
 #define FCMPD(Dn, Dm)              FEMIT(FCMP_scalar(0b01, Dn, Dm, 0b00))
 #define FCMPS_0(Sn)                FEMIT(FCMP_scalar(0b00, Sn, 0, 0b01))
 #define FCMPD_0(Dn)                FEMIT(FCMP_scalar(0b01, Dn, 0, 0b01))
+
+// CCMP . CMP if cond is pass, else use nzcv as new flags
+#define FCCMP_scalar(type, Rm, cond, Rn, op, nzcv)  (0b00011110<<24 | (type)<<22 | 1<<21 | (Rm)<<16 | ((cond)<<12 | 0b01<<10 | (Rn)<<5 | (op)<<4 | (nzcv)))
+#define FCCMPS(Sn, Sm, nzcv, cond) FEMIT(FCCMP_scalar(0b00, Sm, cond, Sn, 0, nzcv))
+#define FCCMPD(Dn, Dm, nzcv, cond) FEMIT(FCCMP_scalar(0b01, Dm, cond, Dn, 0, nzcv))
 
 // CVT
 #define FCVT_scalar(sf, type, rmode, opcode, Rn, Rd)    ((sf)<<31 | 0b11110<<24 | (type)<<22 | 1<<21 | (rmode)<<19 | (opcode)<<16 | (Rn)<<5 | (Rd))

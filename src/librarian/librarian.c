@@ -223,7 +223,7 @@ static int AddNeededLib_add(lib_t** maplib, int local, needed_libs_t* needed, in
         return 0;
     }
     // load a new one
-    needed->libs[n] = lib = NewLibrary(path, box64, verneeded);
+    needed->libs[n] = lib = NewLibrary(path, box64, verneeded, needed->rpath);
     if(!lib) {
         printf_dump(LOG_DEBUG, "Faillure to create lib => fail\n");
         return 1;   //Error
@@ -267,7 +267,7 @@ static int AddNeededLib_add(lib_t** maplib, int local, needed_libs_t* needed, in
             }
             lm->l_addr = (Elf32_Addr)to_ptrv(GetElfDelta(lib->e.elf));
             lm->l_name = to_cstring(lib->name);
-            lm->l_ld = to_ptrv(GetDynamicSection(lib->e.elf));
+            lm->l_ld = to_ptrv(GetLoadedDynamicSection(lib->e.elf));
         } else
         #endif
         {
@@ -279,7 +279,7 @@ static int AddNeededLib_add(lib_t** maplib, int local, needed_libs_t* needed, in
             }
             lm->l_addr = (Elf64_Addr)GetElfDelta(lib->e.elf);
             lm->l_name = lib->name;
-            lm->l_ld = GetDynamicSection(lib->e.elf);
+            lm->l_ld = GetLoadedDynamicSection(lib->e.elf);
         }
         //TODO: it seems to never be removed!
     }
@@ -473,7 +473,7 @@ int GetNextSymbolStartEnd(lib_t *maplib, const char* name, uintptr_t* start, uin
     // search in needed libs from preloaded first, in order
     if(my_context->preload)
         for(int i=0; i<my_context->preload->size; ++i) {
-            if(next) {
+            if (next || BOX64ENV(force_ld_preload)) {
                 if(GetLibGlobalSymbolStartEnd(my_context->preload->libs[i], name, start, end, size, &weak, &version, &vername, 0, &veropt, elfsym)) {
                     return 1;
                 }
@@ -614,13 +614,13 @@ int GetGlobalSymbolStartEnd(lib_t *maplib, const char* name, uintptr_t* start, u
     }
     #ifndef STATICBUILD
     // some special case symbol, defined inside box64 itself
-    if(!strcmp(name, "gdk_display") && !BOX64ENV(nogtk)) {
+    if(!box64_is32bits &&!strcmp(name, "gdk_display") && !BOX64ENV(nogtk)) {
         *start = (uintptr_t)my_GetGTKDisplay();
         *end = *start+sizeof(void*);
         printf_log(LOG_INFO, "Using global gdk_display for gdk-x11 (%p:%p)\n", start, *(void**)start);
         return 1;
     }
-    if(!strcmp(name, "g_threads_got_initialized") && !BOX64ENV(nogtk)) {
+    if(!box64_is32bits && !strcmp(name, "g_threads_got_initialized") && !BOX64ENV(nogtk)) {
         *start = (uintptr_t)my_GetGthreadsGotInitialized();
         *end = *start+sizeof(int);
         printf_log(LOG_INFO, "Using global g_threads_got_initialized for gthread2 (%p:%p)\n", start, *(void**)start);
@@ -687,14 +687,14 @@ int GetGlobalWeakSymbolStartEnd(lib_t *maplib, const char* name, uintptr_t* star
     }
     #ifndef STATICBUILD
     // some special case symbol, defined inside box64 itself
-    if(!strcmp(name, "gdk_display") && !BOX64ENV(nogtk)) {
+    if(!box64_is32bits && !strcmp(name, "gdk_display") && !BOX64ENV(nogtk)) {
         *start = (uintptr_t)my_GetGTKDisplay();
         *end = *start+sizeof(void*);
         if(elfsym) *elfsym = NULL;
         printf_log(LOG_INFO, "Using global gdk_display for gdk-x11 (%p:%p)\n", start, *(void**)start);
         return 1;
     }
-    if(!strcmp(name, "g_threads_got_initialized") && !BOX64ENV(nogtk)) {
+    if(!box64_is32bits && !strcmp(name, "g_threads_got_initialized") && !BOX64ENV(nogtk)) {
         *start = (uintptr_t)my_GetGthreadsGotInitialized();
         *end = *start+sizeof(int);
         if(elfsym) *elfsym = NULL;

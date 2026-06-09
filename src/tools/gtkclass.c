@@ -57,6 +57,8 @@ void iFpppp(x64emu_t* emu, uintptr_t fnc);
 void iFppppp(x64emu_t* emu, uintptr_t fnc);
 void iFpu(x64emu_t* emu, uintptr_t fnc);
 void iFpupp(x64emu_t* emu, uintptr_t fnc);
+void iFppppi(x64emu_t* emu, uintptr_t fnc);
+void iFppppppi(x64emu_t* emu, uintptr_t fnc);
 void pFL(x64emu_t* emu, uintptr_t fnc);
 void pFLup(x64emu_t* emu, uintptr_t fnc);
 void pFp(x64emu_t* emu, uintptr_t fnc);
@@ -68,9 +70,11 @@ void pFpll(x64emu_t* emu, uintptr_t fnc);
 void pFpp(x64emu_t* emu, uintptr_t fnc);
 void pFppL(x64emu_t* emu, uintptr_t fnc);
 void pFppp(x64emu_t* emu, uintptr_t fnc);
+void pFppii(x64emu_t* emu, uintptr_t fnc);
 void pFpppp(x64emu_t* emu, uintptr_t fnc);
 void pFppppp(x64emu_t* emu, uintptr_t fnc);
 void pFpppppp(x64emu_t* emu, uintptr_t fnc);
+void pFppppppi(x64emu_t* emu, uintptr_t fnc);
 void pFv(x64emu_t* emu, uintptr_t fnc);
 void uFpp(x64emu_t* emu, uintptr_t fnc);
 void vFLp(x64emu_t* emu, uintptr_t fnc);
@@ -82,6 +86,7 @@ void vFpii(x64emu_t* emu, uintptr_t fnc);
 void vFpiii(x64emu_t* emu, uintptr_t fnc);
 void vFpip(x64emu_t* emu, uintptr_t fnc);
 void vFpipp(x64emu_t* emu, uintptr_t fnc);
+void vFpippp(x64emu_t* emu, uintptr_t fnc);
 void vFpipppp(x64emu_t* emu, uintptr_t fnc);
 void vFpp(x64emu_t* emu, uintptr_t fnc);
 void vFppdd(x64emu_t* emu, uintptr_t fnc);
@@ -100,6 +105,8 @@ void vFpu(x64emu_t* emu, uintptr_t fnc);
 void vFpup(x64emu_t* emu, uintptr_t fnc);
 void vFpupp(x64emu_t* emu, uintptr_t fnc);
 void vFu(x64emu_t* emu, uintptr_t fnc);
+void vFppppppp(x64emu_t* emu, uintptr_t fnc);
+void vFppppppi(x64emu_t* emu, uintptr_t fnc);
 
 static bridge_t*        my_bridge           = NULL;
 static const char* (*g_type_name)(size_t)   = NULL;
@@ -132,6 +139,14 @@ static kh_customclass_t *my_customclass = NULL;
 
 // ---- Defining the multiple functions now -----
 #include "super80.h"
+
+#define WRAPPED_RET(A, NAME, RET, FRET, DEF, FMT, ...)  \
+static uintptr_t my_##NAME##_fct_##A = 0;   \
+static RET my_##NAME##_##A DEF              \
+{                                           \
+    printf_log(LOG_DEBUG, "Calling " #NAME "_" #A " wrapper\n");                \
+    return FRET((RET)RunFunctionFmt(my_##NAME##_fct_##A, FMT, __VA_ARGS__));    \
+}
 
 #define WRAPPED(A, NAME, RET, DEF, FMT, ...)  \
 static uintptr_t my_##NAME##_fct_##A = 0;   \
@@ -332,6 +347,51 @@ WRAPPED(36, NAME##_##A, RET, DEF, FMT, __VA_ARGS__) \
 WRAPPED(37, NAME##_##A, RET, DEF, FMT, __VA_ARGS__) \
 WRAPPED(38, NAME##_##A, RET, DEF, FMT, __VA_ARGS__) \
 WRAPPED(39, NAME##_##A, RET, DEF, FMT, __VA_ARGS__) \
+FIND(A, NAME)                                       \
+REVERSE(A, NAME)                                    \
+AUTOBRIDGE(A, NAME)
+
+#define WRAPPER_RET(A, NAME, RET, FRET, DEF, FMT, ...)        \
+WRAPPED_RET( 0, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET( 1, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET( 2, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET( 3, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET( 4, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET( 5, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET( 6, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET( 7, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET( 8, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET( 9, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(10, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(11, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(12, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(13, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(14, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(15, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(16, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(17, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(18, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(19, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(20, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(21, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(22, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(23, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(24, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(25, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(26, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(27, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(28, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(29, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(30, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(31, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(32, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(33, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(34, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(35, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(36, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(37, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(38, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
+WRAPPED_RET(39, NAME##_##A, RET, FRET, DEF, FMT, __VA_ARGS__) \
 FIND(A, NAME)                                       \
 REVERSE(A, NAME)                                    \
 AUTOBRIDGE(A, NAME)
@@ -1162,6 +1222,34 @@ static void bridgeGtkActionInstance(my_GtkAction_t* class)
     bridgeGObjectInstance(&class->parent);
 }
 
+// ----- GtkDrawingArea3Class ------
+
+// wrap (so bridge all calls, just in case)
+static void wrapGtkDrawingArea3Class(my_GtkDrawingArea3Class_t* class)
+{
+    wrapGtkWidget3Class(&class->parent_class);
+}
+// unwrap (and use callback if not a native call anymore)
+static void unwrapGtkDrawingArea3Class(my_GtkDrawingArea3Class_t* class)
+{
+    unwrapGtkWidget3Class(&class->parent_class);
+}
+// autobridge
+static void bridgeGtkDrawingArea3Class(my_GtkDrawingArea3Class_t* class)
+{
+    bridgeGtkWidget3Class(&class->parent_class);
+}
+
+static void unwrapGtkDrawingArea3Instance(my_GtkDrawingArea3_t* class)
+{
+    unwrapGtkWidget3Instance(&class->parent);
+}
+// autobridge
+static void bridgeGtkDrawingArea3Instance(my_GtkDrawingArea3_t* class)
+{
+    bridgeGtkWidget3Instance(&class->parent);
+}
+
 // ----- GtkMisc2Class ------
 
 // wrap (so bridge all calls, just in case)
@@ -1189,6 +1277,7 @@ static void bridgeGtkMisc2Instance(my_GtkMisc2_t* class)
 {
     bridgeGtkWidget2Instance(&class->parent);
 }
+
 // ----- GtkMisc3Class ------
 // no wrapper x86 -> natives of callbacks
 
@@ -1831,6 +1920,159 @@ static void bridgeMetaFrames2Instance(my_MetaFrames2_t* class)
 {
     bridgeGtkWindow2Instance(&class->parent);
 }
+// ----- GtkNotebook2Class ------
+WRAPPER(GtkNotebook2Class, switch_page, void, (void* notebook, void* page, uint32_t page_num), "ppp", notebook, page, page_num);
+WRAPPER(GtkNotebook2Class, select_page, int, (void* notebook, int move_focus), "pi", notebook, move_focus);
+WRAPPER(GtkNotebook2Class, focus_tab, int, (void* notebook, int type), "pi", notebook, type);
+WRAPPER(GtkNotebook2Class, change_current_page, int, (void* notebook, int offset), "pi", notebook, offset);
+WRAPPER(GtkNotebook2Class, move_focus_out,void , (void* notebook, int direction), "pi", notebook, direction);
+WRAPPER(GtkNotebook2Class, reorder_tab, int, (void* notebook, int direction, int move_to_last), "pii", notebook, direction, move_to_last);
+WRAPPER(GtkNotebook2Class, insert_page, int, (void* notebook, void* child, void* tab_label, void* menu_label, int position), "ppppi", notebook, child, tab_label, menu_label, position);
+WRAPPER(GtkNotebook2Class, create_window, void*, (void* notebook, void* page, int x, int y), "ppii", notebook, page, x, y);
+
+#define SUPERGO()                   \
+    GO(switch_page, vFppp);         \
+    GO(select_page, iFpi);          \
+    GO(focus_tab, iFpi);            \
+    GO(change_current_page, iFpi);  \
+    GO(move_focus_out, vFpi);       \
+    GO(reorder_tab, iFpii);         \
+    GO(insert_page, iFppppi);       \
+    GO(create_window, pFppii);      \
+
+// wrap (so bridge all calls, just in case)
+static void wrapGtkNotebook2Class(my_GtkNotebook2Class_t* class)
+{
+    wrapGtkContainer2Class(&class->parent_class);
+    #define GO(A, W) class->A = reverse_##A##_GtkNotebook2Class (W, class->A)
+    SUPERGO()
+    #undef GO
+}
+// unwrap (and use callback if not a native call anymore)
+static void unwrapGtkNotebook2Class(my_GtkNotebook2Class_t* class)
+{
+    unwrapGtkContainer2Class(&class->parent_class);
+    #define GO(A, W)   class->A = find_##A##_GtkNotebook2Class (W, class->A)
+    SUPERGO()
+    #undef GO
+}
+// autobridge
+static void bridgeGtkNotebook2Class(my_GtkNotebook2Class_t* class)
+{
+    bridgeGtkContainer2Class(&class->parent_class);
+    #define GO(A, W) autobridge_##A##_GtkNotebook2Class (W, class->A)
+    SUPERGO()
+    #undef GO
+}
+
+#undef SUPERGO
+
+static void unwrapGtkNotebook2Instance(my_GtkNotebook2_t* class)
+{
+    unwrapGtkContainer2Instance(&class->parent);
+}
+// autobridge
+static void bridgeGtkNotebook2Instance(my_GtkNotebook2_t* class)
+{
+    bridgeGtkContainer2Instance(&class->parent);
+}
+
+// ----- GtkCellRenderer2Class ------
+WRAPPER(GtkCellRenderer2Class, get_size, void, (void* cell, void* widget, void* cell_area, int* x_offset, int* y_offset, int* width, int* height), "ppppppp", cell, widget, cell_area, x_offset, y_offset, width, height);
+WRAPPER(GtkCellRenderer2Class, render, void, (void* cell, void* window, void* widget, void* background_area, void* cell_area, void* expose_area, int flags), "ppppppi", cell, window, widget, background_area, cell_area, expose_area, flags);
+WRAPPER(GtkCellRenderer2Class, activate, int, (void* cell, void* event, void* widget, void* path, void* background_area, void* cell_area, int flags), "ppppppi", cell, event, widget, path, background_area, cell_area, flags);
+WRAPPER(GtkCellRenderer2Class, start_editing, void*, (void* cell, void* event, void* widget, void* path, void* background_area, void* cell_area, int flags), "ppppppi", cell, event, widget, path, background_area, cell_area, flags);
+WRAPPER(GtkCellRenderer2Class, editing_canceled, void, (void* cell), "p", cell);
+WRAPPER(GtkCellRenderer2Class, editing_started, void, (void* cell, void* editable, void* path), "ppp", cell, editable, path);
+  
+#define SUPERGO()                   \
+    GO(get_size, vFppppppp);        \
+    GO(render, vFppppppi);          \
+    GO(activate, iFppppppi);        \
+    GO(start_editing, pFppppppi);   \
+    GO(editing_canceled, vFp);      \
+    GO(editing_started, vFppp);     \
+
+// wrap (so bridge all calls, just in case)
+static void wrapGtkCellRenderer2Class(my_GtkCellRenderer2Class_t* class)
+{
+    wrapGtkObjectClass(&class->parent_class);
+    #define GO(A, W) class->A = reverse_##A##_GtkCellRenderer2Class (W, class->A)
+    SUPERGO()
+    #undef GO
+}
+// unwrap (and use callback if not a native call anymore)
+static void unwrapGtkCellRenderer2Class(my_GtkCellRenderer2Class_t* class)
+{
+    unwrapGtkObjectClass(&class->parent_class);
+    #define GO(A, W)   class->A = find_##A##_GtkCellRenderer2Class (W, class->A)
+    SUPERGO()
+    #undef GO
+}
+// autobridge
+static void bridgeGtkCellRenderer2Class(my_GtkCellRenderer2Class_t* class)
+{
+    bridgeGtkObjectClass(&class->parent_class);
+    #define GO(A, W) autobridge_##A##_GtkCellRenderer2Class (W, class->A)
+    SUPERGO()
+    #undef GO
+}
+
+#undef SUPERGO
+
+static void unwrapGtkCellRenderer2Instance(my_GtkCellRenderer2_t* class)
+{
+    unwrapGtkObjectInstance(&class->parent);
+}
+// autobridge
+static void bridgeGtkCellRenderer2Instance(my_GtkCellRenderer2_t* class)
+{
+    bridgeGtkObjectInstance(&class->parent);
+}
+
+// ----- GtkCellRendererText2Class ------
+WRAPPER(GtkCellRendererText2Class, edited, void, (void* cell_renderer_text, void* path, void* new_text), "ppp", cell_renderer_text, path, new_text);
+  
+#define SUPERGO()                   \
+    GO(edited, vFppp);              \
+
+// wrap (so bridge all calls, just in case)
+static void wrapGtkCellRendererText2Class(my_GtkCellRendererText2Class_t* class)
+{
+    wrapGtkCellRenderer2Class(&class->parent_class);
+    #define GO(A, W) class->A = reverse_##A##_GtkCellRendererText2Class (W, class->A)
+    SUPERGO()
+    #undef GO
+}
+// unwrap (and use callback if not a native call anymore)
+static void unwrapGtkCellRendererText2Class(my_GtkCellRendererText2Class_t* class)
+{
+    unwrapGtkCellRenderer2Class(&class->parent_class);
+    #define GO(A, W)   class->A = find_##A##_GtkCellRendererText2Class (W, class->A)
+    SUPERGO()
+    #undef GO
+}
+// autobridge
+static void bridgeGtkCellRendererText2Class(my_GtkCellRendererText2Class_t* class)
+{
+    bridgeGtkCellRenderer2Class(&class->parent_class);
+    #define GO(A, W) autobridge_##A##_GtkCellRendererText2Class (W, class->A)
+    SUPERGO()
+    #undef GO
+}
+
+#undef SUPERGO
+
+static void unwrapGtkCellRendererText2Instance(my_GtkCellRendererText2_t* class)
+{
+    unwrapGtkCellRenderer2Instance(&class->parent);
+}
+// autobridge
+static void bridgeGtkCellRendererText2Instance(my_GtkCellRendererText2_t* class)
+{
+    bridgeGtkCellRenderer2Instance(&class->parent);
+}
+
 // ----- GDBusObjectManagerClientClass ------
 // wrapper x86 -> natives of callbacks
 WRAPPER(GDBusObjectManagerClient,interface_proxy_signal, void, (void* manager, void* object_proxy, void* interface_proxy, void* sender_name, void* signal_name, void* parameters), "pppppp", manager, object_proxy, interface_proxy, sender_name, signal_name, parameters);
@@ -1874,6 +2116,59 @@ static void unwrapGDBusObjectManagerClientInstance(my_GDBusObjectManagerClient_t
 }
 // autobridge
 static void bridgeGDBusObjectManagerClientInstance(my_GDBusObjectManagerClient_t* class)
+{
+    bridgeGObjectInstance(&class->parent);
+}
+
+// ----- GDBusInterfaceSkeletonClass ------
+// wrapper x86 -> natives of callbacks
+WRAPPER(GDBusInterfaceSkeleton,get_info, void*, (void* interface_), "p", interface_);
+WRAPPER_RET(GDBusInterfaceSkeleton,get_vtable, my_GDBusInterfaceVTable_t*, findFreeGDBusInterfaceVTable,(void* interface_), "p", interface_);
+WRAPPER(GDBusInterfaceSkeleton,get_properties, void*, (void* interface_), "p", interface_);
+WRAPPER(GDBusInterfaceSkeleton,flush, void, (void* interface_), "p", interface_);
+WRAPPER(GDBusInterfaceSkeleton,g_authorize_method, int, (void* interface_, void* invocation), "pp", interface_, invocation);
+
+#define SUPERGO()                   \
+    GO(get_info, pFp);              \
+    GO(get_vtable, pFp);            \
+    GO(get_properties, pFp);        \
+    GO(flush, vFp);                 \
+    GO(g_authorize_method, iFpp);   \
+
+
+// wrap (so bridge all calls, just in case)
+static void wrapGDBusInterfaceSkeletonClass(my_GDBusInterfaceSkeletonClass_t* class)
+{
+    wrapGObjectClass(&class->parent);
+    #define GO(A, W) class->A = reverse_##A##_GDBusInterfaceSkeleton (W, class->A)
+    SUPERGO()
+    #undef GO
+}
+// unwrap (and use callback if not a native call anymore)
+static void unwrapGDBusInterfaceSkeletonClass(my_GDBusInterfaceSkeletonClass_t* class)
+{
+    unwrapGObjectClass(&class->parent);
+    #define GO(A, W)   class->A = find_##A##_GDBusInterfaceSkeleton (W, class->A)
+    SUPERGO()
+    #undef GO
+}
+// autobridge
+static void bridgeGDBusInterfaceSkeletonClass(my_GDBusInterfaceSkeletonClass_t* class)
+{
+    bridgeGObjectClass(&class->parent);
+    #define GO(A, W) autobridge_##A##_GDBusInterfaceSkeleton (W, class->A)
+    SUPERGO()
+    #undef GO
+}
+
+#undef SUPERGO
+
+static void unwrapGDBusInterfaceSkeletonInstance(my_GDBusInterfaceSkeleton_t* class)
+{
+    unwrapGObjectInstance(&class->parent);
+}
+// autobridge
+static void bridgeGDBusInterfaceSkeletonInstance(my_GDBusInterfaceSkeleton_t* class)
 {
     bridgeGObjectInstance(&class->parent);
 }
@@ -4454,6 +4749,80 @@ static void bridgeGstAudioDecoderInstance(my_GstAudioDecoder_t* class)
 {
     bridgeGstElementInstance(&class->parent);
 }
+// ----- GstAudioEncoderClass ------
+// wrapper x86 -> natives of callbacks
+WRAPPER(GstAudioEncoder, start, int, (void* enc), "p", enc);
+WRAPPER(GstAudioEncoder, stop, int, (void* enc), "p", enc);
+WRAPPER(GstAudioEncoder, set_format, int, (void* enc, void* info), "pp", enc, info);
+WRAPPER(GstAudioEncoder, handle_frame, int, (void* enc, void* buffer), "pp", enc, buffer);
+WRAPPER(GstAudioEncoder, flush, void, (void* enc), "p", enc);
+WRAPPER(GstAudioEncoder, pre_push, int, (void* enc, void* *buffer), "pp", enc, buffer);
+WRAPPER(GstAudioEncoder, sink_event, int, (void* enc, void* event), "pp", enc, event);
+WRAPPER(GstAudioEncoder, src_event, int, (void* enc, void* event), "pp", enc, event);
+WRAPPER(GstAudioEncoder, getcaps, void, (void* enc, void* filter), "pp", enc, filter);
+WRAPPER(GstAudioEncoder, open, int, (void* enc), "p", enc);
+WRAPPER(GstAudioEncoder, close, int, (void* enc), "p", enc);
+WRAPPER(GstAudioEncoder, negotiate, int, (void* enc), "p", enc);
+WRAPPER(GstAudioEncoder, decide_allocation, int, (void* enc, void* query), "pp", enc, query);
+WRAPPER(GstAudioEncoder, propose_allocation, int, (void* enc, void*  query), "pp", enc, query);
+WRAPPER(GstAudioEncoder, transform_meta, int, (void* enc, void* outbuf, void* meta, void* inbuf), "pppp", enc, outbuf, meta, inbuf);
+WRAPPER(GstAudioEncoder, sink_query, int, (void* enc, void* query), "pp", enc, query);
+WRAPPER(GstAudioEncoder, src_query, int, (void* enc, void* query), "pp", enc, query);
+
+#define SUPERGO()                       \
+    GO(start, iFp);                     \
+    GO(stop, iFp);                      \
+    GO(set_format, iFpp);               \
+    GO(handle_frame, iFpp);             \
+    GO(flush, vFpi);                    \
+    GO(pre_push, iFpp);                 \
+    GO(sink_event, iFpp);               \
+    GO(src_event, iFpp);                \
+    GO(getcaps, vFpp);                  \
+    GO(open, iFp);                      \
+    GO(close, iFp);                     \
+    GO(negotiate, iFp);                 \
+    GO(decide_allocation, iFpp);        \
+    GO(propose_allocation, iFpp);       \
+    GO(transform_meta, iFpppp);         \
+    GO(sink_query, iFpp);               \
+    GO(src_query, iFpp);                \
+
+// wrap (so bridge all calls, just in case)
+static void wrapGstAudioEncoderClass(my_GstAudioEncoderClass_t* class)
+{
+    wrapGstElementClass(&class->parent_class);
+    #define GO(A, W) class->A = reverse_##A##_GstAudioEncoder (W, class->A)
+    SUPERGO()
+    #undef GO
+}
+// unwrap (and use callback if not a native call anymore)
+static void unwrapGstAudioEncoderClass(my_GstAudioEncoderClass_t* class)
+{
+    unwrapGstElementClass(&class->parent_class);
+    #define GO(A, W)   class->A = find_##A##_GstAudioEncoder (W, class->A)
+    SUPERGO()
+    #undef GO
+}
+// autobridge
+static void bridgeGstAudioEncoderClass(my_GstAudioEncoderClass_t* class)
+{
+    bridgeGstElementClass(&class->parent_class);
+    #define GO(A, W) autobridge_##A##_GstAudioEncoder (W, class->A)
+    SUPERGO()
+    #undef GO
+}
+#undef SUPERGO
+
+static void unwrapGstAudioEncoderInstance(my_GstAudioEncoder_t* class)
+{
+    unwrapGstElementInstance(&class->parent);
+}
+// autobridge
+static void bridgeGstAudioEncoderInstance(my_GstAudioEncoder_t* class)
+{
+    bridgeGstElementInstance(&class->parent);
+}
 // ----- GstVideoFilterClass ------
 // wrapper x86 -> natives of callbacks
 WRAPPER(GstVideoFilter, set_info, int, (void* filter, void* incaps, void* in_info, void* outcaps, void* out_info), "ppppp", filter, incaps, in_info, outcaps, out_info);
@@ -4728,6 +5097,75 @@ static void bridgeGstURIHandlerInterface(my_GstURIHandlerInterface_t* iface)
 }
 
 #undef SUPERGO
+// ----- GInitableInterface ------
+// wrapper x86 -> natives of callbacks
+WRAPPER(GInitable,init, int, (void* initable, void* cancellable, void* error), "ppp", initable, cancellable, error);
+
+#define SUPERGO()       \
+    GO(init, iFppp);    \
+
+// wrap (so bridge all calls, just in case)
+static void wrapGInitableInterface(my_GInitableInterface_t* iface)
+{
+    // parent don't need wrazpping
+    #define GO(A, W) iface->A = reverse_##A##_GInitable (W, iface->A)
+    SUPERGO()
+    #undef GO
+}
+// unwrap (and use callback if not a native call anymore)
+static void unwrapGInitableInterface(my_GInitableInterface_t* iface)
+{
+    // parent don't need wrazpping
+    #define GO(A, W)   iface->A = find_##A##_GInitable (W, iface->A)
+    SUPERGO()
+    #undef GO
+}
+// autobridge
+static void bridgeGInitableInterface(my_GInitableInterface_t* iface)
+{
+    // parent don't need wrazpping
+    #define GO(A, W) autobridge_##A##_GInitable (W, iface->A)
+    SUPERGO()
+    #undef GO
+}
+
+#undef SUPERGO
+// ----- GAsyncInitableInterface ------
+// wrapper x86 -> natives of callbacks
+void* findGAsyncReadyCallbackFct(void* fct);    // defined in wrappedgio2.c
+WRAPPER(GAsyncInitable, init_async, void, (void* initable, int io_priority, void* cancellable, void* callback, void* user_data), "pippp", initable, io_priority, cancellable, findGAsyncReadyCallbackFct(callback), user_data);
+WRAPPER(GAsyncInitable, init_finish, int, (void* initable, void* res, void* error), "ppp", initable, res, error);
+
+#define SUPERGO()               \
+    GO(init_async, vFpippp);    \
+    GO(init_finish, iFppp);     \
+
+// wrap (so bridge all calls, just in case)
+static void wrapGAsyncInitableInterface(my_GAsyncInitableInterface_t* iface)
+{
+    // parent don't need wrazpping
+    #define GO(A, W) iface->A = reverse_##A##_GAsyncInitable (W, iface->A)
+    SUPERGO()
+    #undef GO
+}
+// unwrap (and use callback if not a native call anymore)
+static void unwrapGAsyncInitableInterface(my_GAsyncInitableInterface_t* iface)
+{
+    // parent don't need wrazpping
+    #define GO(A, W)   iface->A = find_##A##_GAsyncInitable (W, iface->A)
+    SUPERGO()
+    #undef GO
+}
+// autobridge
+static void bridgeGAsyncInitableInterface(my_GAsyncInitableInterface_t* iface)
+{
+    // parent don't need wrazpping
+    #define GO(A, W) autobridge_##A##_GAsyncInitable (W, iface->A)
+    SUPERGO()
+    #undef GO
+}
+
+#undef SUPERGO
 // No more wrap/unwrap
 #undef WRAPPER
 #undef FIND
@@ -4767,7 +5205,7 @@ void wrapGTKClass(void* cl, size_t type)
 
     printf_log(LOG_DEBUG, "wrapGTKClass(%p, %zd (%s))\n", cl, type, g_type_name(type));
     GTKCLASSES()
-    if(type==8) {}  // GInterface have no structure
+    if(type<0x35) {}  // GInterface (8) and other simple opbjects have no structure
     else {
         if(my_MetaFrames2==(size_t)-1 && !strcmp(g_type_name(type), "MetaFrames")) {
             my_MetaFrames2 = type;
@@ -4787,11 +5225,11 @@ void unwrapGTKClass(void* cl, size_t type)
         unwrap##A##Class((my_##A##Class_t*)cl);     \
     else
 
-    printf_log(LOG_DEBUG, "unwrapGTKClass(%p, %zd (%s))\n", cl, type, g_type_name(type));
+    printf_log(LOG_DEBUG, "...unwrapGTKClass(%p, %zd (%s))\n", cl, type, g_type_name(type));
     GTKCLASSES()
-    if(type==8) {}  // GInterface have no structure
+    if(type<0x35) {}  // GInterface (8) and other simple opbjects have no structure
     else
-    {}  // else no warning, one is enough...
+        printf_log(LOG_NONE, "Warning: fail to unwrapGTKClass for type %zx (%s)\n", type, g_type_name(type));
     #undef GTKCLASS
     #undef GTKIFACE
 }
@@ -4806,9 +5244,9 @@ static void bridgeGTKClass(void* cl, size_t type)
 
     printf_log(LOG_DEBUG, "bridgeGTKClass(%p, %zd (%s))\n", cl, type, g_type_name(type));
     GTKCLASSES()
-    if(type==8) {}  // GInterface have no structure
+    if(type<0x35) {}  // GInterface (8) and other simple opbjects have no structure
     else {
-        printf_log(LOG_NONE, "Warning, AutoBridge GTK Class with unknown class type 0w%zx (%s)\n", type, g_type_name(type));
+        printf_log(LOG_NONE, "Warning, AutoBridge GTK Class with unknown class type 0x%zx (%s)\n", type, g_type_name(type));
     }
     #undef GTKCLASS
     #undef GTKIFACE
@@ -4824,7 +5262,7 @@ static void wrapGTKInterface(void* cl, size_t type)
 
     printf_log(LOG_DEBUG, "wrapGTKInterface(%p, %zd (%s))\n", cl, type, g_type_name(type));
     GTKCLASSES()
-    if(type==8) {}  // GInterface have no structure
+    if(type<0x35) {}  // GInterface (8) and other simple opbjects have no structure
     else {
         printf_log(LOG_NONE, "Warning, Custom Interface initializer with unknown class type 0x%zx (%s)\n", type, g_type_name(type));
     }
@@ -4842,7 +5280,7 @@ void unwrapGTKInterface(void* cl, size_t type)
 
     printf_log(LOG_DEBUG, "unwrapGTKInterface(%p, %zd (%s))\n", cl, type, g_type_name(type));
     GTKCLASSES()
-    if(type==8) {}  // GInterface have no structure
+    if(type<0x35) {}  // GInterface (8) and other simple opbjects have no structure
     else
     {}  // else no warning, one is enough...
     #undef GTKIFACE
@@ -4859,7 +5297,7 @@ static void bridgeGTKInterface(void* cl, size_t type)
 
     printf_log(LOG_DEBUG, "bridgeGTKInterface(%p, %zd (%s))\n", cl, type, g_type_name(type));
     GTKCLASSES()
-    if(type==8) {}  // GInterface have no structure
+    if(type<0x35) {}  // GInterface (8) and other simple opbjects have no structure
     else {
         printf_log(LOG_NONE, "Warning, AutoBridge GTK Interface with unknown class type 0x%zx (%s)\n", type, g_type_name(type));
     }
@@ -4877,7 +5315,7 @@ void unwrapGTKInstance(void* cl, size_t type)
 
     printf_log(LOG_DEBUG, "unwrapGTKInstance(%p, %zd (%s))\n", cl, type, g_type_name(type));
     GTKCLASSES()
-    if(type==8) {}  // GInterface have no structure
+    if(type<0x35) {}  // GInterface (8) and other simple opbjects have no structure
     else
     {}  // else no warning, one is enough...
     #undef GTKCLASS
@@ -4894,7 +5332,7 @@ void bridgeGTKInstance(void* cl, size_t type)
 
     printf_log(LOG_DEBUG, "bridgeGTKInstance(%p, %zd (%s))\n", cl, type, g_type_name(type));
     GTKCLASSES()
-    if(type==8) {}  // GInterface have no structure
+    if(type<0x35) {}  // GInterface (8) and other simple opbjects have no structure
     else {
         printf_log(LOG_NONE, "Warning, AutoBridge GTK Class with unknown class type 0w%zx (%s)\n", type, g_type_name(type));
     }
@@ -4930,7 +5368,7 @@ void* unwrapCopyGTKClass(void* klass, size_t type)
     #define GTKIFACE(A)
     #define GTKCLASS(A) if(type==my_##A) sz = sizeof(my_##A##Class_t); else
     GTKCLASSES()
-    if(type==8) {}  // GInterface have no structure
+    if(type<0x35) {}  // GInterface (8) and other simple opbjects have no structure
     else {
         printf_log(LOG_NONE, "Warning, unwrapCopyGTKClass called with unknown class type 0x%zx (%s)\n", type, g_type_name(type));
         return klass;
@@ -4963,7 +5401,7 @@ void* unwrapCopyGTKInterface(void* iface, size_t type)
     #define GTKIFACE(A) if(type==my_##A) sz = sizeof(my_##A##Interface_t); else
     #define GTKCLASS(A)
     GTKCLASSES()
-    if(type==8) {}  // GInterface have no structure
+    if(type<0x35) {}  // GInterface (8) and other simple opbjects have no structure
     else {
         printf_log(LOG_NONE, "Warning, unwrapCopyGTKInterface called with unknown class type 0x%zx (%s)\n", type, g_type_name(type));
         return iface;
@@ -5302,9 +5740,288 @@ static void* find_signal7_Fct(void* fct)
     printf_log(LOG_NONE, "Warning, no more slot for GTypeInfo signal7 callback\n");
     return NULL;
 }
+// signal8 ...
+#define GO(A)                                                                                           \
+    static uintptr_t my_signal8_fct_##A = 0;                                                            \
+    static void* my_signal8_##A(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h) \
+    {                                                                                                   \
+        return (void*)RunFunctionFmt(my_signal8_fct_##A, "pppppppp", a, b, c, d, e, f, g, h);           \
+    }
+SUPER()
+#undef GO
+static void* find_signal8_Fct(void* fct)
+{
+    if (!fct) return fct;
+    if (GetNativeFnc((uintptr_t)fct)) return GetNativeFnc((uintptr_t)fct);
+#define GO(A) \
+    if (my_signal8_fct_##A == (uintptr_t)fct) return my_signal8_##A;
+    SUPER()
+#undef GO
+#define GO(A)                                \
+    if (my_signal8_fct_##A == 0) {           \
+        my_signal8_fct_##A = (uintptr_t)fct; \
+        return my_signal8_##A;               \
+    }
+    SUPER()
+#undef GO
+    printf_log(LOG_NONE, "Warning, no more slot for GTypeInfo signal8 callback\n");
+    return NULL;
+}
+// signal9 ...
+#define GO(A)                                                                                                   \
+    static uintptr_t my_signal9_fct_##A = 0;                                                                    \
+    static void* my_signal9_##A(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i)\
+    {                                                                                                           \
+        return (void*)RunFunctionFmt(my_signal9_fct_##A, "ppppppppp", a, b, c, d, e, f, g, h, i);               \
+    }
+SUPER()
+#undef GO
+static void* find_signal9_Fct(void* fct)
+{
+    if (!fct) return fct;
+    if (GetNativeFnc((uintptr_t)fct)) return GetNativeFnc((uintptr_t)fct);
+#define GO(A) \
+    if (my_signal9_fct_##A == (uintptr_t)fct) return my_signal9_##A;
+    SUPER()
+#undef GO
+#define GO(A)                                \
+    if (my_signal9_fct_##A == 0) {           \
+        my_signal9_fct_##A = (uintptr_t)fct; \
+        return my_signal9_##A;               \
+    }
+    SUPER()
+#undef GO
+    printf_log(LOG_NONE, "Warning, no more slot for GTypeInfo signal9 callback\n");
+    return NULL;
+}
+// signal10 ...
+#define GO(A)                                                                                                               \
+    static uintptr_t my_signal10_fct_##A = 0;                                                                               \
+    static void* my_signal10_##A(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j)  \
+    {                                                                                                                       \
+        return (void*)RunFunctionFmt(my_signal10_fct_##A, "pppppppppp", a, b, c, d, e, f, g, h, i, j);                      \
+    }
+SUPER()
+#undef GO
+static void* find_signal10_Fct(void* fct)
+{
+    if (!fct) return fct;
+    if (GetNativeFnc((uintptr_t)fct)) return GetNativeFnc((uintptr_t)fct);
+#define GO(A) \
+    if (my_signal10_fct_##A == (uintptr_t)fct) return my_signal10_##A;
+    SUPER()
+#undef GO
+#define GO(A)                                 \
+    if (my_signal10_fct_##A == 0) {           \
+        my_signal10_fct_##A = (uintptr_t)fct; \
+        return my_signal10_##A;               \
+    }
+    SUPER()
+#undef GO
+    printf_log(LOG_NONE, "Warning, no more slot for GTypeInfo signal10 callback\n");
+    return NULL;
+}
+// signal11 ...
+#define GO(A)                                                                                                                       \
+    static uintptr_t my_signal11_fct_##A = 0;                                                                                       \
+    static void* my_signal11_##A(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k) \
+    {                                                                                                                               \
+        return (void*)RunFunctionFmt(my_signal11_fct_##A, "ppppppppppp", a, b, c, d, e, f, g, h, i, j, k);                          \
+    }
+SUPER()
+#undef GO
+static void* find_signal11_Fct(void* fct)
+{
+    if (!fct) return fct;
+    if (GetNativeFnc((uintptr_t)fct)) return GetNativeFnc((uintptr_t)fct);
+#define GO(A) \
+    if (my_signal11_fct_##A == (uintptr_t)fct) return my_signal11_##A;
+    SUPER()
+#undef GO
+#define GO(A)                                 \
+    if (my_signal11_fct_##A == 0) {           \
+        my_signal11_fct_##A = (uintptr_t)fct; \
+        return my_signal11_##A;               \
+    }
+    SUPER()
+#undef GO
+    printf_log(LOG_NONE, "Warning, no more slot for GTypeInfo signal11 callback\n");
+    return NULL;
+}
+// signal12 ...
+#define GO(A)                                                                                                                               \
+    static uintptr_t my_signal12_fct_##A = 0;                                                                                               \
+    static void* my_signal12_##A(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l)\
+    {                                                                                                                                       \
+        return (void*)RunFunctionFmt(my_signal12_fct_##A, "pppppppppppp", a, b, c, d, e, f, g, h, i, j, k, l);                              \
+    }
+SUPER()
+#undef GO
+static void* find_signal12_Fct(void* fct)
+{
+    if (!fct) return fct;
+    if (GetNativeFnc((uintptr_t)fct)) return GetNativeFnc((uintptr_t)fct);
+#define GO(A) \
+    if (my_signal12_fct_##A == (uintptr_t)fct) return my_signal12_##A;
+    SUPER()
+#undef GO
+#define GO(A)                                 \
+    if (my_signal12_fct_##A == 0) {           \
+        my_signal12_fct_##A = (uintptr_t)fct; \
+        return my_signal12_##A;               \
+    }
+    SUPER()
+#undef GO
+    printf_log(LOG_NONE, "Warning, no more slot for GTypeInfo signal12 callback\n");
+    return NULL;
+}
+// signal13 ...
+#define GO(A)                                                                                                                                           \
+    static uintptr_t my_signal13_fct_##A = 0;                                                                                                           \
+    static void* my_signal13_##A(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k, void* l, void* m)   \
+    {                                                                                                                                                   \
+        return (void*)RunFunctionFmt(my_signal13_fct_##A, "ppppppppppppp", a, b, c, d, e, f, g, h, i, j, k, l, m);                                      \
+    }
+SUPER()
+#undef GO
+static void* find_signal13_Fct(void* fct)
+{
+    if (!fct) return fct;
+    if (GetNativeFnc((uintptr_t)fct)) return GetNativeFnc((uintptr_t)fct);
+#define GO(A) \
+    if (my_signal13_fct_##A == (uintptr_t)fct) return my_signal13_##A;
+    SUPER()
+#undef GO
+#define GO(A)                                 \
+    if (my_signal13_fct_##A == 0) {           \
+        my_signal13_fct_##A = (uintptr_t)fct; \
+        return my_signal13_##A;               \
+    }
+    SUPER()
+#undef GO
+    printf_log(LOG_NONE, "Warning, no more slot for GTypeInfo signal12 callback\n");
+    return NULL;
+}
+// signal14 ...
+#define GO(A)                                                                                                                                           \
+    static uintptr_t my_signal14_fct_##A = 0;                                                                                                           \
+    static void* my_signal14_##A(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k,                     \
+        void* l, void* m, void* n)                                                                                                                      \
+    {                                                                                                                                                   \
+        return (void*)RunFunctionFmt(my_signal14_fct_##A, "pppppppppppppp", a, b, c, d, e, f, g, h, i, j, k, l, m, n);                                  \
+    }
+SUPER()
+#undef GO
+static void* find_signal14_Fct(void* fct)
+{
+    if (!fct) return fct;
+    if (GetNativeFnc((uintptr_t)fct)) return GetNativeFnc((uintptr_t)fct);
+#define GO(A) \
+    if (my_signal14_fct_##A == (uintptr_t)fct) return my_signal14_##A;
+    SUPER()
+#undef GO
+#define GO(A)                                 \
+    if (my_signal14_fct_##A == 0) {           \
+        my_signal14_fct_##A = (uintptr_t)fct; \
+        return my_signal14_##A;               \
+    }
+    SUPER()
+#undef GO
+    printf_log(LOG_NONE, "Warning, no more slot for GTypeInfo signal12 callback\n");
+    return NULL;
+}
+// signal15 ...
+#define GO(A)                                                                                                                                           \
+    static uintptr_t my_signal15_fct_##A = 0;                                                                                                           \
+    static void* my_signal15_##A(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k,                     \
+        void* l, void* m, void* n, void* o)                                                                                                             \
+    {                                                                                                                                                   \
+        return (void*)RunFunctionFmt(my_signal15_fct_##A, "ppppppppppppppp", a, b, c, d, e, f, g, h, i, j, k, l, m, n, o);                              \
+    }
+SUPER()
+#undef GO
+static void* find_signal15_Fct(void* fct)
+{
+    if (!fct) return fct;
+    if (GetNativeFnc((uintptr_t)fct)) return GetNativeFnc((uintptr_t)fct);
+#define GO(A) \
+    if (my_signal15_fct_##A == (uintptr_t)fct) return my_signal15_##A;
+    SUPER()
+#undef GO
+#define GO(A)                                 \
+    if (my_signal15_fct_##A == 0) {           \
+        my_signal15_fct_##A = (uintptr_t)fct; \
+        return my_signal15_##A;               \
+    }
+    SUPER()
+#undef GO
+    printf_log(LOG_NONE, "Warning, no more slot for GTypeInfo signal12 callback\n");
+    return NULL;
+}
+// signal16 ...
+#define GO(A)                                                                                                                                           \
+    static uintptr_t my_signal16_fct_##A = 0;                                                                                                           \
+    static void* my_signal16_##A(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k,                     \
+        void* l, void* m, void* n, void* o, void* p)                                                                                                    \
+    {                                                                                                                                                   \
+        return (void*)RunFunctionFmt(my_signal16_fct_##A, "pppppppppppppppp", a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p);                          \
+    }
+SUPER()
+#undef GO
+static void* find_signal16_Fct(void* fct)
+{
+    if (!fct) return fct;
+    if (GetNativeFnc((uintptr_t)fct)) return GetNativeFnc((uintptr_t)fct);
+#define GO(A) \
+    if (my_signal16_fct_##A == (uintptr_t)fct) return my_signal16_##A;
+    SUPER()
+#undef GO
+#define GO(A)                                 \
+    if (my_signal16_fct_##A == 0) {           \
+        my_signal16_fct_##A = (uintptr_t)fct; \
+        return my_signal16_##A;               \
+    }
+    SUPER()
+#undef GO
+    printf_log(LOG_NONE, "Warning, no more slot for GTypeInfo signal12 callback\n");
+    return NULL;
+}
+// signal17 ...
+#define GO(A)                                                                                                                                           \
+    static uintptr_t my_signal17_fct_##A = 0;                                                                                                           \
+    static void* my_signal17_##A(void* a, void* b, void* c, void* d, void* e, void* f, void* g, void* h, void* i, void* j, void* k,                     \
+        void* l, void* m, void* n, void* o, void* p, void* q)                                                                                           \
+    {                                                                                                                                                   \
+        return (void*)RunFunctionFmt(my_signal17_fct_##A, "ppppppppppppppppp", a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q);                      \
+    }
+SUPER()
+#undef GO
+static void* find_signal17_Fct(void* fct)
+{
+    if (!fct) return fct;
+    if (GetNativeFnc((uintptr_t)fct)) return GetNativeFnc((uintptr_t)fct);
+#define GO(A) \
+    if (my_signal17_fct_##A == (uintptr_t)fct) return my_signal17_##A;
+    SUPER()
+#undef GO
+#define GO(A)                                 \
+    if (my_signal17_fct_##A == 0) {           \
+        my_signal17_fct_##A = (uintptr_t)fct; \
+        return my_signal17_##A;               \
+    }
+    SUPER()
+#undef GO
+    printf_log(LOG_NONE, "Warning, no more slot for GTypeInfo signal12 callback\n");
+    return NULL;
+}
 typedef void* (*finder_t)(void*);
-static const finder_t finders[] = {find_signal2_Fct, find_signal3_Fct, find_signal4_Fct, find_signal5_Fct, find_signal6_Fct, find_signal7_Fct};
-#define MAX_SIGNAL_N (7-2)
+static const finder_t finders[] = {
+    find_signal2_Fct, find_signal3_Fct, find_signal4_Fct, find_signal5_Fct, find_signal6_Fct,
+    find_signal7_Fct, find_signal8_Fct, find_signal9_Fct, find_signal10_Fct, find_signal11_Fct,
+    find_signal12_Fct, find_signal13_Fct, find_signal14_Fct, find_signal15_Fct, find_signal16_Fct,
+    find_signal17_Fct
+};
+#define MAX_SIGNAL_N (17 - 2)
 
 // ---- GTypeInfo ----
 // let's handle signal with offset, that are used to wrap custom signal function
@@ -5436,7 +6153,7 @@ static int my_class_init_##A(void* a, void* b)                              \
 }
 SUPER()
 #undef GO
-void* find_class_init_Fct(void* fct, size_t parent)
+static void* find_class_init_Fct(void* fct, size_t parent)
 {
     if(!fct) return fct;
     if(GetNativeFnc((uintptr_t)fct))  return GetNativeFnc((uintptr_t)fct);

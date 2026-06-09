@@ -72,7 +72,7 @@ void PrintTrace(x64emu_t* emu, uintptr_t ip, int dynarec)
             if(a==0) {
                 printf_log_prefix(0, LOG_NONE, "%p: Exit x86emu\n", (void*)ip);
             } else {
-                printf_log_prefix(0, LOG_NONE, "%p: Native call to %p => %s\n", (void*)ip, (void*)a, GetNativeName(*(void**)(ip+11)));
+                printf_log_prefix(0, LOG_NONE, "%p: Native call to %p => %s\n", (void*)ip, (void*)a, GetNativeName(*(void**)(ip+11), 1));
             }
         } else {
             printf_log_prefix(0, LOG_NONE, "%s", DecodeX64Trace(is32bits ? my_context->dec32 : my_context->dec, ip, 1));
@@ -162,7 +162,12 @@ void PrintTrace(x64emu_t* emu, uintptr_t ip, int dynarec)
                     printf_log_prefix(0, LOG_NONE, " => %p", (void*)nextaddr);
                     PrintFunctionAddr(nextaddr, "=> ");
                 }
-
+            } else if(peek==0xF2 && PK(1)==0xFF) {
+                if(PK(2)==0x25) {
+                    uintptr_t nextaddr = is32bits?(*(uint32_t*)(uintptr_t)PK32(3)):(*(uintptr_t*)(ip + 7 + PK32(3)));
+                    if(!PrintFunctionAddr(nextaddr, "=> "))
+                        printf_log_prefix(0, LOG_NONE, " => %p", (void*)nextaddr);
+                }
             }
             printf_log_prefix(0, LOG_NONE, "\n");
         }

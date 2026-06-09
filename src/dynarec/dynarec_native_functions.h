@@ -71,7 +71,7 @@ void native_div0(x64emu_t* emu);
 // Caches transformation (for loops) // Specific, need to be written par backend
 int CacheNeedsTransform(dynarec_native_t* dyn, int i1);
 // propagete defererd to unknow, as state is not needed
-void propagate_nodf(dynarec_native_t* dyn, int ninst);
+void propagate_nodf(dynarec_native_t* dyn);
 
 // predecessor access
 int isPred(dynarec_native_t* dyn, int ninst, int pred);
@@ -88,6 +88,7 @@ typedef struct register_mapping_s {
 } register_mapping_t;
 
 void x64disas_add_register_mapping_annotations(char* buf, const char* disas, const register_mapping_t* mappings, size_t mappings_sz);
+void dynarec_stopped(uintptr_t x64addr, int is32bits);
 
 ADDITIONNAL_DEFINITION()
 

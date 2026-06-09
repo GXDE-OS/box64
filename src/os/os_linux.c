@@ -106,7 +106,7 @@ const char* GetBridgeName(void* p)
     return getBridgeName(p);
 }
 
-const char* GetNativeName(void* p)
+const char* GetNativeName(void* p, int lib)
 {
     static char buff[500] = { 0 };
     {
@@ -124,7 +124,7 @@ const char* GetNativeName(void* p)
     } else {
         if (info.dli_sname) {
             strcpy(buff, info.dli_sname);
-            if (info.dli_fname) {
+            if (lib && info.dli_fname) {
                 strcat(buff, "(");
                 strcat(buff, info.dli_fname);
                 strcat(buff, ")");
@@ -157,7 +157,7 @@ void PersonalityAddrLimit32Bit(void)
 
 int IsAddrElfOrFileMapped(uintptr_t addr)
 {
-    return FindElfAddress(my_context, addr) || IsAddrFileMapped(addr, NULL, NULL);
+    return FindElfAddress(my_context, addr) || IsAddrFileMappedNoMemFD(addr);
 }
 
 void* InternalMmap(void* addr, unsigned long length, int prot, int flags, int fd, ssize_t offset)

@@ -269,6 +269,30 @@ static void* find_client_cert_Fct(void* fct)
     return NULL;
 }
 
+// cert_cb
+#define GO(A)   \
+static uintptr_t my3_cert_cb_fct_##A = 0;                        \
+static int my3_cert_cb_##A(void* ssl, void* arg)                 \
+{                                                                \
+    return (int)RunFunctionFmt(my3_cert_cb_fct_##A, "pp", ssl, arg); \
+}
+SUPER()
+#undef GO
+static void* find_cert_cb_Fct(void* fct)
+{
+    if(!fct) return NULL;
+    void* p;
+    if((p = GetNativeFnc((uintptr_t)fct))) return p;
+    #define GO(A) if(my3_cert_cb_fct_##A == (uintptr_t)fct) return my3_cert_cb_##A;
+    SUPER()
+    #undef GO
+    #define GO(A) if(my3_cert_cb_fct_##A == 0) {my3_cert_cb_fct_##A = (uintptr_t)fct; return my3_cert_cb_##A; }
+    SUPER()
+    #undef GO
+    printf_log(LOG_NONE, "Warning, no more slot for libSSL cert_cb callback\n");
+    return NULL;
+}
+
 // alpn_select_cb
 #define GO(A)   \
 static uintptr_t my3_alpn_select_cb_fct_##A = 0;                                                    \
@@ -476,6 +500,29 @@ static void* find_psk_server_cb_Fct(void* fct)
     printf_log(LOG_NONE, "Warning, no more slot for ssl3 psk_server_cb callback\n");
     return NULL;
 }
+// psk_server_callback
+#define GO(A)   \
+static uintptr_t my_psk_server_callback_fct_##A = 0;                                        \
+static uint32_t my_psk_server_callback_##A(void* a, void* b, void* c, int d)                \
+{                                                                                           \
+    return (uint32_t)RunFunctionFmt(my_psk_server_callback_fct_##A, "pppi", a, b, c, d);    \
+}
+SUPER()
+#undef GO
+static void* find_psk_server_callback_Fct(void* fct)
+{
+    if(!fct) return NULL;
+    void* p;
+    if((p = GetNativeFnc((uintptr_t)fct))) return p;
+    #define GO(A) if(my_psk_server_callback_fct_##A == (uintptr_t)fct) return my_psk_server_callback_##A;
+    SUPER()
+    #undef GO
+    #define GO(A) if(my_psk_server_callback_fct_##A == 0) {my_psk_server_callback_fct_##A = (uintptr_t)fct; return my_psk_server_callback_##A; }
+    SUPER()
+    #undef GO
+    printf_log(LOG_NONE, "Warning, no more slot for ssl3 psk_server_callback callback\n");
+    return NULL;
+}
 // read_write
 #define GO(A)   \
 static uintptr_t my_read_write_fct_##A = 0;                             \
@@ -631,6 +678,12 @@ EXPORT void my3_SSL_CTX_set_cert_verify_callback(x64emu_t* emu, void* ctx, void*
     my->SSL_CTX_set_cert_verify_callback(ctx, find_verify_Fct(cb), arg);
 }
 
+EXPORT void my3_SSL_CTX_set_cert_cb(x64emu_t* emu, void* ctx, void* cb, void* arg)
+{
+    (void)emu;
+    my->SSL_CTX_set_cert_cb(ctx, find_cert_cb_Fct(cb), arg);
+}
+
 EXPORT void my3_SSL_CTX_set_client_cert_cb(x64emu_t* emu, void* ctx, void* cb)
 {
     (void)emu;
@@ -675,6 +728,12 @@ EXPORT void my3_SSL_CTX_sess_set_new_cb(x64emu_t* emu, void *ctx, void* f)
 EXPORT void my3_SSL_set_info_callback(x64emu_t* emmu, void* ctx, void* f)
 {
     my->SSL_set_info_callback(ctx, find_info_cb_Fct(f));
+}
+
+EXPORT void my3_SSL_CTX_set_info_callback(x64emu_t* emu, void* ctx, void* f)
+{
+    (void)emu;
+    my->SSL_CTX_set_info_callback(ctx, find_info_cb_Fct(f));
 }
 
 EXPORT void my3_SSL_set_psk_use_session_callback(x64emu_t* emu, void* ctx, void* f)
@@ -725,6 +784,16 @@ EXPORT int my3_BIO_meth_set_create(x64emu_t* emu, void* biom, void* f)
 EXPORT int my3_BIO_meth_set_destroy(x64emu_t* emu, void* biom, void* f)
 {
     return my->BIO_meth_set_destroy(biom, find_create_destroy_Fct(f));
+}
+
+EXPORT void my3_SSL_CTX_set_psk_server_callback(x64emu_t* emu, void* ssl, void* cb)
+{
+    my->SSL_CTX_set_psk_server_callback(ssl, find_psk_server_callback_Fct(cb));
+}
+
+EXPORT void my3_SSL_CTX_set_psk_client_callback(x64emu_t* emu, void* ssl, void* cb)
+{
+    my->SSL_CTX_set_psk_client_callback(ssl, find_client_cb_Fct(cb));
 }
 
 #define ALTMY my3_

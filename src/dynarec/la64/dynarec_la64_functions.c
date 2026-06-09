@@ -485,6 +485,7 @@ void lsxcacheUnwind(lsxcache_t* cache)
                 case LSX_CACHE_YMMR:
                 case LSX_CACHE_YMMW:
                     cache->avxcache[cache->lsxcache[i].n].reg = i;
+                    cache->avxcache[cache->lsxcache[i].n].dirty = 0;
                     cache->avxcache[cache->lsxcache[i].n].write = (cache->lsxcache[i].t == LSX_CACHE_YMMW) ? 1 : 0;
                     break;
                 case LSX_CACHE_ST_F:
@@ -516,7 +517,7 @@ const char* getCacheName(int t, int n)
         case LSX_CACHE_XMMW: sprintf(buff, "XMM%d", n); break;
         case LSX_CACHE_XMMR: sprintf(buff, "xmm%d", n); break;
         case LSX_CACHE_YMMW: sprintf(buff, "YMM%d", n); break;
-        case LSX_CACHE_YMMR: sprintf(buff, "ymm%d", n); break;        
+        case LSX_CACHE_YMMR: sprintf(buff, "ymm%d", n); break;
         case LSX_CACHE_SCR: sprintf(buff, "Scratch"); break;
         case LSX_CACHE_NONE: buff[0] = '\0'; break;
     }
@@ -599,18 +600,20 @@ static const char* Ft[] = { "fa0", "fa1", "fa2", "fa3", "fa4", "fa5", "fa6", "fa
 static const char* Vt[] = { "vra0", "vra1", "vra2", "vra3", "vra4", "vra5", "vra6", "vra7", "vrt0", "vrt1", "vrt2", "vrt3", "vrt4", "vrt5", "vrt6", "vrt7", "vrt8", "vrt9", "vrt10", "vrt11", "vrt12", "vrt13", "vrt14", "vrt15", "vrs0", "vrs1", "vrs2", "vrs3", "vrs4", "vrs5", "vrs6", "vrs7" };
 static const char* XVt[] = { "xvra0", "xvra1", "xvra2", "xvra3", "xvra4", "xvra5", "xvra6", "xvra7", "xvrt0", "xvrt1", "xvrt2", "xvrt3", "xvrt4", "xvrt5", "xvrt6", "xvrt7", "xvrt8", "xvrt9", "xvrt10", "xvrt11", "xvrt12", "xvrt13", "xvrt14", "xvrt15", "xvrs0", "xvrs1", "xvrs2", "xvrs3", "xvrs4", "xvrs5", "xvrs6", "xvrs7" };
 
+static const char* df_status[] = { "unknown", "set", "none_pending", "none" };
+
 void printf_x64_instruction(dynarec_native_t* dyn, zydis_dec_t* dec, instruction_x64_t* inst, const char* name);
 void inst_name_pass3(dynarec_native_t* dyn, int ninst, const char* name, rex_t rex)
 {
     if (!dyn->need_dump && !BOX64ENV(dynarec_gdbjit) && !BOX64ENV(dynarec_perf_map)) return;
 
     static char buf[4096];
-    int length = sprintf(buf, "barrier=%d state=%d/%d(%d), %s=%X/%X, use=%X, need=%X/%X, fuse=%d/%d, sm=%d(%d/%d)",
+    int length = sprintf(buf, "barrier=%d state=%d/%s(%s->%s), set=%X/%X, use=%X, need=%X/%X, fuse=%d/%d, sm=%d(%d/%d)",
         dyn->insts[ninst].x64.barrier,
         dyn->insts[ninst].x64.state_flags,
-        dyn->f.pending,
-        dyn->f.dfnone,
-        dyn->insts[ninst].x64.may_set ? "may" : "set",
+        df_status[dyn->f],
+        df_status[dyn->insts[ninst].f_entry],
+        df_status[dyn->insts[ninst].f_exit],
         dyn->insts[ninst].x64.set_flags,
         dyn->insts[ninst].x64.gen_flags,
         dyn->insts[ninst].x64.use_flags,
@@ -638,8 +641,8 @@ void inst_name_pass3(dynarec_native_t* dyn, int ninst, const char* name, rex_t r
             case LSX_CACHE_MM: length += sprintf(buf + length, " %s:%s", Ft[ii], getCacheName(dyn->insts[ninst].lsx.lsxcache[ii].t, dyn->insts[ninst].lsx.lsxcache[ii].n)); break;
             case LSX_CACHE_XMMW: length += sprintf(buf + length, " %s:%s", Vt[ii], getCacheName(dyn->insts[ninst].lsx.lsxcache[ii].t, dyn->insts[ninst].lsx.lsxcache[ii].n)); break;
             case LSX_CACHE_XMMR: length += sprintf(buf + length, " %s:%s", Vt[ii], getCacheName(dyn->insts[ninst].lsx.lsxcache[ii].t, dyn->insts[ninst].lsx.lsxcache[ii].n)); break;
-            case LSX_CACHE_YMMW: length += sprintf(buf + length, " %s:%s%s", XVt[ii], getCacheName(dyn->insts[ninst].lsx.lsxcache[ii].t, dyn->insts[ninst].lsx.lsxcache[ii].n), dyn->insts[ninst].lsx.avxcache[dyn->insts[ninst].lsx.lsxcache[ii].n].zero_upper == 1 ? "-UZ" : ""); break;
-            case LSX_CACHE_YMMR: length += sprintf(buf + length, " %s:%s%s", XVt[ii], getCacheName(dyn->insts[ninst].lsx.lsxcache[ii].t, dyn->insts[ninst].lsx.lsxcache[ii].n), dyn->insts[ninst].lsx.avxcache[dyn->insts[ninst].lsx.lsxcache[ii].n].zero_upper == 1 ? "-UZ" : ""); break;
+            case LSX_CACHE_YMMW: length += sprintf(buf + length, " %s:%s", XVt[ii], getCacheName(dyn->insts[ninst].lsx.lsxcache[ii].t, dyn->insts[ninst].lsx.lsxcache[ii].n)); break;
+            case LSX_CACHE_YMMR: length += sprintf(buf + length, " %s:%s", XVt[ii], getCacheName(dyn->insts[ninst].lsx.lsxcache[ii].t, dyn->insts[ninst].lsx.lsxcache[ii].n)); break;
             case LSX_CACHE_SCR: length += sprintf(buf + length, " %s:%s", Ft[ii], getCacheName(dyn->insts[ninst].lsx.lsxcache[ii].t, dyn->insts[ninst].lsx.lsxcache[ii].n)); break;
             case LSX_CACHE_NONE:
             default: break;

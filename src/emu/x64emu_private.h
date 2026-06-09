@@ -45,12 +45,14 @@ typedef struct x64test_s {
     uint8_t     mem[32];
 } x64test_t;
 
+#define FLAGS_NO_TF     7
 typedef struct emu_flags_s {
     uint32_t    need_jmpbuf:1;    // need a new jmpbuff for signal handling
     uint32_t    quitonlongjmp:2;  // quit if longjmp is called
     uint32_t    quitonexit:2;     // quit if exit/_exit is called
     uint32_t    longjmp:1;        // if quit because of longjmp
     uint32_t    jmpbuf_ready:1;   // the jmpbuf in the emu is ok and don't need refresh
+    uint32_t    no_tf:1;          // no TF on current opcode (to manage the delay of application of the flag)
 } emu_flags_t;
 
 #define N_SCRATCH 200
@@ -72,7 +74,7 @@ typedef struct x64emu_s {
     x87control_t cw;
     uint16_t    dummy_cw;   // align...
     mmxcontrol_t mxcsr;
-    #ifdef RV64         // it would be better to use a dedicated register for this like arm64 xSavedSP, but we're running out of free registers.
+    #if defined(RV64) || defined(PPC64LE)   // no spare callee-saved register for xSavedSP, store in emu struct instead
     uintptr_t xSPSave;  // sp base value of current dynarec frame, used by call/ret optimization to reset stack when unmatch.
     #endif
     fpu_ld_t    fpu_ld[8]; // for long double emulation / 80bits fld fst
@@ -120,7 +122,7 @@ typedef struct x64emu_s {
     void*       init_stack; // initial stack (owned or not)
     uint32_t    size_stack; // stack size (owned or not)
     JUMPBUFF*   jmpbuf;
-    #ifdef RV64
+    #if defined(RV64) || defined(PPC64LE)
     uintptr_t   old_savedsp;
     #endif
 

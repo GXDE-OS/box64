@@ -3,15 +3,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <fenv.h>
 
 #include "debug.h"
 #include "x64emu_private.h"
 #include "x87emu_private.h"
+#include "bitutils.h"
 //#include "x64run_private.h"
 
 void fpu_do_free(x64emu_t* emu, int i)
 {
-    emu->fpu_tags |= 0b11 << (i);   // empty
+    emu->fpu_tags |= 0b11 << (i*2);   // empty
     // check if all empty
     if(emu->fpu_tags != TAGS_EMPTY)
         return;
@@ -78,6 +80,15 @@ void fpu_fbld(x64emu_t* emu, uint8_t* s) {
 #define FPU_t mmx87_regs_t
 #define BIAS80 16383
 #define BIAS64 1023
+// MinGW/wowbox64 builds may lack feraiseexcept; make it a no-op there.
+static inline void box64_feraise(int flags)
+{
+#if defined(_WIN32) || defined(__MINGW32__)
+    (void)flags;
+#else
+    feraiseexcept(flags);
+#endif
+}
 // long double (80bits) -> double (64bits)
 void LD2D(void* ld, void* d)
 {
@@ -125,17 +136,28 @@ void LD2D(void* ld, void* d)
         // denormal, but that's to small value for double 
         uint64_t r = (val.b&0x8000)?0x8000000000000000LL:0LL;
         *(uint64_t*)d = r;
+        if(val.f.q)
+            box64_feraise(FE_UNDERFLOW | FE_INEXACT);
         return;
     }
 
     if(exp64<=0 && val.f.q) {
         // try to see if it can be a denormal
-        int one = -exp64-1022;
+        int shift_amount = -exp64-1022;
         uint64_t r = 0;
         if(val.b&0x8000)
             r |= 0x8000000000000000L;
-        r |= val.f.q>>one;
+        if (shift_amount >= 64) {
+            *(uint64_t*)d = r; 
+            box64_feraise(FE_UNDERFLOW | FE_INEXACT);
+            return;
+        }
+        // track discarded bits to decide inexact/underflow
+        uint64_t lost = val.f.q & ((shift_amount == 64) ? ~0ULL : ((1ULL << shift_amount) - 1ULL));
+        r |= val.f.q >> shift_amount;
         *(uint64_t*)d = r;
+        if(lost)
+            box64_feraise(FE_UNDERFLOW | FE_INEXACT);
         return;
 
     }
@@ -146,6 +168,7 @@ void LD2D(void* ld, void* d)
         if(val.b&0x8000)
             result.ud[1] |= 0x80000000;
         *(uint64_t*)d = result.q;
+        box64_feraise(FE_OVERFLOW | FE_INEXACT);
         return;
     }
 
@@ -551,11 +574,18 @@ uint32_t cvtf16_32(uint16_t v)
     f32_t ret = {0};
     ret.sign = in.sign;
     ret.fraction = in.fraction<<13;
-    if(!in.exponant)
+    if(!in.exponant) {
         ret.exponant = 0;
-    else if(in.exponant==0b11111)
+        if (in.fraction) {
+            int8_t s = 23 - (15 - LeadingZeros16(in.fraction));
+            ret.exponant = 126 - s;
+            ret.fraction = in.fraction << s;
+        }
+    } else if(in.exponant==0b11111) {
         ret.exponant = 0b11111111;
-    else {
+        if(in.fraction)
+            ret.fraction |= (1 << 22);  // SNaN -> QNaN
+    } else {
         int e = in.exponant - 15;
         ret.exponant = e + 127;
     }
@@ -578,62 +608,88 @@ uint16_t cvtf32_16(uint32_t v, uint8_t rounding)
     } else if(in.exponant==0b11111111) {
         // nan and infinites
         ret.exponant = 0b11111;
-        ret.fraction = in.fraction;
-        if(in.fraction && !ret.fraction)
-            ret.fraction = 0b1000000000;
+        ret.fraction = in.fraction >> 13;
+        if(in.fraction)
+            ret.fraction |= 0b1000000000; // SNaN -> QNaN
         return ret.u16;
     } else {
         // regular numbers
         int e = in.exponant - 127;
-        uint16_t f = (in.fraction>>13)|0b10000000000;   // add back implicit msb
-        uint16_t r = in.fraction&0b1111111111111;
-        switch(rounding) {
-            case 0: // nearest even
-                if(r>=0b1000000000000)
-                    ++f;
-                break;
-            case 1: // round down
-                f += r?ret.sign:0;
-                break;
-            case 2: // round up
-                f += r?(1-ret.sign):0;
-                break;
-            case 3: // truncate
-                break;
-        }
-        if(f>0b11111111111) {   // implicit msb included
-            ++e;
-            f>>=1;
-        }
-        // remove implicit msb
-        if(f) {
-            while(!(f&0b10000000000)) {
-                f<<=1;
-                --e;
-            }
-        }
-        // there is no msb to remove, as it's implicit and was not added back before
-        if(!f) e = -15;
-        else if(e<-14) { 
-            // flush to zero
-            f >>= (-15-e);
-            e = -15;
-            if((rounding==1 && ret.sign) || ((rounding==2) && !ret.sign)) 
-                f = 1; // rounding artifact
-        }
-        else if(e>15) { 
-            if((rounding==1 && !in.sign) || (rounding==2 && in.sign) || (rounding==3)) {
-                // Clamp to max
-                f=0b1111111111;
-                e = 15;
+        if(e < -14) {
+            // result is a half-precision denormal (or zero)
+            int shift = -14 - e;
+            uint32_t mantissa = (1u << 23) | in.fraction;
+            // total right shift to align 24-bit mantissa into 10-bit fraction
+            int total_shift = 13 + shift;
+            uint16_t fraction;
+            int guard, sticky;
+            if(total_shift >= 25) {
+                fraction = 0;
+                guard = 0;
+                sticky = 1; // mantissa always nonzero (has implicit bit)
             } else {
-                // overflow to inifity
-                f=0;
-                e = 16;
+                fraction = (mantissa >> total_shift) & 0x3FF;
+                guard = (mantissa >> (total_shift - 1)) & 1;
+                sticky = (total_shift >= 2) ? ((mantissa & ((1u << (total_shift - 1)) - 1)) ? 1 : 0) : 0;
             }
-        } else f&=0b1111111111; // remove implicit msb (bit 11)
-        ret.fraction = f;
-        ret.exponant = e+15;
+            switch(rounding) {
+                case 0: // nearest even
+                    if(guard && (sticky || (fraction & 1)))
+                        ++fraction;
+                    break;
+                case 1: // round down
+                    if((guard || sticky) && ret.sign)
+                        ++fraction;
+                    break;
+                case 2: // round up
+                    if((guard || sticky) && !ret.sign)
+                        ++fraction;
+                    break;
+                case 3: // truncate
+                    break;
+            }
+            if(fraction >= 0x400) {
+                // rounding promoted denormal to smallest normal
+                ret.fraction = 0;
+                ret.exponant = 1;
+            } else {
+                ret.fraction = fraction;
+                ret.exponant = 0;
+            }
+        } else {
+            // normal result (e >= -14)
+            uint16_t f = (in.fraction>>13)|0b10000000000;
+            uint16_t r = in.fraction&0b1111111111111;
+            switch(rounding) {
+                case 0: // nearest even
+                    if(r > 0b1000000000000 || (r == 0b1000000000000 && (f & 1)))
+                        ++f;
+                    break;
+                case 1: // round down
+                    f += r?ret.sign:0;
+                    break;
+                case 2: // round up
+                    f += r?(1-ret.sign):0;
+                    break;
+                case 3: // truncate
+                    break;
+            }
+            if(f>0b11111111111) {
+                ++e;
+                f>>=1;
+            }
+            if(e>15) {
+                if((rounding==1 && !in.sign) || (rounding==2 && in.sign) || (rounding==3)) {
+                    f=0b1111111111;
+                    e = 15;
+                } else {
+                    f=0;
+                    e = 16;
+                }
+            } else f&=0b1111111111;
+            ret.fraction = f;
+            ret.exponant = e+15;
+        }
     }
 
     return ret.u16;
