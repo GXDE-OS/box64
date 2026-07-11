@@ -1,3 +1,9 @@
+box64 (0.4.2gxde1) UNRELEASED; urgency=medium
+
+  * 启用 box32 构建
+
+ -- gfdgd_xi <3025613752@qq.com>  Sat, 11 Jul 2026 13:49:55 +0800
+
 box64 (0.4.2) unstable; urgency=low
 
 This version add lots on unconnected new things, like a PPC64LE backend, Vulkan overlay support or more Dynarec finetunning.
