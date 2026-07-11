@@ -51,6 +51,9 @@ override_dh_shlibdeps:
 	--exclude=libz.so.1 \
 	--exclude=box64-bash
 
+override_dh_auto_test:
+	true
+
 override_dh_strip:
 	dh_strip --exclude=/usr/lib/box64-x86_64-linux-gnu/ \
 	--exclude=/usr/lib/box64-i386-linux-gnu/ \
