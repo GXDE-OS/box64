@@ -4311,7 +4311,6 @@ wrappedcairo:
   - cairo_surface_set_mime_data
 wrappedcairogobject:
 wrappedcap:
-wrappedcrashhandler:
 wrappedcrypto:
 - vFp:
   - CRYPTO_set_id_callback
@@ -5479,12 +5478,15 @@ wrappedlibc:
 - vFi:
   - _exit
   - exit
+  - quick_exit
 - vFp:
   - _ITM_deregisterTMCloneTable
   - _ZGTtdlPv
   - __cxa_finalize
 - iFv:
+  - __getpagesize
   - fork
+  - getpagesize
   - sched_getcpu
   - vfork
 - iFi:
@@ -5492,6 +5494,7 @@ wrappedlibc:
 - iFp:
   - __libc_dlclose
   - _setjmp
+  - at_quick_exit
   - atexit
   - getcontext
   - register_printf_type
@@ -5542,9 +5545,12 @@ wrappedlibc:
 - iFiu:
   - pidfd_open
 - iFip:
+  - __getrlimit
   - fstat
   - fstat64
 - iFup:
+  - getrlimit
+  - getrlimit64
   - setrlimit
 - iFpi:
   - __sigsetjmp
@@ -5556,6 +5562,7 @@ wrappedlibc:
 - iFpL:
   - munmap
 - iFpp:
+  - __cxa_at_quick_exit
   - __vprintf_chk
   - dl_iterate_phdr
   - execv
@@ -5653,7 +5660,10 @@ wrappedlibc:
 - iFipA:
   - vdprintf
 - iFpLi:
+  - __madvise
+  - madvise
   - mprotect
+  - posix_madvise
 - iFpLp:
   - init_module
 - iFppi:
@@ -6843,8 +6853,6 @@ wrappedpango:
   - pango_attribute_init
 wrappedpangocairo:
 wrappedpangoft2:
-- pFp:
-  - pango_fc_font_lock_face
 wrappedpcap:
 wrappedpixman1:
 wrappedplc4:
