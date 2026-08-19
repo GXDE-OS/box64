@@ -1,8 +1,12 @@
-box64 (0.4.2gxde1) UNRELEASED; urgency=medium
+box64 (0.4.4) unstable; urgency=low
 
-  * 启用 box32 构建
+This version adds a lot of refactor and speed improvements to the LoongArch backend, so more opcodes on the RISC-V backend, and many QoL new features!
+    => A new box64-configurator is now present (a python app) to help managing custom RCFILE profiles. It is available in both english and chinese.
+    => DynaCache is now enabled by default. It will compress the files and use up to 2GB of disk space.
+    => You can use box64-configurator on the special `[*]` profile to change default values
+    => More improvements on emulation accuracy that help running more DRM'd games
 
- -- gfdgd_xi <3025613752@qq.com>  Sat, 11 Jul 2026 13:49:55 +0800
+-- Sebastien Chevalier <ptitseb@box86.org>  Mon, 2 Aug 2026 10:30:33 -0100
 
 box64 (0.4.2) unstable; urgency=low
 
