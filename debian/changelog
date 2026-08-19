@@ -1,3 +1,9 @@
+box64 (0.4.5-1) UNRELEASED; urgency=medium
+
+  * Init
+
+ -- gfdgd_xi <3025613752@qq.com>  Wed, 19 Aug 2026 20:41:43 +0800
+
 box64 (0.4.4) unstable; urgency=low
 
 This version adds a lot of refactor and speed improvements to the LoongArch backend, so more opcodes on the RISC-V backend, and many QoL new features!
